@@ -1,0 +1,6 @@
+runtime/
+models/
+cache/
+config/
+logs/
+*.part

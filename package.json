@@ -1,0 +1,36 @@
+{
+  "name": "shdowpit",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "SHDOWPIT - a minimalist 3D nemesis roguelite built on Three.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview --port 4173",
+    "preview:mock": "SHDOWPIT_AI_MOCK=1 vite preview --port 4173",
+    "serve": "node server/index.mjs",
+    "test": "node tools/playtest.mjs",
+    "test:backend": "node tools/backendtest.mjs",
+    "test:ai": "node tools/aitest.mjs",
+    "test:ai-success": "node tools/aisuccess.mjs",
+    "test:local-ai": "node tools/localaitest.mjs",
+    "qa": "node tools/qa.mjs",
+    "ai:install": "node local-ai-engine/install.mjs",
+    "ai:status": "node local-ai-engine/install.mjs --status",
+    "ai:start": "node local-ai-engine/install.mjs --start",
+    "ai:stop": "node local-ai-engine/install.mjs --stop",
+    "ai:restart": "node local-ai-engine/install.mjs --restart",
+    "ai:remove": "node local-ai-engine/install.mjs --remove"
+  },
+  "dependencies": {
+    "three": "^0.169.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.169.0",
+    "playwright": "^1.49.0",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}

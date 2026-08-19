@@ -1,0 +1,11 @@
+node_modules/
+dist/
+playtest-shots/
+shots/
+*.local
+.DS_Store
+.vite/
+.env
+.env.*
+!.env.example
+.vercel/

@@ -1,0 +1,537 @@
+/**
+ * Owns the persistent roster and the hierarchy.
+ *
+ * Everything that changes the world's cast goes through here so that there is
+ * exactly one place that writes to the save file and one place that decides
+ * who is Overlord.
+ */
+
+import { RNG, mixSeed, randomSeed } from '../core/RNG';
+import type { SaveData, SaveSystem } from '../core/SaveSystem';
+import { defaultPlayerMeta, defaultSettings, SAVE_VERSION } from '../core/SaveSystem';
+import type { Bus } from '../core/Events';
+import { AREAS } from '../data/areas';
+import { rollAge, type AgeModifier, type AgeState } from '../data/ages';
+import { chooseTitle } from '../data/names';
+import { makeEvent, type WorldEvent } from '../world/WorldEvent';
+import type { Nemesis, Rank } from './Nemesis';
+import { fullName, rankIndex, RANK_ORDER } from './Nemesis';
+import { generateNemesis, recomputePower } from './NemesisGenerator';
+import { remember, recomputeRevenge } from './NemesisMemory';
+import { purgeReferences, makeRivals, setMaster } from './NemesisRelationships';
+
+const MAX_LOG = 600;
+
+export class NemesisManager {
+  data!: SaveData;
+  ageState!: AgeState;
+
+  private saveSys: SaveSystem;
+  private bus: Bus;
+  private rng: RNG;
+
+  constructor(saveSys: SaveSystem, bus: Bus) {
+    this.saveSys = saveSys;
+    this.bus = bus;
+    this.rng = new RNG(randomSeed());
+  }
+
+  /* ============================================================
+     lifecycle
+     ============================================================ */
+
+  loadExisting(): boolean {
+    const d = this.saveSys.load();
+    if (!d) return false;
+    this.data = d;
+    this.ageState = rollAge(d.worldAge, d.worldSeed);
+    this.data.ageName = this.ageState.name;
+    this.data.ageModifiers = this.ageState.modifiers;
+    this.rng = new RNG(mixSeed(d.worldSeed, d.worldTurn));
+    this.fillRanks();
+    return true;
+  }
+
+  newWorld(seed = randomSeed()): void {
+    const territories: Record<string, string | null> = {};
+    for (const a of AREAS) territories[a.id] = null;
+
+    this.data = {
+      saveVersion: SAVE_VERSION,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      worldSeed: seed,
+      worldTurn: 1,
+      worldAge: 1,
+      ageModifiers: [],
+      ageName: '',
+      nemeses: [],
+      eventLog: [],
+      territories,
+      nextId: 1,
+      usedNames: [],
+      playerMeta: defaultPlayerMeta(),
+      settings: this.data?.settings ?? defaultSettings(),
+    };
+    this.ageState = rollAge(1, seed);
+    this.data.ageName = this.ageState.name;
+    this.data.ageModifiers = this.ageState.modifiers;
+    this.rng = new RNG(seed);
+
+    this.seedRoster();
+    this.log(makeEvent(1, 1, 'age_begins', `${this.ageState.name} begins.`, [], true, 'gold'));
+    this.persist();
+  }
+
+  persist(): void {
+    if (!this.data) return;
+    if (this.data.eventLog.length > MAX_LOG) {
+      this.data.eventLog = this.data.eventLog.slice(-MAX_LOG);
+    }
+    this.saveSys.save(this.data);
+  }
+
+  wipe(): void {
+    this.saveSys.wipe();
+  }
+
+  /* ============================================================
+     accessors
+     ============================================================ */
+
+  get turn(): number {
+    return this.data.worldTurn;
+  }
+
+  get age(): number {
+    return this.data.worldAge;
+  }
+
+  get mods(): AgeModifier {
+    return this.ageState.combined;
+  }
+
+  get roster(): Nemesis[] {
+    return this.data.nemeses;
+  }
+
+  living(): Nemesis[] {
+    return this.data.nemeses.filter((n) => n.alive);
+  }
+
+  dead(): Nemesis[] {
+    return this.data.nemeses.filter((n) => !n.alive);
+  }
+
+  byId(id: string | null | undefined): Nemesis | null {
+    if (!id) return null;
+    return this.data.nemeses.find((n) => n.id === id) ?? null;
+  }
+
+  ofRank(rank: Rank): Nemesis[] {
+    return this.living().filter((n) => n.rank === rank);
+  }
+
+  overlord(): Nemesis | null {
+    return this.ofRank('overlord')[0] ?? null;
+  }
+
+  /** Living nemeses whose home area this is. */
+  inTerritory(areaId: string): Nemesis[] {
+    return this.living().filter((n) => n.territory === areaId);
+  }
+
+  territoryHolder(areaId: string): Nemesis | null {
+    return this.byId(this.data.territories[areaId] ?? null);
+  }
+
+  takenNames(): Set<string> {
+    return new Set(this.data.nemeses.map((n) => n.name.toLowerCase()));
+  }
+
+  nextId(): string {
+    const id = 'n' + this.data.nextId.toString(36);
+    this.data.nextId++;
+    return id;
+  }
+
+  /* ============================================================
+     roster construction
+     ============================================================ */
+
+  private targetCounts(): Record<Rank, number> {
+    const extra = Math.min(Math.round(this.mods.extraCaptains), 5);
+    return {
+      overlord: 1,
+      warlord: 2,
+      captain: 4 + Math.ceil(extra / 2),
+      elite: 4 + Math.floor(extra / 2),
+      grunt: 0,
+    };
+  }
+
+  private seedRoster(): void {
+    const targets = this.targetCounts();
+    const order: Rank[] = ['overlord', 'warlord', 'captain', 'elite'];
+    for (const rank of order) {
+      for (let i = 0; i < targets[rank]; i++) {
+        this.recruit(rank, false);
+      }
+    }
+    // Seed a couple of pre-existing grudges so the world feels lived-in.
+    const alive = this.living();
+    for (let i = 0; i < Math.min(3, Math.floor(alive.length / 3)); i++) {
+      const a = this.rng.pick(alive);
+      const b = this.rng.pick(alive);
+      if (a.id !== b.id) makeRivals(a, b);
+    }
+    // Attach loyalists to superiors.
+    for (const n of alive) {
+      if (n.personality === 'loyalist' && rankIndex(n.rank) < 3) {
+        const sup = this.living().filter((m) => rankIndex(m.rank) > rankIndex(n.rank));
+        if (sup.length) setMaster(n, this.rng.pick(sup));
+      }
+    }
+    this.assignTerritories();
+  }
+
+  /** Create a new named enemy at `rank`. */
+  recruit(rank: Rank, announce = true): Nemesis {
+    const id = this.nextId();
+    const seed = mixSeed(this.data.worldSeed, this.data.nextId * 7919 + this.data.worldTurn);
+    const n = generateNemesis({
+      id,
+      seed,
+      rank,
+      turn: this.data.worldTurn,
+      age: this.mods,
+      taken: this.takenNames(),
+    });
+    this.data.nemeses.push(n);
+    if (announce) {
+      this.log(
+        makeEvent(this.turn, this.age, 'birth', `${fullName(n)} joined the ${rankLabel(rank)}.`, [n.id], false)
+      );
+    }
+    return n;
+  }
+
+  /**
+   * Make the hierarchy consistent: exactly one Overlord, the right number of
+   * warlords and captains, promoting from below and recruiting if the world
+   * has run out of bodies.
+   */
+  fillRanks(): WorldEvent[] {
+    const events: WorldEvent[] = [];
+    const targets = this.targetCounts();
+    const chain: Rank[] = ['overlord', 'warlord', 'captain', 'elite'];
+
+    for (const rank of chain) {
+      let have = this.ofRank(rank);
+
+      // Too many at this rank (can happen after a resurrection) — demote the weakest.
+      while (have.length > targets[rank] && rank !== 'elite') {
+        have.sort((a, b) => a.power - b.power);
+        const victim = have.shift()!;
+        events.push(this.demote(victim, 'the hierarchy closed around them'));
+        have = this.ofRank(rank);
+      }
+
+      while (have.length < targets[rank]) {
+        const below = RANK_ORDER[rankIndex(rank) - 1];
+        let candidate: Nemesis | null = null;
+        if (below) {
+          const pool = this.ofRank(below);
+          if (pool.length > 0) {
+            pool.sort((a, b) => b.power - a.power);
+            candidate = pool[0];
+          }
+        }
+        if (!candidate) {
+          candidate = this.recruit(rank, false);
+          events.push(
+            makeEvent(
+              this.turn,
+              this.age,
+              'recruitment',
+              `${fullName(candidate)} rose out of nowhere to take a place among the ${rankLabel(rank)}.`,
+              [candidate.id],
+              rankIndex(rank) >= 2
+            )
+          );
+        } else {
+          events.push(this.promote(candidate, rank));
+        }
+        have = this.ofRank(rank);
+      }
+    }
+
+    this.trimRoster(events);
+    this.assignTerritories();
+    return events;
+  }
+
+  /**
+   * The brief asks for 10–15 tracked characters. Resurrections and recruitment
+   * can push past that, so the least interesting elites quietly drop back into
+   * the rabble — never anyone the player has history with.
+   */
+  private trimRoster(events: WorldEvent[]): void {
+    const targets = this.targetCounts();
+    const cap = targets.overlord + targets.warlord + targets.captain + targets.elite + 2;
+    let living = this.living();
+    if (living.length <= cap) return;
+    const expendable = living
+      .filter(
+        (n) =>
+          n.rank === 'elite' &&
+          n.killsAgainstPlayer === 0 &&
+          n.defeatsByPlayer === 0 &&
+          n.escapedPlayer === 0 &&
+          n.returns === 0 &&
+          n.stolen.length === 0 &&
+          n.playerRelationship <= 0
+      )
+      .sort((a, b) => a.power - b.power);
+    while (living.length > cap && expendable.length) {
+      const n = expendable.shift()!;
+      n.alive = false;
+      n.diedOnTurn = this.turn;
+      purgeReferences(this.data.nemeses, n.id);
+      this.data.nemeses = this.data.nemeses.filter((x) => x.id !== n.id);
+      events.push(
+        makeEvent(this.turn, this.age, 'death', `${fullName(n)} disappeared into the rabble.`, [n.id], false)
+      );
+      living = this.living();
+    }
+  }
+
+  /** Give every area a holder; the Overlord always sits in the Fortress. */
+  assignTerritories(): void {
+    const ov = this.overlord();
+    if (ov) {
+      ov.territory = 'fortress';
+      this.data.territories.fortress = ov.id;
+    }
+    for (const a of AREAS) {
+      if (a.id === 'fortress' && ov) continue;
+      const holder = this.byId(this.data.territories[a.id]);
+      if (holder && holder.alive) continue;
+      const locals = this.living()
+        .filter((n) => n.territory === a.id && n.rank !== 'overlord')
+        .sort((x, y) => y.power - x.power);
+      this.data.territories[a.id] = locals[0]?.id ?? null;
+    }
+  }
+
+  /* ============================================================
+     rank changes
+     ============================================================ */
+
+  promote(n: Nemesis, to?: Rank): WorldEvent {
+    const from = n.rank;
+    const next = to ?? RANK_ORDER[Math.min(rankIndex(n.rank) + 1, RANK_ORDER.length - 1)];
+    n.rank = next;
+    n.level += 1 + rankIndex(next);
+    remember(n, 'I_WAS_PROMOTED', this.turn);
+    n.title = chooseTitle(n, this.titlesInUse(n));
+    recomputePower(n);
+    this.bus.emit('nemesisPromoted', { nemesis: n, from, to: next });
+    return this.log(
+      makeEvent(
+        this.turn,
+        this.age,
+        'promotion',
+        `${fullName(n)} became ${rankArticle(next)}.`,
+        [n.id],
+        rankIndex(next) >= 2,
+        'gold'
+      )
+    );
+  }
+
+  demote(n: Nemesis, reason = ''): WorldEvent {
+    const next = RANK_ORDER[Math.max(rankIndex(n.rank) - 1, 0)];
+    if (next === n.rank) {
+      return this.log(makeEvent(this.turn, this.age, 'demotion', `${fullName(n)} has nothing left to lose.`, [n.id]));
+    }
+    n.rank = next;
+    n.level = Math.max(1, n.level - 1);
+    remember(n, 'I_WAS_DEMOTED', this.turn);
+    recomputePower(n);
+    return this.log(
+      makeEvent(
+        this.turn,
+        this.age,
+        'demotion',
+        reason ? `${fullName(n)} was cast down — ${reason}.` : `${fullName(n)} was cast down.`,
+        [n.id],
+        false,
+        'bad'
+      )
+    );
+  }
+
+  /** Mark a nemesis dead. They stay in the roster so they can return. */
+  killNemesis(n: Nemesis, byPlayer: boolean, cause = ''): WorldEvent {
+    // Already dead: return an event nobody logs, so the chronicle stays clean.
+    if (!n.alive) return makeEvent(this.turn, this.age, 'death', '', [n.id]);
+    n.alive = false;
+    n.diedOnTurn = this.turn;
+    // Their territory is now open.
+    for (const a of AREAS) {
+      if (this.data.territories[a.id] === n.id) this.data.territories[a.id] = null;
+    }
+    // Allies take it personally.
+    for (const aid of n.allies) {
+      const ally = this.byId(aid);
+      if (ally && ally.alive && byPlayer) {
+        remember(ally, 'PLAYER_KILLED_MY_ALLY', this.turn, n.id);
+      }
+    }
+    this.bus.emit('nemesisDied', { nemesis: n, byPlayer });
+    return this.log(
+      makeEvent(
+        this.turn,
+        this.age,
+        byPlayer ? 'player_kill' : 'death',
+        cause || (byPlayer ? `You killed ${fullName(n)}.` : `${fullName(n)} died.`),
+        [n.id],
+        rankIndex(n.rank) >= 2,
+        byPlayer ? 'good' : 'neutral'
+      )
+    );
+  }
+
+  /** Bring someone back, scarred and angrier. */
+  resurrect(n: Nemesis, scarLabel: string | null): WorldEvent {
+    n.alive = true;
+    n.diedOnTurn = null;
+    n.returns++;
+    n.level += 1;
+    remember(n, 'I_RETURNED_FROM_DEATH', this.turn);
+    n.title = chooseTitle(n, this.titlesInUse(n));
+    recomputeRevenge(n);
+    recomputePower(n);
+    this.bus.emit('nemesisReturned', { nemesis: n });
+    const detail = scarLabel ? ` ${scarLabel} and all.` : '';
+    return this.log(
+      makeEvent(
+        this.turn,
+        this.age,
+        'resurrection',
+        `${fullName(n)} was not as dead as you thought.${detail}`,
+        [n.id],
+        true,
+        'bad'
+      )
+    );
+  }
+
+  /** Titles currently worn by others, so the roster does not homogenise. */
+  titlesInUse(exclude: Nemesis): Set<string> {
+    const s = new Set<string>();
+    for (const n of this.data.nemeses) {
+      if (n.id !== exclude.id && n.alive && n.title) s.add(n.title);
+    }
+    return s;
+  }
+
+  /** Drop long-dead unimportant records so the save does not grow forever. */
+  pruneDead(): void {
+    const keep: Nemesis[] = [];
+    for (const n of this.data.nemeses) {
+      if (n.alive) {
+        keep.push(n);
+        continue;
+      }
+      const age = this.turn - (n.diedOnTurn ?? 0);
+      const memorable = n.revengeChance > 0.3 || n.killsAgainstPlayer > 0 || n.returns > 0 || n.stolen.length > 0;
+      if (age <= 10 || memorable) keep.push(n);
+      else purgeReferences(this.data.nemeses, n.id);
+    }
+    this.data.nemeses = keep;
+  }
+
+  /* ============================================================
+     logging
+     ============================================================ */
+
+  log(ev: WorldEvent): WorldEvent {
+    this.data.eventLog.push(ev);
+    if (this.data.eventLog.length > MAX_LOG) this.data.eventLog.shift();
+    this.bus.emit('worldEvent', ev);
+    return ev;
+  }
+
+  /** Events from the most recent `turns` world turns, newest last. */
+  recentEvents(turns = 1): WorldEvent[] {
+    const from = this.turn - turns + 1;
+    return this.data.eventLog.filter((e) => e.turn >= from);
+  }
+
+  /* ============================================================
+     ages
+     ============================================================ */
+
+  advanceAge(): WorldEvent {
+    this.data.worldAge++;
+    this.ageState = rollAge(this.data.worldAge, this.data.worldSeed);
+    this.data.ageName = this.ageState.name;
+    this.data.ageModifiers = this.ageState.modifiers;
+    return this.log(
+      makeEvent(
+        this.turn,
+        this.age,
+        'age_begins',
+        `A new age begins: ${this.ageState.name}.`,
+        [],
+        true,
+        'gold'
+      )
+    );
+  }
+
+  advanceTurn(): void {
+    this.data.worldTurn++;
+    this.rng = new RNG(mixSeed(this.data.worldSeed, this.data.worldTurn * 2654435761));
+  }
+
+  get simRng(): RNG {
+    return this.rng;
+  }
+}
+
+export function rankLabel(r: Rank): string {
+  switch (r) {
+    case 'overlord':
+      return 'overlords';
+    case 'warlord':
+      return 'warlords';
+    case 'captain':
+      return 'captains';
+    case 'elite':
+      return 'elites';
+    default:
+      return 'rabble';
+  }
+}
+
+export function rankArticle(r: Rank): string {
+  switch (r) {
+    case 'overlord':
+      return 'Overlord';
+    case 'warlord':
+      return 'a Warlord';
+    case 'captain':
+      return 'a Captain';
+    case 'elite':
+      return 'an Elite';
+    default:
+      return 'nothing at all';
+  }
+}
+
+export function rankName(r: Rank): string {
+  return r.toUpperCase();
+}

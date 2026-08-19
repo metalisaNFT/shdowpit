@@ -1,0 +1,16 @@
+import { chromium } from 'playwright';
+const q = process.env.Q ?? 'high';
+const b = await chromium.launch({ executablePath:'/opt/pw-browsers/chromium', args:['--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader','--no-sandbox'] });
+const p = await b.newPage({viewport:{width:1280,height:720}});
+const errs=[]; p.on('pageerror', e=>errs.push(e.message)); p.on('console', m=>{if(m.type()==='error')errs.push(m.text());});
+await p.goto('http://localhost:4173/?quality='+q);
+await p.evaluate(()=>localStorage.clear());
+await p.reload();
+await p.waitForTimeout(3000);
+await (await p.$('#title-screen button')).click();
+await p.waitForTimeout(9000);
+const st = await p.evaluate(()=>window.SHDOWPIT.__state());
+console.log(q, JSON.stringify({mode:st.mode, fps:st.fps, draws:st.drawCalls, tris:st.triangles, quality:st.quality, err:st.lastTickError.slice(0,200)}));
+await p.screenshot({path:'shots/quality-'+q+'.png'});
+console.log('errors', errs.length, errs.slice(0,3));
+await b.close();
