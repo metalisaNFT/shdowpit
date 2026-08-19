@@ -17,7 +17,10 @@ export type Action =
   | 'pause'
   | 'lockon'
   | 'debug'
-  | 'log';
+  | 'log'
+  | 'skill1'
+  | 'skill2'
+  | 'ultimate';
 
 const ACTIONS: Action[] = [
   'light',
@@ -32,6 +35,9 @@ const ACTIONS: Action[] = [
   'lockon',
   'debug',
   'log',
+  'skill1',
+  'skill2',
+  'ultimate',
 ];
 
 /** Default keyboard/mouse binding. Mouse buttons use the `Mouse0` form. */
@@ -51,6 +57,12 @@ const DEFAULT_BINDS: Record<string, Action> = {
   KeyF: 'lockon',
   F1: 'debug',
   KeyL: 'log',
+  Digit1: 'skill1',
+  KeyC: 'skill1',
+  Digit2: 'skill2',
+  KeyV: 'skill2',
+  Digit3: 'ultimate',
+  KeyG: 'ultimate',
 };
 
 interface ActionState {

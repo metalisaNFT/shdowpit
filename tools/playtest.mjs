@@ -182,6 +182,25 @@ async function main() {
   await key('KeyQ', 60);
   act = await sawAction('parry');
   check('parry enters parry state', act === 'parry', act);
+
+  await page.waitForTimeout(200);
+  await page.waitForFunction(() => window.SHDOWPIT.__state().playerAction === 'idle', null, { timeout: 8000 });
+  const kitBefore = await page.evaluate(() => window.SHDOWPIT.__state());
+  check('starting loadout has two skills', Array.isArray(kitBefore.loadout) && kitBefore.loadout.length === 2, JSON.stringify(kitBefore.loadout));
+  await key('Digit1', 80);
+  act = await sawAction('skill');
+  check('skill 1 enters skill state', act === 'skill', act);
+  await page.waitForTimeout(400);
+  const cdAfter = await page.evaluate(() => window.SHDOWPIT.__state().skillCd.a);
+  check('skill 1 starts a cooldown', cdAfter > 1, `${cdAfter}`);
+  await page.waitForFunction(() => window.SHDOWPIT.__state().playerAction === 'idle', null, { timeout: 8000 });
+  await page.evaluate(() => window.SHDOWPIT.__fillSurge());
+  await key('KeyG', 80);
+  act = await sawAction('ultimate');
+  check('full Surge can fire Pit Eruption', act === 'ultimate' || act === 'skill', act);
+  await page.waitForTimeout(200);
+  const surgeAfterUlt = await page.evaluate(() => window.SHDOWPIT.__state().surge);
+  check('ultimate spends Surge', surgeAfterUlt < 100, `${surgeAfterUlt}`);
   await page.evaluate(() => window.SHDOWPIT.__godMode(false));
 
   /* ============================================================
@@ -337,7 +356,8 @@ async function main() {
   const saveBefore = await page.evaluate(() => localStorage.getItem('shdowpit.world.v1'));
   const parsed = JSON.parse(saveBefore ?? '{}');
   log('save size:', saveBefore.length, 'bytes; nemeses:', parsed.nemeses.length, 'events:', parsed.eventLog.length);
-  check('save is versioned', parsed.saveVersion === 1, `v${parsed.saveVersion}`);
+  check('save is versioned', parsed.saveVersion === 3, `v${parsed.saveVersion}`);
+  check('skill unlocks persisted', Array.isArray(parsed.playerMeta.unlockedSkills) && parsed.playerMeta.unlockedSkills.includes('shadow_step'));
   check('appearance seeds persisted', parsed.nemeses.every((n) => typeof n.appearanceSeed === 'number'));
   check('memory persisted', parsed.nemeses.some((n) => n.memory.length > 0));
 

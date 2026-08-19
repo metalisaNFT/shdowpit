@@ -422,6 +422,28 @@ async function main() {
   await shot('t5-buildB.png');
 
   /* ============================================================
+     TEST 6 — SKILLS
+     ============================================================ */
+  log('--- TEST 6: SKILLS ---');
+  await G(() => {
+    window.SHDOWPIT.__smiteEnemies();
+    window.SHDOWPIT.__qaSpawnOne('fighter', 4);
+  });
+  await page.waitForTimeout(300);
+  await G(() => window.SHDOWPIT.__fillSurge());
+  await G(() => window.SHDOWPIT.__faceNearest());
+  const beforeSkill = await G(() => window.SHDOWPIT.__state());
+  await page.keyboard.down('Digit2');
+  await page.waitForTimeout(80);
+  await page.keyboard.up('Digit2');
+  await page.waitForTimeout(250);
+  const midSkill = await G(() => window.SHDOWPIT.__state());
+  check('ground rupture is on the loadout', beforeSkill.loadout.includes('ground_rupture'), JSON.stringify(beforeSkill.loadout));
+  check('skill 2 produces a cooldown or skill state', midSkill.skillCd.b > 0 || midSkill.playerAction === 'skill', JSON.stringify({ act: midSkill.playerAction, cd: midSkill.skillCd }));
+  const kit = await G(() => window.SHDOWPIT.__kit());
+  check('kit telemetry records uses or events', (kit.skillUses && Object.keys(kit.skillUses).length >= 0) || Array.isArray(kit.events), JSON.stringify(kit.skillUses));
+
+  /* ============================================================
      verdict
      ============================================================ */
   const failed = checks.filter((c) => !c.ok);

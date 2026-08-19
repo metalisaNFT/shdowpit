@@ -85,6 +85,9 @@ export class EnemyCombat {
   brokeThisFrame = false;
   /** true for one frame when an attack enters recovery — the AI's cue to back off */
   justRecovered = false;
+  /** diminishing control: 0–3, decays after a quiet period */
+  ccStacks = 0;
+  private ccQuiet = 0;
 
   reset(postureMax: number): void {
     this.state = 'ready';
@@ -96,6 +99,8 @@ export class EnemyCombat {
     this.current = null;
     this.brokenTimer = 0;
     this.postureQuiet = 0;
+    this.ccStacks = 0;
+    this.ccQuiet = 0;
   }
 
   get busy(): boolean {
@@ -133,6 +138,16 @@ export class EnemyCombat {
     if (!this.current) return true;
     if (!this.current.interruptible) return false;
     return this.t < this.anticipation * 0.62;
+  }
+
+  /** Remaining control scale after repeated pulls/knocks. */
+  displaceScale(): number {
+    return Math.max(0.22, 1 - this.ccStacks * 0.28);
+  }
+
+  noteDisplace(): void {
+    this.ccStacks = Math.min(3, this.ccStacks + 1);
+    this.ccQuiet = 4;
   }
 
   /** 0..1 through the anticipation — drives the telegraph. */
@@ -275,6 +290,10 @@ export class EnemyCombat {
     if (this.state === 'dead') return;
 
     if (this.cooldown > 0) this.cooldown -= dt;
+    if (this.ccQuiet > 0) {
+      this.ccQuiet -= dt;
+      if (this.ccQuiet <= 0) this.ccStacks = Math.max(0, this.ccStacks - 1);
+    }
 
     // Posture only recovers once they have been left alone for a moment.
     if (this.postureQuiet > 0) this.postureQuiet -= dt;

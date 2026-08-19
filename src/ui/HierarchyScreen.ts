@@ -1,9 +1,9 @@
 /**
- * The hierarchy screen (Tab): who is above whom, who hates whom, and the full
- * chronicle of everything that has ever happened in this world.
+ * Story screen (Tab): THE WEB plus hierarchy, territories, timeline, threads,
+ * and player progression. Old Order / Book / Dead views remain as modes.
  */
 
-import { button, clear, div, esc, show } from './Dom';
+import { button, clear, div, el, esc, show } from './Dom';
 import type { NemesisManager } from '../nemesis/NemesisManager';
 import { rankName } from '../nemesis/NemesisManager';
 import type { Nemesis, Rank } from '../nemesis/Nemesis';
@@ -15,44 +15,96 @@ import { SCAR_NAMES } from '../nemesis/NemesisMemory';
 import { relationshipLabel, historyBeat } from '../nemesis/EncounterCopy';
 import { AREA_NAMES } from '../data/names';
 import type { AIContentService } from '../ai/AIContentService';
+import { ALL_PLAYER_WEAPONS } from '../data/weapons';
+import { TECHNIQUES } from '../data/techniques';
+import { getSkill, type SkillId } from '../data/skills';
+import { buildStoryModel, territoryStories } from '../story/StoryModel';
+import { buildTimeline } from '../story/StoryTimeline';
+import { characterBeats } from '../story/StoryBeats';
+import { defaultStoryFilters, PLAYER_ID, type StoryFilters, type StoryMode } from '../story/StoryTypes';
+import { StoryWebView, edgeExplain } from '../story/StoryWeb';
 
-type Tab = 'hierarchy' | 'book' | 'chronicle' | 'dead';
+type Tab = StoryMode | 'book' | 'dead';
 
 const TIERS: Rank[] = ['overlord', 'warlord', 'captain', 'elite'];
+const TAB_META: Array<{ id: Tab; label: string }> = [
+  { id: 'web', label: 'WEB' },
+  { id: 'hierarchy', label: 'ORDER' },
+  { id: 'world', label: 'WORLD' },
+  { id: 'timeline', label: 'TIME' },
+  { id: 'threads', label: 'THREADS' },
+  { id: 'you', label: 'YOU' },
+  { id: 'book', label: 'BOOK' },
+  { id: 'dead', label: 'DEAD' },
+];
 
 export class HierarchyScreen {
   readonly root = div('screen hidden');
   private tabsEl = div('tabs');
   private bodyEl = div('body');
   private actionsEl = div('actions');
-  private tab: Tab = 'hierarchy';
+  private tab: Tab = 'web';
   private selected: string | null = null;
+  private selectedEdge: string | null = null;
   private mgr: NemesisManager | null = null;
   private onClose: () => void = () => void 0;
   private ai: AIContentService | null = null;
-  /** id of the nemesis whose Book page is open */
   private bookId: string | null = null;
+  private filters: StoryFilters = defaultStoryFilters();
+  private web = new StoryWebView({
+    onSelectNode: (id) => {
+      this.selected = id;
+      this.filters.focusId = id;
+      this.render();
+    },
+    onSelectEdge: (id) => {
+      this.selectedEdge = id;
+      this.render();
+    },
+    onPanZoom: (x, y, z) => {
+      if (!this.mgr) return;
+      this.mgr.data.storyView = { panX: x, panY: y, zoom: z };
+    },
+  });
+  private h1 = document.createElement('h1');
+  private h2 = document.createElement('h2');
 
   constructor() {
     this.root.id = 'hierarchy-screen';
-    const h1 = document.createElement('h1');
-    h1.textContent = 'THE ORDER';
-    h1.style.fontSize = '34px';
-    const h2 = document.createElement('h2');
-    h2.textContent = 'WHO STANDS WHERE';
-    this.root.append(h1, h2, this.tabsEl, this.bodyEl, this.actionsEl);
+    this.root.classList.add('story-screen');
+    this.h1.textContent = 'THE WEB';
+    this.h1.style.fontSize = '34px';
+    this.h2.textContent = 'WHO MATTERS';
+    this.root.append(this.h1, this.h2, this.tabsEl, this.bodyEl, this.actionsEl);
   }
 
   get visible(): boolean {
     return !this.root.classList.contains('hidden');
   }
 
-  open(mgr: NemesisManager, onClose: () => void, ai: AIContentService | null = null): void {
+  open(mgr: NemesisManager, onClose: () => void, ai: AIContentService | null = null, tab?: Tab): void {
     this.mgr = mgr;
     this.onClose = onClose;
     this.ai = ai;
+    if (tab) this.tab = tab;
+    this.web.setReducedMotion(!!mgr.data.settings.reducedMotion);
+    const sv = mgr.data.storyView;
+    if (sv) this.web.setCamera(sv.panX, sv.panY, sv.zoom);
     show(this.root, true);
     this.render();
+    this.web.root.focus();
+  }
+
+  setTab(tab: Tab): void {
+    this.tab = tab;
+    if (this.visible) this.render();
+  }
+
+  focusCharacter(id: string, tab: Tab = 'web'): void {
+    this.selected = id;
+    this.bookId = id;
+    this.filters.focusId = id;
+    this.tab = tab;
   }
 
   close(): void {
@@ -64,33 +116,304 @@ export class HierarchyScreen {
     if (this.visible) this.render();
   }
 
+  handleKey(e: KeyboardEvent): boolean {
+    if (!this.visible) return false;
+    const i = TAB_META.findIndex((t) => t.id === this.tab);
+    if (e.key === '[' || (e.key === 'ArrowLeft' && e.altKey)) {
+      this.tab = TAB_META[(i - 1 + TAB_META.length) % TAB_META.length].id;
+      this.render();
+      return true;
+    }
+    if (e.key === ']' || (e.key === 'ArrowRight' && e.altKey)) {
+      this.tab = TAB_META[(i + 1) % TAB_META.length].id;
+      this.render();
+      return true;
+    }
+    return false;
+  }
+
+  private titles(): { h: string; s: string } {
+    switch (this.tab) {
+      case 'web':
+        return { h: 'THE WEB', s: 'WHO MATTERS' };
+      case 'hierarchy':
+        return { h: 'THE ORDER', s: 'WHO STANDS WHERE' };
+      case 'world':
+        return { h: 'THE GROUND', s: 'WHO HOLDS WHAT' };
+      case 'timeline':
+        return { h: 'THE RECORD', s: 'WHAT CHANGED' };
+      case 'threads':
+        return { h: 'THREADS', s: 'WHAT IS UNFINISHED' };
+      case 'you':
+        return { h: 'YOU', s: 'WHERE POWER CAME FROM' };
+      case 'book':
+        return { h: 'THE BOOK', s: 'ONE LIFE AT A TIME' };
+      default:
+        return { h: 'THE DEAD', s: 'BURIED, PROBABLY' };
+    }
+  }
+
   private render(): void {
     if (!this.mgr) return;
     const mgr = this.mgr;
+    const t = this.titles();
+    this.h1.textContent = t.h;
+    this.h2.textContent = t.s;
 
     clear(this.tabsEl);
-    const mk = (id: Tab, label: string) => {
-      const t = div(`tab${this.tab === id ? ' active' : ''}`, label);
-      t.addEventListener('click', () => {
-        this.tab = id;
-        this.selected = null;
+    for (const tab of TAB_META) {
+      const elTab = div(`tab${this.tab === tab.id ? ' active' : ''}`, tab.label);
+      elTab.addEventListener('click', () => {
+        this.tab = tab.id;
         this.render();
       });
-      this.tabsEl.append(t);
-    };
-    mk('hierarchy', 'HIERARCHY');
-    mk('book', 'BOOK OF ENEMIES');
-    mk('chronicle', 'CHRONICLE');
-    mk('dead', 'THE DEAD');
+      this.tabsEl.append(elTab);
+    }
 
     clear(this.bodyEl);
-    if (this.tab === 'hierarchy') this.renderHierarchy(mgr);
+    if (this.tab === 'web') this.renderWeb(mgr);
+    else if (this.tab === 'hierarchy') this.renderHierarchy(mgr);
+    else if (this.tab === 'world') this.renderWorld(mgr);
+    else if (this.tab === 'timeline') this.renderTimeline(mgr);
+    else if (this.tab === 'threads') this.renderThreads(mgr);
+    else if (this.tab === 'you') this.renderYou(mgr);
     else if (this.tab === 'book') this.renderBook(mgr);
-    else if (this.tab === 'chronicle') this.renderChronicle(mgr);
     else this.renderDead(mgr);
 
     clear(this.actionsEl);
     this.actionsEl.append(button('CLOSE  [TAB]', () => this.onClose()));
+  }
+
+  private renderFilters(): HTMLElement {
+    const bar = div('story-filters');
+    const add = (label: string, on: boolean, fn: () => void) => {
+      const b = button(label, fn, on ? 'brut on' : 'brut');
+      bar.append(b);
+    };
+    add(this.filters.unresolvedOnly ? 'UNRESOLVED ●' : 'UNRESOLVED', this.filters.unresolvedOnly, () => {
+      this.filters.unresolvedOnly = !this.filters.unresolvedOnly;
+      this.render();
+    });
+    add(this.filters.living === 'living' ? 'LIVING ●' : 'LIVING', this.filters.living === 'living', () => {
+      this.filters.living = this.filters.living === 'living' ? 'all' : 'living';
+      this.render();
+    });
+    add(this.filters.living === 'dead' ? 'DEAD ●' : 'DEAD', this.filters.living === 'dead', () => {
+      this.filters.living = this.filters.living === 'dead' ? 'all' : 'dead';
+      this.render();
+    });
+    add(this.filters.playerHistoryOnly ? 'YOUR HISTORY ●' : 'YOUR HISTORY', this.filters.playerHistoryOnly, () => {
+      this.filters.playerHistoryOnly = !this.filters.playerHistoryOnly;
+      this.render();
+    });
+    bar.append(
+      button('RESET VIEW', () => {
+        this.filters = defaultStoryFilters();
+        this.filters.focusId = this.selected;
+        this.web.resetCamera();
+        this.render();
+      })
+    );
+    const search = el('input');
+    search.type = 'text';
+    search.placeholder = 'NAME';
+    search.value = this.filters.search;
+    search.className = 'story-search';
+    search.addEventListener('change', () => {
+      this.filters.search = search.value;
+      this.render();
+    });
+    bar.append(search);
+    return bar;
+  }
+
+  private renderWeb(mgr: NemesisManager): void {
+    this.bodyEl.append(this.renderFilters());
+    const wrap = div('story-web-wrap');
+    const model = buildStoryModel(mgr.data, this.filters, false);
+    this.web.setReducedMotion(!!mgr.data.settings.reducedMotion);
+    this.web.render(model, mgr.data, this.filters, (n) => (this.ai ? this.ai.portraitFor(n) : ''));
+    wrap.append(this.web.root);
+    const side = div('story-side');
+    if (this.selectedEdge) {
+      const e = model.edges.find((x) => x.id === this.selectedEdge);
+      if (e) {
+        side.append(div('tier-label', 'CONNECTION'));
+        const d = div('detail');
+        d.innerHTML = edgeExplain(e).replace(/\n/g, '<br>');
+        side.append(d);
+        side.append(
+          button('JUMP TO TIME', () => {
+            this.tab = 'timeline';
+            this.render();
+          })
+        );
+      }
+    }
+    if (this.selected && this.selected !== PLAYER_ID) {
+      const n = mgr.byId(this.selected);
+      if (n) {
+        side.append(this.journey(mgr, n));
+        const jump = div('story-jumps');
+        jump.append(
+          button('BOOK', () => {
+            this.bookId = n.id;
+            this.tab = 'book';
+            this.render();
+          }),
+          button('TIME', () => {
+            this.tab = 'timeline';
+            this.render();
+          }),
+          button('GROUND', () => {
+            this.filters.territory = n.territory;
+            this.tab = 'world';
+            this.render();
+          })
+        );
+        side.append(jump);
+      }
+    } else if (this.selected === PLAYER_ID) {
+      side.append(div('tier-label', 'YOU'));
+      side.append(div('detail', 'The intruder. Every red line that touches this node is personal.'));
+    } else {
+      side.append(div('log-line', 'SELECT A NAME. ARROWS MOVE. [ ] SWITCH PAGES.'));
+    }
+    wrap.append(side);
+    this.bodyEl.append(wrap);
+  }
+
+  private journey(mgr: NemesisManager, n: Nemesis): HTMLElement {
+    const box = div('tier');
+    box.append(div('tier-label', fullName(n).toUpperCase()));
+    const beats = characterBeats(n, mgr.data);
+    const log = div('book-log');
+    log.innerHTML = beats
+      .slice(-12)
+      .map((b) => `<span class="turn">T${b.turn}</span> ${esc(b.text)}`)
+      .join('<br>');
+    box.append(log);
+    return box;
+  }
+
+  private renderWorld(mgr: NemesisManager): void {
+    const stories = territoryStories(mgr.data);
+    for (const s of stories) {
+      const card = div(`card${this.filters.territory === s.areaId ? ' sel' : ''}`);
+      card.append(div('cname', s.name));
+      card.append(div('ctitle', s.holderName));
+      const meta = div('cmeta');
+      meta.innerHTML = `LAW ${esc(s.rule)}${s.previous ? `<br>WAS ${esc(s.previous)}` : ''}${s.heat ? `<br>${esc(s.heat)}` : ''}`;
+      card.append(meta);
+      card.addEventListener('click', () => {
+        this.filters.territory = s.areaId;
+        this.tab = 'timeline';
+        this.render();
+      });
+      this.bodyEl.append(card);
+    }
+    const time = buildTimeline(mgr.data, { areaId: this.filters.territory ?? undefined });
+    if (this.filters.territory) {
+      this.bodyEl.append(div('tier-label', 'LOCAL RECORD'));
+      this.appendTimeline(time.slice(-16));
+    }
+  }
+
+  private renderTimeline(mgr: NemesisManager): void {
+    const q = {
+      nemesisId: this.selected && this.selected !== PLAYER_ID ? this.selected : undefined,
+      areaId: this.filters.territory ?? undefined,
+    };
+    const items = buildTimeline(mgr.data, q);
+    this.bodyEl.append(div('log-line', 'WITNESSED LINES ARE YOURS. THE REST WAS LEARNED AFTER.'));
+    this.appendTimeline(items.slice(-100));
+  }
+
+  private appendTimeline(items: ReturnType<typeof buildTimeline>): void {
+    let last = -1;
+    const wrap = div('tier');
+    for (const it of items) {
+      if (it.turn !== last) {
+        last = it.turn;
+        wrap.append(div('log-turnhead', `TURN ${it.turn}  ·  AGE ${it.age}`));
+      }
+      const line = div(`report-line timeline-card${it.important ? ' important' : ''}${it.witnessed ? ' witnessed' : ''}`);
+      line.style.opacity = '1';
+      line.style.animation = 'none';
+      const tag = it.witnessed ? 'SAW' : it.known ? 'LEARNED' : 'RUMOR';
+      line.innerHTML = `<span class="turn">T${it.turn} ${tag}</span><b>${esc(it.headline)}</b> — ${esc(it.detail)}`;
+      line.addEventListener('click', () => {
+        if (it.actors[0]) {
+          this.selected = it.actors[0];
+          this.tab = 'web';
+          this.filters.focusId = it.actors[0];
+          this.render();
+        }
+      });
+      wrap.append(line);
+    }
+    if (!items.length) wrap.append(div('log-line', 'NOTHING RECORDED.'));
+    this.bodyEl.append(wrap);
+  }
+
+  private renderThreads(mgr: NemesisManager): void {
+    const model = buildStoryModel(mgr.data, this.filters);
+    const arcs = model.arcs.filter((a) => (this.filters.unresolvedOnly ? a.unresolved : true));
+    if (!arcs.length) {
+      this.bodyEl.append(div('log-line', 'NO THREADS YET.'));
+      return;
+    }
+    for (const a of arcs) {
+      const card = div(`thread-card${a.unresolved ? ' open' : ''}`);
+      card.append(div('cname', a.title));
+      card.append(div('ctitle', a.unresolved ? 'UNRESOLVED' : 'CLOSED'));
+      const meta = div('cmeta');
+      meta.innerHTML = `${esc(a.state)}<br><span class="grudge">${esc(a.next)}</span>`;
+      card.append(meta);
+      card.addEventListener('click', () => {
+        this.selected = a.characters.find((id) => id !== PLAYER_ID) ?? null;
+        this.filters.focusId = this.selected;
+        this.tab = 'web';
+        this.render();
+      });
+      this.bodyEl.append(card);
+    }
+  }
+
+  private renderYou(mgr: NemesisManager): void {
+    const m = mgr.data.playerMeta;
+    const wrap = div('detail');
+    const rows: string[] = [];
+    rows.push(`RUNS ${m.runs} · DEATHS ${m.deaths} · NAMED KILLS ${m.namedKills} · OVERLORDS ${m.overlordsSlain}`);
+    rows.push(`WEAPONS: ${m.weapons.map((id) => ALL_PLAYER_WEAPONS[id]?.name ?? id).join(', ') || '—'}`);
+    if (m.lostWeapons.length) {
+      const holders = mgr.data.nemeses.filter((n) => n.stolen.some((s) => s.weaponId && m.lostWeapons.includes(s.weaponId)));
+      rows.push(
+        `<span class="grudge">STILL LOST: ${m.lostWeapons.join(', ')} — ${
+          holders.map((h) => h.name).join(', ') || 'holder unknown'
+        }</span>`
+      );
+    }
+    const techs = Object.entries(m.techniques);
+    if (techs.length) {
+      rows.push(
+        'TECHNIQUES: ' +
+          techs
+            .flatMap(([, ids]) => ids)
+            .map((id) => TECHNIQUES.find((t) => t.id === id)?.name ?? id)
+            .join(', ')
+      );
+    }
+    rows.push('SKILLS: ' + m.unlockedSkills.map((id) => getSkill(id as SkillId)?.name ?? id).join(', '));
+    rows.push(`VENDETTAS MARKED: ${m.vendettaPatternHistory.length}`);
+    wrap.innerHTML = rows.join('<br>');
+    this.bodyEl.append(wrap);
+    const arcs = buildStoryModel(mgr.data).arcs.filter((a) => a.characters.includes(PLAYER_ID) && a.unresolved);
+    this.bodyEl.append(div('tier-label', 'YOUR UNFINISHED BUSINESS'));
+    if (!arcs.length) this.bodyEl.append(div('log-line', 'NOTHING PERSONAL IS OPEN.'));
+    for (const a of arcs.slice(0, 8)) {
+      this.bodyEl.append(div('log-line', `${a.title} — ${a.next}`));
+    }
   }
 
   private renderHierarchy(mgr: NemesisManager): void {
@@ -113,8 +436,9 @@ export class HierarchyScreen {
     const lines: string[] = [];
     for (const [areaId, holderId] of Object.entries(mgr.data.territories)) {
       const holder = mgr.byId(holderId);
+      const law = holder && holder.alive ? holder.personality.toUpperCase() : 'NONE';
       lines.push(
-        `${AREA_NAMES[areaId] ?? areaId.toUpperCase()} — ${holder ? esc(fullName(holder)) : 'UNCLAIMED'}`
+        `${AREA_NAMES[areaId] ?? areaId.toUpperCase()} — ${holder ? esc(fullName(holder)) : 'UNCLAIMED'} — ${law}`
       );
     }
     grid.innerHTML = lines.join('<br>');
@@ -316,26 +640,6 @@ export class HierarchyScreen {
 
     card.append(body);
     return card;
-  }
-
-  private renderChronicle(mgr: NemesisManager): void {
-    const log = mgr.data.eventLog;
-    let lastTurn = -1;
-    const wrap = div('tier');
-    for (let i = Math.max(0, log.length - 220); i < log.length; i++) {
-      const ev = log[i];
-      if (ev.turn !== lastTurn) {
-        lastTurn = ev.turn;
-        wrap.append(div('log-turnhead', `TURN ${ev.turn}  ·  AGE ${ev.age}`));
-      }
-      const line = div('log-line');
-      const cls = ev.tone === 'bad' ? 'grudge' : ev.tone === 'gold' ? 'who' : '';
-      line.innerHTML = cls ? `<span class="${cls}">${esc(ev.text)}</span>` : esc(ev.text);
-      wrap.append(line);
-    }
-    if (!log.length) wrap.append(div('log-line', 'NOTHING HAS HAPPENED YET.'));
-    this.bodyEl.append(wrap);
-    this.bodyEl.scrollTop = this.bodyEl.scrollHeight;
   }
 
   private card(mgr: NemesisManager, n: Nemesis): HTMLElement {

@@ -11,7 +11,7 @@
 import * as THREE from 'three';
 import { RNG, mixSeed, randomSeed } from '../core/RNG';
 import type { Bus } from '../core/Events';
-import { AREAS, getArea, nearestArea, type AreaDef } from '../data/areas';
+import { AREAS, areaAt, getArea, nearestArea, type AreaDef } from '../data/areas';
 import { getPersonality } from '../data/personalities';
 import { pickAdaptation } from '../data/traits';
 import { chooseTitle } from '../data/names';
@@ -28,6 +28,13 @@ import { applyScar, remember, recomputeRevenge } from '../nemesis/NemesisMemory'
 import { makeRivals } from '../nemesis/NemesisRelationships';
 import type { Nemesis, ScarId, StolenItem } from '../nemesis/Nemesis';
 import { fullName, rankIndex } from '../nemesis/Nemesis';
+import { emptyRunState, type RunState } from '../run/RunState';
+import { addHeat, tickHeatEconomy, spendSpawn, spawnSafeOffset, crossedThreshold, heatLabel } from './Heat';
+import { HEAT, REMNANT, EXTRACT } from '../data/balance';
+import { presentTerritory, type TerritoryPresentation } from './TerritoryRules';
+import { snapshotOccupancy, type OccupancyMap } from './WorldOccupancy';
+import { pickMultiRule, type MultiRule } from '../nemesis/MultiEncounter';
+import type { ExtractSite } from './Extraction';
 
 const MAX_GRUNTS = 16;
 const MAX_NAMED_ACTIVE = 3;
@@ -52,6 +59,14 @@ export interface WorldHooks {
 export class World {
   enemies: Enemy[] = [];
   currentArea: AreaDef = AREAS[0];
+
+  run: RunState = emptyRunState();
+  multiRule: MultiRule | null = null;
+  extractSites: ExtractSite[] = [];
+  occupancy: OccupancyMap = {};
+  /** HUD label: area name, or the road between areas. */
+  locationLabel = 'THE PIT';
+  vendettaCounters = { posture: 0, interrupts: 0, parries: 0, weakness: false, adapted: false, loyalistSeparated: false };
 
   /** nemesis ids already resolved this run (dead, escaped, or fled) */
   private resolvedThisRun = new Set<string>();
@@ -106,15 +121,28 @@ export class World {
     this.rng = new RNG(mixSeed(this.mgr.data.worldSeed, this.mgr.turn * 7717 + this.mgr.data.playerMeta.runs));
     this.huntTimer = 55 + this.rng.range(0, 40);
     this.arena.resetShrines();
+    this.arena.resetCaches();
+    this.run = emptyRunState(mixSeed(this.mgr.data.worldSeed, this.mgr.turn * 9973));
+    this.run.started = true;
+    this.run.territoryMods = { ...(this.mgr.data.territoryMods ?? {}) };
+    this.multiRule = null;
+    this.vendettaCounters = { posture: 0, interrupts: 0, parries: 0, weakness: false, adapted: false, loyalistSeparated: false };
+    this.buildExtractSites();
+    this.mgr.data.run = this.run;
+    this.refreshOccupancy();
 
     const start = this.arena.spawnPoint('pit', this.rng, 0.1, 0.35);
     player.spawn(start.x, start.z, this.rng.range(-Math.PI, Math.PI), this.mgr.data.playerMeta.vigour, this.mgr.data.playerMeta.equipped);
+    player.stats.run = this.run;
+    player.stats.techniques = this.mgr.data.playerMeta.techniques[this.mgr.data.playerMeta.equipped] ?? [];
     this.currentArea = getArea('pit');
+    this.locationLabel = `${this.currentArea.name}  ·  ${this.currentArea.landmark}`;
     this.populateArea(this.currentArea, player, true);
   }
 
   endRun(): void {
     this.runActive = false;
+    this.mgr.data.run = null;
     this.clearEnemies();
   }
 
@@ -135,12 +163,30 @@ export class World {
     if (!this.runActive) return;
     this.runTime += dt;
 
-    /* ---- area transitions ---- */
-    const area = nearestArea(player.position.x, player.position.z);
-    if (area.id !== this.currentArea.id) {
-      this.currentArea = area;
-      this.onEnterArea(area, player);
+    /* ---- area transitions ----
+       Only switch when the player actually enters another region's floor.
+       Corridors stay attached to the last place, so the approach is travel,
+       not a second arena. */
+    const inside = areaAt(player.position.x, player.position.z);
+    if (inside) {
+      if (inside.id !== this.currentArea.id) {
+        addHeat(this.run, HEAT.areaChange);
+        this.run.areaDwell = 0;
+        this.run.lastAreaId = inside.id;
+        this.currentArea = inside;
+        this.onEnterArea(inside, player);
+      }
+      this.locationLabel = `${inside.name}  ·  ${inside.landmark}`;
+    } else {
+      const toward = nearestArea(player.position.x, player.position.z);
+      this.locationLabel = `THE APPROACH — ${toward.landmark}`;
     }
+
+    const inCombat = this.playerInCombat(player);
+    const relic = player.stats.weaponId !== 'sword' && player.stats.weaponId !== 'greatsword' && player.stats.weaponId !== 'spear';
+    const pres = this.territoryNow();
+    const dampen = pres.liberation?.kind === 'heat_dampen' || pres.rules.some((r) => r.id === 'void_quiet' && pres.liberation);
+    tickHeatEconomy(this.run, dt, inCombat, true, relic, !!dampen || pres.rules.some((r) => r.id === 'tracking_patrols') === false && pres.liberation?.kind === 'heat_dampen');
 
     /* ---- combat director ---- */
     // Release permits from anyone who is no longer actually attacking, so a
@@ -171,12 +217,17 @@ export class World {
     this.reapEnemies(player);
     this.maintainPopulation(player);
     this.updateRivalries();
+    this.refreshMultiRule();
 
-    /* ---- hunters ---- */
+    /* ---- hunters / heat pulses ---- */
     this.huntTimer -= dt;
-    if (this.huntTimer <= 0) {
+    const crossed = crossedThreshold(this.run.lastThreshold, this.run.heat);
+    if (crossed !== null && spendSpawn(this.run)) {
+      this.run.lastThreshold = this.run.heat;
+      this.pulseHeat(player, crossed);
+    } else if (this.huntTimer <= 0) {
       this.huntTimer = 60 + this.rng.range(0, 55);
-      this.tryHunt(player);
+      if (this.run.heat >= 60) this.tryHunt(player);
     }
   }
 
@@ -191,7 +242,7 @@ export class World {
      ============================================================ */
 
   private onEnterArea(area: AreaDef, player: Player): void {
-    this.hooks.onToast(`ENTERING ${area.name}`, 'neutral');
+    this.hooks.onToast(`ENTERING ${area.name} — ${area.combat}`, 'neutral');
     this.populateArea(area, player, false);
   }
 
@@ -217,7 +268,10 @@ export class World {
 
   private maintainPopulation(player: Player): void {
     const alive = this.enemies.filter((e) => e.alive && !e.named).length;
-    const target = Math.min(MAX_GRUNTS, this.currentArea.population + Math.floor(this.mgr.age / 2));
+    const target = Math.min(
+      MAX_GRUNTS,
+      Math.max(2, this.currentArea.population + Math.floor(this.mgr.age / 2) + this.gruntDelta())
+    );
     if (alive >= target) return;
     // Spawn just out of sight and let them walk in.
     for (let i = alive; i < target; i++) {
@@ -303,12 +357,11 @@ export class World {
         x = player.position.x - Math.sin(yaw) * dist;
         z = player.position.z - Math.cos(yaw) * dist;
         entrance = 'resurrection';
-      } else if (hunting && n.personality === 'hunter') {
-        const dist = 16 + this.rng.range(0, 5);
-        const yaw = player.facing + Math.PI + this.rng.range(-0.35, 0.35);
-        x = player.position.x - Math.sin(yaw) * dist;
-        z = player.position.z - Math.cos(yaw) * dist;
-        entrance = 'behind';
+      } else if (hunting) {
+        const off = spawnSafeOffset(player.position.x, player.position.z, player.facing, n.personality === 'hunter', HEAT.spawnMinDistance + this.rng.range(0, 6));
+        x = off.x;
+        z = off.z;
+        entrance = n.personality === 'hunter' ? 'behind' : 'walk';
       } else {
         const pt = this.arena.spawnPoint(this.currentArea.id, this.rng, 0.55, 0.98);
         x = pt.x;
@@ -500,9 +553,15 @@ export class World {
     // Some of them do not actually die.
     const p = getPersonality(n.personality);
     let survive = 0.08 * p.survival + this.mgr.mods.resurrection * 0.25;
-    if (executed) survive *= 0.25; // an execution is meant to be final
+    if (executed) survive *= 0.25;
     if (n.personality === 'survivor') survive += 0.16;
     if (rankIndex(n.rank) >= 3) survive += 0.06;
+    survive *= 1 - (n.fakeDeathPenalty ?? 0);
+    if (this.run.blockFakeDeath) {
+      survive = 0;
+      this.run.blockFakeDeath = false;
+      this.run.remnants = Math.max(0, this.run.remnants - REMNANT.fakeDeathCost);
+    }
 
     if (this.rng.chance(Math.min(0.42, survive))) {
       // Faked it.
@@ -685,6 +744,112 @@ export class World {
       ea.rivalTarget = eb;
       eb.rivalTarget = ea;
     }
+  }
+
+  territoryNow(): TerritoryPresentation {
+    const holderId = this.mgr.data.territories[this.currentArea.id] ?? null;
+    const holder = holderId ? this.mgr.byId(holderId) : null;
+    return presentTerritory(this.currentArea, holder && holder.alive ? holder : null, this.run.territoryMods, this.mgr.turn);
+  }
+
+  private gruntDelta(): number {
+    const p = this.territoryNow();
+    let d = 0;
+    if (p.liberation?.kind === 'fewer_patrols') d -= 3;
+    if (p.rules.some((r) => r.id === 'elevated_archers' || r.id === 'tracking_patrols')) d += 2;
+    if (p.rules.some((r) => r.id === 'armored_gate')) d += 1;
+    if (this.run.heat >= 20) d += 1;
+    if (this.run.heat >= 40) d += 1;
+    return d;
+  }
+
+  private pulseHeat(player: Player, threshold: number): void {
+    this.hooks.onToast(`HEAT — ${heatLabel(this.run.heat)}`, 'hot');
+    this.run.lockedExits = threshold >= 85;
+    if (threshold >= 100) {
+      const ov = this.mgr.overlord();
+      if (ov && !this.resolvedThisRun.has(ov.id) && !this.activeNamed.has(ov.id)) {
+        this.spawnNamed(ov, player, true, undefined, undefined, { hunting: true });
+      }
+      return;
+    }
+    if (threshold >= 95) {
+      for (let i = 0; i < 2; i++) {
+        const off = spawnSafeOffset(player.position.x, player.position.z, player.facing + i, false, HEAT.spawnMinDistance + 4);
+        this.spawnGrunt(off.x, off.z);
+      }
+      return;
+    }
+    if (threshold >= 75) {
+      const named = this.mgr.living().filter((n) => n.rivalries.length && !this.activeNamed.has(n.id) && !this.resolvedThisRun.has(n.id));
+      if (named[0]) this.spawnNamed(named[0], player, true, undefined, undefined, { hunting: true });
+      return;
+    }
+    if (threshold >= 60) this.tryHunt(player);
+    else if (threshold >= 40) {
+      const off = spawnSafeOffset(player.position.x, player.position.z, player.facing, false, HEAT.spawnMinDistance);
+      this.spawnGrunt(off.x, off.z);
+    }
+  }
+
+  private refreshMultiRule(): void {
+    const named = this.enemies.filter((e) => e.alive && e.named).map((e) => e.nemesis);
+    const next = pickMultiRule(named);
+    if (next && (!this.multiRule || this.multiRule.id !== next.id)) {
+      this.multiRule = next;
+      this.hooks.onToast(`${next.title} — ${next.desc}`, 'gold');
+    }
+    if (named.length < 2) this.multiRule = null;
+  }
+
+  private buildExtractSites(): void {
+    this.extractSites = AREAS.map((a, i) => {
+      const pt = this.arena.extractPoint(a.id);
+      return { id: `ex-${a.id}-${i}`, areaId: a.id, x: pt.x, z: pt.z, label: `GATE — ${a.landmark}` };
+    });
+  }
+
+  refreshOccupancy(): void {
+    this.occupancy = snapshotOccupancy(this.mgr, this.run.started ? this.run : null);
+    this.arena.applyOccupancy(this.occupancy);
+  }
+
+  nearestExtract(x: number, z: number, maxD: number): ExtractSite | null {
+    let best: ExtractSite | null = null;
+    let bestD = maxD;
+    for (const s of this.extractSites) {
+      if (this.run.lockedExits && s.areaId !== this.currentArea.id) continue;
+      const d = Math.hypot(s.x - x, s.z - z);
+      if (d < bestD) {
+        bestD = d;
+        best = s;
+      }
+    }
+    return best;
+  }
+
+  dropRemnant(named: boolean, playerCredit: boolean, summoned: boolean): void {
+    if (!playerCredit || summoned) return;
+    if (named) this.run.remnants = Math.min(REMNANT.maxCarry, this.run.remnants + 1 + REMNANT.namedBonus);
+    else if (this.rng.chance(REMNANT.dropChance)) this.run.remnants = Math.min(REMNANT.maxCarry, this.run.remnants + 1);
+  }
+
+  liberateCurrent(kind: string): void {
+    this.run.territoryMods[this.currentArea.id] = { kind, untilTurn: this.mgr.turn + 2 };
+    this.mgr.data.territoryMods = this.run.territoryMods;
+    this.refreshOccupancy();
+  }
+
+  tickExtraction(dt: number, player: Player): boolean {
+    if (!this.run.extraction.active) return false;
+    this.run.extraction.progress += dt / EXTRACT.channelTime;
+    addHeat(this.run, HEAT.extractStart * dt * 0.08);
+    if (this.run.extraction.progress >= 1) {
+      this.run.extraction.active = false;
+      return true;
+    }
+    void player;
+    return false;
   }
 }
 

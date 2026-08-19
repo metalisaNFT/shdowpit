@@ -1,6 +1,9 @@
 /**
  * The region. One compact interconnected map, roughly 500m x 500m, six named
  * areas. Areas are also the territory unit the simulation fights over.
+ *
+ * Each area is a place, not a palette: a landmark you navigate by, a combat
+ * rule you feel, and a reason to come back when ownership changes.
  */
 
 export interface AreaDef {
@@ -21,6 +24,12 @@ export interface AreaDef {
   /** local fog multiplier */
   fog: number;
   blurb: string;
+  /** combat condition — short, readable on entry */
+  combat: string;
+  /** named landmark the player should learn to steer by */
+  landmark: string;
+  /** why this ground is worth a second visit */
+  returnHook: string;
 }
 
 export const AREAS: AreaDef[] = [
@@ -37,6 +46,9 @@ export const AREAS: AreaDef[] = [
     accent: 0xc4ff2e,
     fog: 1,
     blurb: 'Where everything that arrives here starts.',
+    combat: 'Open bowl. Nowhere to hide. Fights are read from every side.',
+    landmark: 'THE DROP',
+    returnHook: 'The cages remember who last crawled out.',
   },
   {
     id: 'ruins',
@@ -51,6 +63,9 @@ export const AREAS: AreaDef[] = [
     accent: 0xa14cff,
     fog: 1.1,
     blurb: 'Columns that outlasted whoever raised them.',
+    combat: 'Pillars. Break line of sight, then reappear on a flank.',
+    landmark: 'THE BROKEN NAVE',
+    returnHook: 'Whoever holds it hangs their colour on the fallen gate.',
   },
   {
     id: 'forest',
@@ -63,8 +78,11 @@ export const AREAS: AreaDef[] = [
     ground: 0x151d18,
     structure: 0x27362c,
     accent: 0x76ff35,
-    fog: 1.55,
+    fog: 1.7,
     blurb: 'Nothing grows. It only stands there.',
+    combat: 'Short sightlines. Ambush range. Do not stand still.',
+    landmark: 'THE PALE TREE',
+    returnHook: 'Caches rot in the groves the current hunter has not emptied.',
   },
   {
     id: 'caves',
@@ -77,8 +95,11 @@ export const AREAS: AreaDef[] = [
     ground: 0x14171f,
     structure: 0x282c38,
     accent: 0x2ff2ff,
-    fog: 2.1,
+    fog: 2.15,
     blurb: 'Low ceilings. Bad sightlines.',
+    combat: 'Chokes and chambers. Wide swings punish; needles punish less.',
+    landmark: 'THE THROAT',
+    returnHook: 'The still pool shows the holder’s mark when the dark allows.',
   },
   {
     id: 'tower',
@@ -91,8 +112,11 @@ export const AREAS: AreaDef[] = [
     ground: 0x1b1a23,
     structure: 0x353846,
     accent: 0xe4ff2b,
-    fog: 0.8,
+    fog: 0.78,
     blurb: 'Whoever holds it can see you coming.',
+    combat: 'Exposed ring around the spire. You are visible. So are they.',
+    landmark: 'THE SPIRE',
+    returnHook: 'The beacon on the crown names the watcher.',
   },
   {
     id: 'fortress',
@@ -105,8 +129,11 @@ export const AREAS: AreaDef[] = [
     ground: 0x1e181c,
     structure: 0x382e35,
     accent: 0xff2f9c,
-    fog: 1.2,
+    fog: 1.15,
     blurb: 'The seat. Someone always sits in it.',
+    combat: 'Gates funnel you. The courtyard is a killing floor.',
+    landmark: 'THE SEAT',
+    returnHook: 'The throne carries the Overlord’s colour until it does not.',
   },
 ];
 
@@ -154,6 +181,27 @@ export function nearestArea(x: number, z: number): AreaDef {
     }
   }
   return best;
+}
+
+/** Angles (atan2 dx, dz) of each road leaving an area. */
+export function exitAngles(areaId: string): number[] {
+  const a = getArea(areaId);
+  const out: number[] = [];
+  for (const [x, y] of CONNECTIONS) {
+    const other = x === areaId ? y : y === areaId ? x : null;
+    if (!other) continue;
+    const b = getArea(other);
+    out.push(Math.atan2(b.cx - a.cx, b.cz - a.cz));
+  }
+  return out;
+}
+
+export function angleNear(t: number, targets: readonly number[], window: number): boolean {
+  for (const e of targets) {
+    const d = Math.abs(Math.atan2(Math.sin(t - e), Math.cos(t - e)));
+    if (d < window) return true;
+  }
+  return false;
 }
 
 export const WORLD_HALF = 260;

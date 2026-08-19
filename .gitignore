@@ -9,3 +9,5 @@ shots/
 .env.*
 !.env.example
 .vercel/
+
+.vercel

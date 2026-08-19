@@ -5,6 +5,8 @@
 import { button, clear, div, el, show } from './Dom';
 import type { Settings } from '../core/SaveSystem';
 import { AISettingsPanel, type AISettingsHooks } from './AISettingsPanel';
+import type { SkillId } from '../data/skills';
+import { getSkill } from '../data/skills';
 
 export interface PauseHandlers {
   onResume: () => void;
@@ -15,6 +17,12 @@ export interface PauseHandlers {
   ai: AISettingsHooks;
   /** current run stats for the RUN STATS page; absent outside a run */
   runStats?: () => Array<{ name: string; text: string; count: number }>;
+  skills?: {
+    unlocked: string[];
+    loadout: [string, string];
+    descriptions: Array<{ id: string; name: string; desc: string }>;
+    onEquip: (slot: 0 | 1, id: SkillId) => void;
+  };
 }
 
 export class PauseScreen {
@@ -75,9 +83,59 @@ export class PauseScreen {
       this.toggle('SOFT LOCK-ON', settings.softLockOn, (v) => {
         settings.softLockOn = v;
         handlers.onSettingsChanged(settings);
+      }),
+      this.toggle('REDUCED MOTION', settings.reducedMotion, (v) => {
+        settings.reducedMotion = v;
+        handlers.onSettingsChanged(settings);
+      }),
+      this.toggle('REDUCED FLASH', settings.reducedFlash, (v) => {
+        settings.reducedFlash = v;
+        handlers.onSettingsChanged(settings);
       })
     );
     this.body.append(panel);
+
+    const controls = div('detail');
+    controls.append(el('h3', undefined, 'CONTROLS'));
+    for (const [k, v] of [
+      ['LMB', 'LIGHT'],
+      ['RMB', 'HEAVY'],
+      ['SPACE', 'DODGE'],
+      ['Q', 'PARRY'],
+      ['R / MMB', 'VOID NEEDLE'],
+      ['1 / C', 'SKILL 1'],
+      ['2 / V', 'SKILL 2'],
+      ['3 / G', 'PIT ERUPTION'],
+      ['E', 'EXECUTE'],
+      ['F', 'LOCK-ON'],
+    ] as Array<[string, string]>) {
+      const row = div('stat-row');
+      row.append(div('sname', k), div('sval', v));
+      controls.append(row);
+    }
+    this.body.append(controls);
+
+    if (handlers.skills) {
+      const sk = handlers.skills;
+      const kit = div('detail');
+      kit.append(el('h3', undefined, 'SKILL LOADOUT'));
+      kit.append(div('sval', `${getSkill('pit_eruption').name} — ${getSkill('pit_eruption').desc}`));
+      for (const slot of [0, 1] as const) {
+        kit.append(el('h3', undefined, slot === 0 ? 'SKILL 1' : 'SKILL 2'));
+        for (const d of sk.descriptions) {
+          const on = sk.loadout[slot] === d.id;
+          const b = button(`${on ? '● ' : '○ '}${d.name}`, () => {
+            sk.onEquip(slot, d.id as SkillId);
+            this.open(settings, handlers, canExtract);
+          });
+          b.style.width = '100%';
+          b.style.margin = '4px 0';
+          kit.append(b);
+          kit.append(div('sval', d.desc));
+        }
+      }
+      this.body.append(kit);
+    }
 
     /* ---- RUN STATS — the build, in numbers ---- */
     if (handlers.runStats && canExtract) {
@@ -107,7 +165,7 @@ export class PauseScreen {
 
     this.actions.append(button('RESUME  [ESC]', handlers.onResume));
     if (canExtract) {
-      const b = button('EXTRACT — END RUN, KEEP NOTHING', handlers.onExtract);
+      const b = button('ABANDON RUN — BANK ESSENCE, WORLD STILL', handlers.onExtract);
       b.classList.add('danger');
       this.actions.append(b);
     }

@@ -119,6 +119,18 @@ export interface DeathRecord {
 const MAX_FRAMES = 7200;
 const MAX_EVENTS = 900;
 
+export interface KitCounters {
+  surgeBySource: Record<string, number>;
+  skillUses: Record<string, number>;
+  skillHits: Record<string, number>;
+  skillDamage: Record<string, number>;
+  skillPosture: Record<string, number>;
+  failReasons: Record<string, number>;
+  ttk: Array<{ rank: string; seconds: number; named: boolean }>;
+  idleCombatSeconds: number;
+  ultimateUses: number;
+}
+
 export class Telemetry {
   enabled = false;
   private frames: FrameSample[] = [];
@@ -128,6 +140,12 @@ export class Telemetry {
   private t0 = 0;
   private clock = 0;
 
+  /** Always-on cheap combat kit counters (skills, Surge, TTK). */
+  kit: KitCounters = emptyKit();
+  private firstHitAt = new Map<number, number>();
+  private lastPlayerVerb = 0;
+  verbIdle = 0;
+
   start(): void {
     this.frames = [];
     this.enemyFrames = [];
@@ -136,6 +154,8 @@ export class Telemetry {
     this.clock = 0;
     this.t0 = performance.now();
     this.enabled = true;
+    this.kit = emptyKit();
+    this.firstHitAt.clear();
   }
 
   stop(): void {
@@ -188,6 +208,8 @@ export class Telemetry {
     hits: HitRecord[];
     deaths: DeathRecord[];
     wallSeconds: number;
+    kit: KitCounters;
+    run?: Record<string, unknown>;
   } {
     return {
       frames: this.frames,
@@ -195,10 +217,63 @@ export class Telemetry {
       hits: this.hits,
       deaths: this.deaths,
       wallSeconds: (performance.now() - this.t0) / 1000,
+      kit: this.kit,
     };
+  }
+
+  noteSurge(source: string, amount: number): void {
+    if (amount <= 0) return;
+    this.kit.surgeBySource[source] = (this.kit.surgeBySource[source] ?? 0) + amount;
+  }
+
+  noteSkillUse(id: string): void {
+    this.kit.skillUses[id] = (this.kit.skillUses[id] ?? 0) + 1;
+    if (id === 'pit_eruption') this.kit.ultimateUses++;
+  }
+
+  noteSkillHit(id: string, damage: number, posture: number): void {
+    this.kit.skillHits[id] = (this.kit.skillHits[id] ?? 0) + 1;
+    this.kit.skillDamage[id] = (this.kit.skillDamage[id] ?? 0) + damage;
+    this.kit.skillPosture[id] = (this.kit.skillPosture[id] ?? 0) + posture;
+  }
+
+  noteFail(reason: string): void {
+    this.kit.failReasons[reason] = (this.kit.failReasons[reason] ?? 0) + 1;
+  }
+
+  notePlayerVerb(): void {
+    const gap = this.clock - this.lastPlayerVerb;
+    if (this.lastPlayerVerb > 0 && gap > 0.4) this.kit.idleCombatSeconds += gap;
+    this.lastPlayerVerb = this.clock;
+  }
+
+  noteEnemyHurt(uid: number): void {
+    if (!this.firstHitAt.has(uid)) this.firstHitAt.set(uid, this.clock);
+  }
+
+  noteEnemyDown(uid: number, rank: string, named: boolean): void {
+    const t0 = this.firstHitAt.get(uid);
+    if (t0 !== undefined) {
+      this.kit.ttk.push({ rank, named, seconds: Math.round((this.clock - t0) * 100) / 100 });
+      this.firstHitAt.delete(uid);
+    }
   }
 
   get deathLog(): DeathRecord[] {
     return this.deaths;
   }
+}
+
+function emptyKit(): KitCounters {
+  return {
+    surgeBySource: {},
+    skillUses: {},
+    skillHits: {},
+    skillDamage: {},
+    skillPosture: {},
+    failReasons: {},
+    ttk: [],
+    idleCombatSeconds: 0,
+    ultimateUses: 0,
+  };
 }

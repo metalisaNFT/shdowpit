@@ -29,6 +29,7 @@ npm run preview    # serve the production build on :4173 (includes /api/ai)
 npm run serve      # same thing from a plain node server, no vite
 
 npm test               # 44-check headless playtest
+npm run test:depth     # save v2 / Heat / Remnants / sim hooks
 npm run test:backend   # 29-check AI backend security suite
 npm run test:ai        # 75-check AI + nemesis continuity suite
 npm run test:ai-success # 31-check AI success path (needs preview:mock)
@@ -55,9 +56,10 @@ cannot hold, and you can force one with `?quality=low` in the URL or from the pa
 | `Right Mouse` | Heavy attack (staggers) |
 | `Space` | Dodge (brief invulnerability) |
 | `Q` | Parry (timing window; opens captains up badly) |
-| `E` | Interact / execute |
+| `R` / `Middle Mouse` | Void Needle |
+| `E` | Interact / execute / remnant / extraction |
+| `F` | Soft lock-on |
 | `Shift` | Sprint |
-| `F` / `Middle Mouse` | Soft lock-on |
 | `Tab` | Hierarchy, chronicle and the dead |
 | `Esc` | Pause / settings |
 | `F1` | Developer overlay |
@@ -74,7 +76,7 @@ early during recovery or a stagger still comes out.
 2. You explore six connected areas, kill things, and take powers from shrines and from captains you
    kill. A run is meant to last roughly 20–40 minutes.
 3. Named enemies show up: on their own ground, hunting you, or interrupting each other.
-4. You die, or you kill the Overlord, or you extract from the pause menu.
+4. You die, or you kill the Overlord, or you extract at a physical gate after a named kill (or by paying Remnants). Pause **abandon** banks Essence without moving the world.
 5. **Death advances the world by one turn.** You get the WHILE YOU WERE DEAD report, then a new run.
 6. Killing the Overlord ends the Age: a power vacuum, several turns of succession, a relic weapon
    for you, and a new set of world modifiers. This continues indefinitely.
@@ -304,6 +306,23 @@ Nothing outside `src/ai/` names a vendor.
 
 ---
 
+## Depth systems (player-facing)
+
+Named enemies can offer a **Vendetta** — one optional personal objective with a previewed reward. **Heat** is the readable pursuit meter; thresholds telegraph hunters and lockdowns, never spawning on top of you. **Remnants** are a run-only drop (not Essence): heal (vulnerable), reroll offers, pay extraction, or block a fake death. Territories impose **one law** from the current holder; liberation is temporary and the law follows the new holder after simulation. After a named victory you pick **one** reward derived from their real traits. Mercy, tribute, humiliation and betrayal are available when a named foe is broken and the fight is safe enough. Weapons are sidegrades with unlockable **techniques**. Power **families** and up to three **reactions** change verbs, not just numbers.
+
+AI remains optional and presentation-only. Saves are version **2**; v1 worlds migrate with defaults.
+
+### Extension points
+
+- Vendetta patterns: `src/nemesis/Vendetta.ts`
+- Reactions: `src/abilities/Reactions.ts`
+- Territory laws: `src/world/TerritoryRules.ts`
+- Heat: `src/world/Heat.ts` + `HEAT` in `src/data/balance.ts`
+- Proc ownership: `src/combat/ProcRules.ts`
+- F1 **DEPTH** buttons and `Game.__sim()` for harnesses
+
+---
+
 ## Debug panel
 
 `F1` opens it. Live readout (FPS, player state, enemy count, world turn and Age, area), an AI status
@@ -318,9 +337,9 @@ It cannot display the API key, because the key is not in the browser.
 
 ## Save data
 
-One versioned JSON blob in `localStorage` under `shdowpit.world.v1`, a few tens of KB. It holds the
-roster, appearance seeds, memory, relationships, hierarchy, territories, event log, world turn and
-Age, player meta progression, weapon ownership including stolen weapons, and settings. Unknown or
+One versioned JSON blob in `localStorage` under `shdowpit.world.v1` (`saveVersion` 2). It holds the
+roster, appearance seeds, memory, relationships, hierarchy, territories, liberation mods, event log, world turn and
+Age, player meta (Essence, Vigour cap 30, techniques, Vendetta history), optional mid-run snapshot, and settings. Unknown or
 missing fields are filled by `SaveSystem.migrate()` rather than crashing, and a corrupt save is
 archived aside instead of silently destroyed.
 

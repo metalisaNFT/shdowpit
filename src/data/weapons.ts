@@ -23,6 +23,26 @@ export interface WeaponDef {
   bladeLen: number;
   bladeWidth: number;
   ranged?: boolean;
+  identity?: WeaponIdentity;
+  lightCombo?: ComboStep[];
+}
+
+export interface ComboStep {
+  windup: number;
+  recover: number;
+  damage: number;
+  posture: number;
+  reach: number;
+  arc: number;
+  knockback: number;
+  lunge: number;
+}
+
+export interface WeaponIdentity {
+  strength: string;
+  weakness: string;
+  heavyPurpose: string;
+  parryResponse: string;
 }
 
 export const PLAYER_WEAPONS: Record<string, WeaponDef> = {
@@ -37,6 +57,17 @@ export const PLAYER_WEAPONS: Record<string, WeaponDef> = {
     recover: 0.17,
     bladeLen: 1.35,
     bladeWidth: 0.1,
+    identity: {
+      strength: 'Flexible duelist — parry and mix-ups.',
+      weakness: 'Shortest reach of the three.',
+      heavyPurpose: 'Punish a read; not a crowd tool.',
+      parryResponse: 'Riposte drive: a thrusting light after a perfect parry.',
+    },
+    lightCombo: [
+      { windup: 0.92, recover: 0.9, damage: 1, posture: 1, reach: 1, arc: 1.05, knockback: 1.4, lunge: 0 },
+      { windup: 0.72, recover: 0.82, damage: 1.08, posture: 1.1, reach: 1, arc: 1.2, knockback: 1.8, lunge: 0 },
+      { windup: 1.25, recover: 1.25, damage: 1.4, posture: 1.7, reach: 1.12, arc: 1.05, knockback: 3.2, lunge: 4 },
+    ],
   },
   greatsword: {
     id: 'greatsword',
@@ -49,6 +80,17 @@ export const PLAYER_WEAPONS: Record<string, WeaponDef> = {
     recover: 0.3,
     bladeLen: 1.95,
     bladeWidth: 0.17,
+    identity: {
+      strength: 'Posture destroyer and crowd control.',
+      weakness: 'Committed recovery. Misses are punished.',
+      heavyPurpose: 'Break guards and flatten groups.',
+      parryResponse: 'A heavy answer — slower, huge posture.',
+    },
+    lightCombo: [
+      { windup: 1.08, recover: 1.1, damage: 1, posture: 1.15, reach: 1, arc: 1.1, knockback: 2.2, lunge: 0 },
+      { windup: 0.95, recover: 1.05, damage: 1.1, posture: 1.35, reach: 1.05, arc: 1.3, knockback: 2.8, lunge: 0 },
+      { windup: 1.65, recover: 1.7, damage: 1.7, posture: 2.6, reach: 1.2, arc: 1.45, knockback: 6, lunge: 3.2 },
+    ],
   },
   spear: {
     id: 'spear',
@@ -61,6 +103,17 @@ export const PLAYER_WEAPONS: Record<string, WeaponDef> = {
     recover: 0.22,
     bladeLen: 2.5,
     bladeWidth: 0.07,
+    identity: {
+      strength: 'Range, pursuit, and precision.',
+      weakness: 'Narrow arc — misses the sides.',
+      heavyPurpose: 'A long poke that pins runners.',
+      parryResponse: 'A lunging light that keeps distance.',
+    },
+    lightCombo: [
+      { windup: 1, recover: 1, damage: 0.95, posture: 0.9, reach: 1.05, arc: 0.95, knockback: 1.2, lunge: 1.5 },
+      { windup: 0.88, recover: 0.95, damage: 1, posture: 1, reach: 1.08, arc: 0.9, knockback: 1.5, lunge: 2 },
+      { windup: 1.35, recover: 1.35, damage: 1.5, posture: 1.8, reach: 1.22, arc: 0.85, knockback: 3.8, lunge: 7.5 },
+    ],
   },
 };
 

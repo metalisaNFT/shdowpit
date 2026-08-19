@@ -29,6 +29,7 @@ export interface DebugLiveState {
   area: string;
   namedAlive: number;
   mode: string;
+  heat?: number;
 }
 
 export interface DebugAIState {
@@ -108,6 +109,15 @@ export interface DebugHooks {
   regenerateAI(id: string): void;
   clearAICache(): void;
   saveNow(): void;
+  depthAction(cmd: string): void;
+  storyAction(cmd: string): string;
+  resetSkillCooldowns(): void;
+  freezeSkillCooldowns(): boolean;
+  fillSurge(): void;
+  forceUltimate(): void;
+  unlockAllSkills(): void;
+  equipSkill(slot: 0 | 1, id: string): void;
+  kitDump(): Record<string, unknown>;
 }
 
 export class DebugOverlay {
@@ -302,6 +312,12 @@ export class DebugOverlay {
       ''
     );
     this.panel.append(surgeBtn);
+    this.panel.append(el('h4', undefined, 'SKILLS'));
+    this.panel.append(button('RESET SKILL CDS', () => h.resetSkillCooldowns(), ''));
+    this.panel.append(button('UNLOCK ALL SKILLS', () => { h.unlockAllSkills(); this.build(); }, ''));
+    this.panel.append(button('FILL SURGE', () => h.fillSurge(), ''));
+    this.panel.append(button('FORCE PIT ERUPTION', () => h.forceUltimate(), ''));
+    this.panel.append(button('KIT DUMP (CONSOLE)', () => console.info('[kit]', h.kitDump()), ''));
 
     /* ---- combat QA ---- */
     this.panel.append(el('h4', undefined, 'COMBAT QA'));
@@ -419,7 +435,30 @@ export class DebugOverlay {
       button('FORCE REVIVAL', () => { h.forceResurrection(this.select.value); this.build(); }, '')
     );
     this.panel.append(button('FORCE BETRAYAL', () => { h.forceBetrayal(this.select.value); this.build(); }, ''));
+    this.panel.append(el('h4', undefined, 'DEPTH'));
+    this.panel.append(button('HEAT +20', () => h.depthAction('heat+'), ''));
+    this.panel.append(button('HEAT 100', () => h.depthAction('heatmax'), ''));
+    this.panel.append(button('REMNANTS +3', () => h.depthAction('remnants'), ''));
+    this.panel.append(button('UNLOCK EXTRACT', () => h.depthAction('extract'), ''));
+    this.panel.append(button('ACCEPT VENDETTA', () => h.depthAction('vendetta'), ''));
+    this.panel.append(button('COMPLETE VENDETTA', () => h.depthAction('vendettaDone'), ''));
+    this.panel.append(button('GRANT TECHNIQUE', () => h.depthAction('tech'), ''));
+    this.panel.append(button('LIBERATE AREA', () => h.depthAction('liberate'), ''));
+    this.panel.append(button('BLOCK FAKE DEATH', () => h.depthAction('fakedeath'), ''));
+    this.panel.append(button('FORCE SURRENDER', () => h.depthAction('surrender'), ''));
     this.panel.append(button('REGENERATE AI CONTENT', () => h.regenerateAI(this.select.value), ''));
+    this.panel.append(el('h4', undefined, 'STORY'));
+    this.panel.append(button('OPEN WEB', () => h.storyAction('openWeb'), ''));
+    this.panel.append(button('OPEN TIMELINE', () => h.storyAction('openTimeline'), ''));
+    this.panel.append(button('OPEN THREADS', () => h.storyAction('openThreads'), ''));
+    this.panel.append(button('FOCUS TARGET', () => h.storyAction('focus'), ''));
+    this.panel.append(button('STEAL WEAPON ONTO TARGET', () => h.storyAction('steal'), ''));
+    this.panel.append(button('TRANSFER TERRITORY TO TARGET', () => h.storyAction('territory'), ''));
+    this.panel.append(button('GENERATE RECAP', () => { this.inspectPre.textContent = h.storyAction('recap'); }, ''));
+    this.panel.append(button('INSPECT STORY', () => { this.inspectPre.textContent = h.storyAction('inspect'); }, ''));
+    this.panel.append(button('RUN STORY TESTS', () => { this.inspectPre.textContent = h.storyAction('selftest'); }, ''));
+    this.panel.append(button('STRESS 100 TURNS', () => { this.inspectPre.textContent = h.storyAction('stress'); }, ''));
+    this.panel.append(button('CLEAR STORY VIEW', () => h.storyAction('clearLayout'), ''));
     this.panel.append(el('h4', undefined, 'ENCOUNTER'));
     this.panel.append(button('STAGE NEMESIS LOOP', () => h.stageNemesisLoop(this.select.value), ''));
     const kinds = [

@@ -343,6 +343,8 @@ export class Player implements Combatant {
       res.dodged = true;
       return res;
     }
+    /* skill armor: still take the hit, but do not stagger — red melee still staggers */
+    const armored = this.combat.skillArmor > 0 && !info.unblockable;
 
     let amount = info.amount * this.stats.defenceMultiplier();
     if (this.stats.powers.has('momentum')) this.stats.momentum = 0;
@@ -360,6 +362,10 @@ export class Player implements Combatant {
     this.stats.hp -= amount;
     res.applied = amount;
     this.hurtFlash = 1;
+    if (this.stats.run && this.stats.run.remnants > 0 && amount > 8) {
+      this.stats.run.remnants = Math.max(0, this.stats.run.remnants - 1);
+      this.stats.run.remnantUnstable += 0.2;
+    }
 
     if (info.ignite) this.burning = Math.max(this.burning, 3);
 
@@ -377,7 +383,7 @@ export class Player implements Combatant {
       this.anim.playOneShot('HIT_REACT', 'HitLight', 1.35);
     }
 
-    if (info.stagger > 16 || amount > this.stats.maxHp * 0.18) {
+    if (!armored && (info.stagger > 16 || amount > this.stats.maxHp * 0.18)) {
       this.combat.stagger();
       res.staggered = true;
     }
@@ -520,6 +526,25 @@ export class Player implements Combatant {
         const impact = CLIPS.Parry.impactT ?? 0.375;
         const t = p < 0.35 ? (p / 0.35) * impact : impact + ((p - 0.35) / 0.65) * 0.4;
         anim.scrub(t);
+        break;
+      }
+      case 'skill':
+      case 'ultimate': {
+        const id = c.skillId;
+        const clip =
+          id === 'shadow_step'
+            ? 'DodgeF'
+            : id === 'void_grasp'
+              ? 'AtkThrust'
+              : id === 'pit_eruption'
+                ? 'Atk2H_Slam'
+                : 'Atk2H_Slam';
+        const state = 'ABILITY';
+        anim.setAction(state, clip, { mode: 'scrub' });
+        const p = c.skillProgress();
+        if (p < 0.35) anim.scrubAttack('windup', p / 0.35);
+        else if (p < 0.55) anim.scrubAttack('active', (p - 0.35) / 0.2);
+        else anim.scrubAttack('recover', (p - 0.55) / 0.45);
         break;
       }
       case 'stagger': {

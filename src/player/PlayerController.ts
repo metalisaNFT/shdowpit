@@ -59,8 +59,24 @@ export class PlayerController {
 
     this.sprinting = input.down('sprint') && wishLen > 0.1 && combat.action === 'idle';
 
-    /* ---------------- dodge ---------------- */
-    if (combat.action === 'dodge') {
+    /* ---------------- skill travel (Shadow Step / reels) ---------------- */
+    if ((combat.action === 'skill' || combat.action === 'ultimate') && combat.phase !== 'recover') {
+      if (combat.skillPassThrough && combat.phase === 'active') {
+        const speed = 42;
+        this.velocity.set(combat.skillMoveX * speed, 0, combat.skillMoveZ * speed);
+        if (combat.skillMoveX !== 0 || combat.skillMoveZ !== 0) {
+          const yaw = Math.atan2(-combat.skillMoveX, -combat.skillMoveZ);
+          setFacing(turnToward(currentFacing, yaw, TURN_RATE * 3 * dt));
+        }
+      } else if (combat.action === 'ultimate' || combat.skillId === 'ground_rupture') {
+        this.velocity.multiplyScalar(Math.pow(0.02, dt));
+      } else {
+        this.velocity.multiplyScalar(Math.pow(0.15, dt));
+      }
+      if (combat.action === 'skill' && combat.skillId === 'void_grasp' && combat.skillMoveX) {
+        this.velocity.set(combat.skillMoveX, 0, combat.skillMoveZ);
+      }
+    } else if (combat.action === 'dodge') {
       const p = combat.dodgeProgress();
       if (blink) {
         // BLINK: one instantaneous displacement instead of a slide.
@@ -94,6 +110,8 @@ export class PlayerController {
         maxSpeed *= 0.3;
       } else if (combat.action === 'stagger' || combat.action === 'execute' || combat.action === 'dead') {
         maxSpeed = 0;
+      } else if (combat.action === 'skill' || combat.action === 'ultimate') {
+        maxSpeed *= 0.22;
       }
 
       if (wishLen > 1e-4 && maxSpeed > 0) {

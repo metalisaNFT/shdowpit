@@ -304,6 +304,119 @@ export const SCALING = {
   nemesisDamagePerLevel: 0.02,
 } as const;
 
+/* ============================================================
+   depth overhaul — heat, remnants, heal, dodge, vigour, reactions
+   ============================================================ */
+
+export const HEAT = {
+  max: 100,
+  loudCombatPerSecond: 2.4,
+  namedKill: 14,
+  shrine: 8,
+  dwellPerSecond: 0.35,
+  relicCarry: 0.12,
+  humiliate: 18,
+  killAlly: 12,
+  extractStart: 22,
+  areaChange: -10,
+  sabotage: -16,
+  hiddenRoute: -12,
+  informant: -14,
+  remnantSpend: -10,
+  thresholds: [20, 40, 60, 75, 85, 95, 100],
+  labels: ['ALERT', 'REINFORCE', 'HUNTER', 'RIVALS', 'LOCKDOWN', 'ELITES', 'OVERLORD'],
+  spawnMinDistance: 16,
+  pulseCooldown: 18,
+  spawnBudget: 4,
+  spawnBudgetRegen: 0.12,
+  rewardBonusPer10: 0.04,
+} as const;
+
+export const REMNANT = {
+  dropChance: 0.55,
+  namedBonus: 1,
+  maxCarry: 6,
+  healAmount: 16,
+  healVulnerable: 0.85,
+  hitLoss: 1,
+  decayPerSecond: 0,
+  shrineUpgrade: 8,
+  fakeDeathCost: 1,
+  extractCost: 2,
+  rerollCost: 1,
+  bossDrop: false,
+} as const;
+
+export const HEAL_ECON = {
+  dimPerSource: 48,
+  leechCapPerHit: 4,
+  vultureBase: 22,
+  vultureFalloff: 0.55,
+  regenVsSevere: 0.35,
+  recoverableFraction: 0.7,
+  maxVigour: 30,
+  vigourEssenceStep: 80,
+  vigourPerStep: 2,
+} as const;
+
+export const DODGE_RULES = {
+  cooldownFloor: 0.35,
+  blinkIFrameEndBonus: 0.1,
+  chainPrimaryOnly: true,
+} as const;
+
+export const EXECUTION_RULES = {
+  /** grunt executes use one payload; named keep exceptional extras */
+  gruntPayloadPriority: ['parasite', 'terror', 'vulture', 'predator', 'execution_surge', 'toxic_detonation'],
+} as const;
+
+export const REACTION = {
+  maxActive: 3,
+  perTargetCooldown: 0.45,
+} as const;
+
+export const OUTCOME = {
+  protectWindow: 1.5,
+  unsafeRadius: 11,
+} as const;
+
+export const EXTRACT = {
+  channelTime: 8,
+  heatOnStart: 22,
+} as const;
+
+/* ============================================================
+   active skills + ultimate
+   ============================================================ */
+
+export const SKILLS = {
+  /** cooldowns never drop below this fraction of base */
+  cooldownFloorFrac: 0.4,
+  /** named execute refunds this fraction of remaining CD, once */
+  namedExecuteRefund: 0.2,
+  /** extra posture on the next skill after a perfect parry */
+  perfectEmpowerPosture: 1.35,
+  markDuration: 1.35,
+  markPosture: 28,
+  empowerSurgeCost: 25,
+} as const;
+
+export const ULTIMATE = {
+  surgeCost: 100,
+  radius: 8.2,
+  maxTargets: 8,
+  gruntDamageMul: 1.15,
+  /** named HP damage cannot exceed this × a heavy hit */
+  namedDamageCapMul: 1.2,
+  posture: 44,
+  namedPosture: 28,
+  knockback: 6.4,
+  armor: 0.18,
+  slowMo: 0.32,
+  slowMoScale: 0.38,
+  namedStagger: 0.35,
+} as const;
+
 /** Clamp helper used by the scaling functions. */
 export function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;

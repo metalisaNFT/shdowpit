@@ -13,7 +13,7 @@ import type { Bus } from '../core/Events';
 import { AREAS } from '../data/areas';
 import { rollAge, type AgeModifier, type AgeState } from '../data/ages';
 import { chooseTitle } from '../data/names';
-import { makeEvent, type WorldEvent } from '../world/WorldEvent';
+import { isPlayerFacingEvent, makeEvent, type WorldEvent } from '../world/WorldEvent';
 import type { Nemesis, Rank } from './Nemesis';
 import { fullName, rankIndex, RANK_ORDER } from './Nemesis';
 import { generateNemesis, recomputePower } from './NemesisGenerator';
@@ -69,9 +69,13 @@ export class NemesisManager {
       eventLog: [],
       territories,
       nextId: 1,
+      nextEventId: 1,
       usedNames: [],
+      storyView: { panX: 0, panY: 0, zoom: 1 },
       playerMeta: defaultPlayerMeta(),
       settings: this.data?.settings ?? defaultSettings(),
+      run: null,
+      territoryMods: {},
     };
     this.ageState = rollAge(1, seed);
     this.data.ageName = this.ageState.name;
@@ -79,7 +83,7 @@ export class NemesisManager {
     this.rng = new RNG(seed);
 
     this.seedRoster();
-    this.log(makeEvent(1, 1, 'age_begins', `${this.ageState.name} begins.`, [], true, 'gold'));
+    this.log(makeEvent(1, 1, 'age_begins', `${this.ageState.name} begins.`, [], true, 'gold', { known: true }));
     this.persist();
   }
 
@@ -345,12 +349,14 @@ export class NemesisManager {
         `${fullName(n)} became ${rankArticle(next)}.`,
         [n.id],
         rankIndex(next) >= 2,
-        'gold'
+        'gold',
+        { payload: { rankFrom: from, rankTo: next } }
       )
     );
   }
 
   demote(n: Nemesis, reason = ''): WorldEvent {
+    const from = n.rank;
     const next = RANK_ORDER[Math.max(rankIndex(n.rank) - 1, 0)];
     if (next === n.rank) {
       return this.log(makeEvent(this.turn, this.age, 'demotion', `${fullName(n)} has nothing left to lose.`, [n.id]));
@@ -367,7 +373,8 @@ export class NemesisManager {
         reason ? `${fullName(n)} was cast down — ${reason}.` : `${fullName(n)} was cast down.`,
         [n.id],
         false,
-        'bad'
+        'bad',
+        { payload: { rankFrom: from, rankTo: next, cause: reason } }
       )
     );
   }
@@ -458,10 +465,25 @@ export class NemesisManager {
      ============================================================ */
 
   log(ev: WorldEvent): WorldEvent {
+    if (!ev.id) {
+      const n = this.data.nextEventId ?? 1;
+      ev.id = 'e' + n.toString(36);
+      this.data.nextEventId = n + 1;
+    }
+    if (ev.witnessed === undefined) ev.witnessed = isPlayerFacingEvent(ev.type);
+    if (ev.known === undefined) ev.known = ev.witnessed;
+    if (ev.runId === undefined) ev.runId = this.data.playerMeta.runs;
     this.data.eventLog.push(ev);
     if (this.data.eventLog.length > MAX_LOG) this.data.eventLog.shift();
     this.bus.emit('worldEvent', ev);
     return ev;
+  }
+
+  /** After a recap, the player has been told everything from this turn onward. */
+  markEventsKnown(fromTurn?: number): void {
+    for (const ev of this.data.eventLog) {
+      if (fromTurn === undefined || ev.turn >= fromTurn) ev.known = true;
+    }
   }
 
   /** Events from the most recent `turns` world turns, newest last. */
@@ -487,7 +509,8 @@ export class NemesisManager {
         `A new age begins: ${this.ageState.name}.`,
         [],
         true,
-        'gold'
+        'gold',
+        { known: true, witnessed: true }
       )
     );
   }

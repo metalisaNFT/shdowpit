@@ -71,6 +71,8 @@ export type ImpactKind =
   | 'execute';
 
 export class VFX {
+  reduced = false;
+
   readonly group = new THREE.Group();
 
   private rings: RingFx[] = [];
@@ -239,9 +241,11 @@ export class VFX {
     this.ring(x, 0.09, z, 0xffffff, 0.3, radius * 0.6, 0.22, 0.8);
     this.crackDecal(x, z, radius * 0.55, color, 1.25);
     this.flash(x, 0.5, z, color, 0.9, 0.16);
-    this.particles.burst(x, 0.4, z, 26, color, 11, { size: 0.15, life: 0.55 });
-    this.particles.burst(x, 0.3, z, 18, WORLD.metal, 9, { size: 0.15, life: 0.7, gravity: -26 });
-    this.particles.dust(x, 0.3, z, 14);
+    if (!this.reduced) {
+      this.particles.burst(x, 0.4, z, 26, color, 11, { size: 0.15, life: 0.55 });
+      this.particles.burst(x, 0.3, z, 18, WORLD.metal, 9, { size: 0.15, life: 0.7, gravity: -26 });
+      this.particles.dust(x, 0.3, z, 14);
+    }
   }
 
   /**
@@ -430,6 +434,18 @@ export class VFX {
       c.mat.opacity = 0.95 * (1 - t * t);
     }
     for (const t of this.trails) t.update(rdt);
+  }
+
+  poolStats(): { active: number; rings: number; arcs: number; flashes: number; cracks: number; trails: number } {
+    const count = <T extends { active: boolean }>(arr: T[]) => arr.filter((x) => x.active).length;
+    return {
+      active: count(this.rings) + count(this.arcs) + count(this.flashes) + count(this.cracks) + this.trails.filter((t) => t.active).length,
+      rings: count(this.rings),
+      arcs: count(this.arcs),
+      flashes: count(this.flashes),
+      cracks: count(this.cracks),
+      trails: this.trails.filter((t) => t.active).length,
+    };
   }
 
   clear(): void {

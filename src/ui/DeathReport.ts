@@ -1,13 +1,14 @@
 /**
- * "WHILE YOU WERE DEAD".
+ * "WHILE YOU WERE DEAD" / run recap.
  *
- * This screen is one of the central experiences of the game, so it gets the
- * theatrical treatment: lines land one at a time, the important ones are
- * coloured, and the button only appears once the world has finished talking.
+ * Simulation has already finished before this screen opens. Presentation
+ * never writes world state. Skip still shows every selected beat.
  */
 
 import { button, clear, div, show, esc } from './Dom';
 import type { WorldEvent } from '../world/WorldEvent';
+import type { RecapBeat } from '../story/StoryTypes';
+import { recapPlainText } from '../story/StoryRecap';
 
 export interface ReportSpotlight {
   portrait: string;
@@ -23,11 +24,13 @@ export interface ReportOptions {
   title: string;
   subtitle: string;
   events: WorldEvent[];
+  recap?: RecapBeat[];
+  reducedMotion?: boolean;
+  reducedFlash?: boolean;
   /** highlight these nemesis names in the text */
   highlight?: string[];
   buttonLabel: string;
   onContinue: () => void;
-  /** extra buttons, e.g. "VIEW HIERARCHY" */
   extras?: Array<{ label: string; onClick: () => void }>;
   spotlight?: ReportSpotlight;
 }
@@ -38,11 +41,13 @@ export class DeathReport {
   private subEl = document.createElement('h2');
   private bodyEl = div('body');
   private actionsEl = div('actions');
+  private sr = div('sr-only');
   private timers: number[] = [];
 
   constructor() {
     this.root.id = 'death-screen';
-    this.root.append(this.titleEl, this.subEl, this.bodyEl, this.actionsEl);
+    this.sr.setAttribute('aria-live', 'polite');
+    this.root.append(this.titleEl, this.subEl, this.sr, this.bodyEl, this.actionsEl);
   }
 
   get visible(): boolean {
@@ -55,6 +60,8 @@ export class DeathReport {
     clear(this.actionsEl);
     this.titleEl.textContent = opts.title;
     this.subEl.textContent = opts.subtitle;
+    this.root.classList.toggle('reduced-motion', !!opts.reducedMotion);
+    this.root.classList.toggle('reduced-flash', !!opts.reducedFlash);
 
     if (opts.spotlight) {
       const s = opts.spotlight;
@@ -62,7 +69,7 @@ export class DeathReport {
       if (s.portrait) {
         const img = document.createElement('img');
         img.src = s.portrait;
-        img.alt = '';
+        img.alt = s.name;
         img.className = 'killer-portrait';
         spot.append(img);
       }
@@ -77,8 +84,30 @@ export class DeathReport {
       this.bodyEl.append(spot);
     }
 
-    const highlight = new Set((opts.highlight ?? []).map((h) => h.toUpperCase()));
+    const recap = opts.recap ?? [];
+    this.sr.textContent = recap.length
+      ? recapPlainText(recap)
+      : opts.events.map((e) => e.text).join('. ');
 
+    if (recap.length) {
+      const acts: RecapBeat['act'][] = ['opening', 'rising', 'turn', 'end', 'consequence'];
+      for (const act of acts) {
+        const group = recap.filter((b) => b.act === act);
+        if (!group.length) continue;
+        this.bodyEl.append(div('tier-label', act.replace('_', ' ').toUpperCase()));
+        group.forEach((b, i) => {
+          const card = div(`recap-card vfx-${b.vfx}`);
+          if (!opts.reducedMotion) card.style.animationDelay = `${i * 0.12}s`;
+          else card.style.animation = 'none';
+          card.append(div('recap-h', b.headline));
+          card.append(div('recap-l', b.line));
+          if (b.detail) card.append(div('recap-d', b.detail));
+          this.bodyEl.append(card);
+        });
+      }
+    }
+
+    const highlight = new Set((opts.highlight ?? []).map((h) => h.toUpperCase()));
     const lines = opts.events.length
       ? opts.events
       : [
@@ -87,35 +116,47 @@ export class DeathReport {
             age: 0,
             type: 'death' as const,
             text: 'NOTHING HAPPENED. THE WORLD DID NOT NOTICE.',
-            actors: [],
+            actors: [] as string[],
             important: false,
             tone: 'neutral' as const,
           },
         ];
 
+    const logHead = div('tier-label', recap.length ? 'FULL RECORD' : 'THE WORLD');
+    this.bodyEl.append(logHead);
+
     lines.forEach((ev, i) => {
       const line = div('report-line');
-      line.style.animationDelay = `${i * 0.11}s`;
+      if (opts.reducedMotion) {
+        line.style.animation = 'none';
+        line.style.opacity = '1';
+      } else {
+        line.style.animationDelay = `${Math.min(i, 12) * 0.08}s`;
+      }
       let text = esc(ev.text);
       for (const h of highlight) {
         if (!h) continue;
         text = text.replace(new RegExp(`\\b${escapeRegExp(h)}\\b`, 'g'), `<span class="who">${h}</span>`);
       }
       const toneClass = ev.tone === 'bad' ? 'bad' : ev.tone === 'good' ? 'ok' : ev.tone === 'gold' ? 'who' : '';
-      const turnTag = `<span class="turn">T${ev.turn}</span>`;
+      const seen = ev.witnessed ? 'SAW' : 'WHILE GONE';
+      const turnTag = `<span class="turn">T${ev.turn} ${seen}</span>`;
       line.innerHTML = toneClass ? `${turnTag}<span class="${toneClass}">${text}</span>` : `${turnTag}${text}`;
       if (ev.important) line.style.fontSize = '16px';
       this.bodyEl.append(line);
     });
 
-    const revealAt = Math.min(2600, lines.length * 110 + 500);
-    this.timers.push(
-      window.setTimeout(() => {
-        for (const x of opts.extras ?? []) this.actionsEl.append(button(x.label, x.onClick));
-        this.actionsEl.append(button(opts.buttonLabel, opts.onContinue));
-        this.bodyEl.scrollTop = this.bodyEl.scrollHeight;
-      }, revealAt)
-    );
+    const finish = () => {
+      this.cancelTimers();
+      clear(this.actionsEl);
+      for (const x of opts.extras ?? []) this.actionsEl.append(button(x.label, x.onClick));
+      this.actionsEl.append(button(opts.buttonLabel, opts.onContinue));
+      this.bodyEl.scrollTop = this.bodyEl.scrollHeight;
+    };
+
+    this.actionsEl.append(button('SKIP', finish));
+    const revealAt = opts.reducedMotion ? 0 : Math.min(2200, lines.length * 70 + 400);
+    this.timers.push(window.setTimeout(finish, revealAt));
 
     show(this.root, true);
   }

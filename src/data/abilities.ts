@@ -5,6 +5,8 @@
  * a verb. A few carry a numeric tail, but each one has a behaviour attached.
  */
 
+import type { PowerFamily } from '../abilities/Reactions';
+
 export type PowerId =
   | 'blink'
   | 'reversal'
@@ -46,6 +48,7 @@ export interface PowerDef {
   id: PowerId;
   name: string;
   tag: PowerTag;
+  family: PowerFamily;
   desc: string;
   /** how it reads in the HUD chip list */
   short: string;
@@ -59,50 +62,51 @@ function p(
   id: PowerId,
   name: string,
   tag: PowerTag,
+  family: PowerFamily,
   short: string,
   desc: string,
   stackable = false,
   weight = 1
 ): PowerDef {
-  return { id, name, tag, short, desc, stackable, weight };
+  return { id, name, tag, family, short, desc, stackable, weight };
 }
 
 export const POWERS: PowerDef[] = [
-  p('blink', 'BLINK', 'MOVEMENT', 'DODGE TELEPORTS', 'Your dodge becomes a short teleport with a longer invulnerable window.'),
-  p('reversal', 'REVERSAL', 'DEFENCE', 'PARRY REFLECTS', 'A perfect parry sends the blow back. Hard hitters punish themselves.'),
-  p('predator', 'PREDATOR', 'EXECUTION', 'EXECUTE = SPEED', 'Executions grant six seconds of greatly increased movement speed.'),
-  p('parasite', 'PARASITE', 'EXECUTION', 'STEAL A TRAIT', 'Executing a named enemy steals one of their strengths for the rest of the run.'),
-  p('blood_debt', 'BLOOD DEBT', 'OFFENCE', 'REVENGE DAMAGE', 'Enemies who have killed you before take vastly more damage from you.'),
-  p('shockwave', 'SHOCKWAVE', 'OFFENCE', 'HEAVY = BLAST', 'Heavy attacks release a radial blast that staggers everything nearby.'),
-  p('chain', 'CHAIN', 'MOVEMENT', 'KILL RESETS DODGE', 'Killing an enemy instantly refreshes your dodge.'),
-  p('phantom', 'PHANTOM', 'MOVEMENT', 'DODGE AFTERIMAGE', 'Dodging leaves behind an afterimage that strikes whatever comes close.'),
-  p('ember', 'EMBER', 'OFFENCE', 'LIGHT BURNS', 'Light attacks set enemies alight. Fire keeps working after you stop.'),
-  p('glass', 'GLASS', 'RISK', '+DAMAGE +FRAGILE', 'You deal far more damage and take noticeably more.', false, 0.7),
-  p('vulture', 'VULTURE', 'EXECUTION', 'EXECUTE HEALS', 'Executions restore a meaningful chunk of health.'),
-  p('momentum', 'MOMENTUM', 'OFFENCE', 'UNHIT = STRONGER', 'Every hit you land without being hit increases your damage. Getting hit resets it.'),
-  p('riposte', 'RIPOSTE', 'DEFENCE', 'PARRY COUNTERS', 'A successful parry immediately answers with a free strike.'),
-  p('terror', 'TERROR', 'EXECUTION', 'EXECUTE = FEAR', 'Executions make nearby enemies break and run.'),
-  p('leech', 'LEECH', 'DEFENCE', 'LIGHT HEALS', 'Light attacks return a small amount of health.', true),
-  p('thorns', 'THORNS', 'DEFENCE', 'RETALIATE', 'Anything that strikes you takes damage in return.'),
-  p('second_wind', 'SECOND WIND', 'DEFENCE', 'SURVIVE ONCE', 'Once per run, a fatal blow leaves you standing at a sliver of health.', false, 0.8),
-  p('hunters_mark', "HUNTER'S MARK", 'UTILITY', 'TRACK NAMED', 'You always know where the nearest named enemy is, and they take more damage.'),
-  p('stampede', 'STAMPEDE', 'MOVEMENT', 'SPRINT KNOCKS DOWN', 'Sprinting into an enemy knocks them flat.'),
-  p('echo', 'ECHO', 'OFFENCE', 'HEAVY HITS TWICE', 'Heavy attacks land a second, delayed strike.'),
+  p('blink', 'BLINK', 'MOVEMENT', 'Movement', 'DODGE TELEPORTS', 'Your dodge becomes a short teleport with a longer invulnerable window.'),
+  p('reversal', 'REVERSAL', 'DEFENCE', 'PerfectDefense', 'PARRY REFLECTS', 'A perfect parry sends the blow back. Hard hitters punish themselves.'),
+  p('predator', 'PREDATOR', 'EXECUTION', 'Execution', 'EXECUTE = SPEED', 'Executions grant six seconds of greatly increased movement speed.'),
+  p('parasite', 'PARASITE', 'EXECUTION', 'Execution', 'STEAL A TRAIT', 'Executing a named enemy steals one of their strengths for the rest of the run.'),
+  p('blood_debt', 'BLOOD DEBT', 'OFFENCE', 'Revenge', 'REVENGE DAMAGE', 'Enemies who have killed you before take vastly more damage from you.'),
+  p('shockwave', 'SHOCKWAVE', 'OFFENCE', 'Momentum', 'HEAVY = BLAST', 'Heavy attacks release a radial blast. Ground Rupture is the cooldown slam; this rides the heavy.'),
+  p('chain', 'CHAIN', 'MOVEMENT', 'Movement', 'KILL RESETS DODGE', 'Killing an enemy instantly refreshes your dodge. Secondary hits do not.'),
+  p('phantom', 'PHANTOM', 'MOVEMENT', 'Movement', 'DODGE AFTERIMAGE', 'Dodging leaves behind an afterimage that strikes whatever comes close.'),
+  p('ember', 'EMBER', 'OFFENCE', 'Fire', 'LIGHT BURNS', 'Light attacks set enemies alight. Shadow Step also ignites crossed foes.'),
+  p('glass', 'GLASS', 'RISK', 'Utility', '+DAMAGE +FRAGILE', 'You deal far more damage and take noticeably more.', false, 0.7),
+  p('vulture', 'VULTURE', 'EXECUTION', 'Execution', 'EXECUTE HEALS', 'Executions restore a meaningful chunk of health. Grunt executes share one payload.'),
+  p('momentum', 'MOMENTUM', 'OFFENCE', 'Momentum', 'UNHIT = STRONGER', 'Every hit you land without being hit increases your damage. Skill reach grows slightly while the streak holds.'),
+  p('riposte', 'RIPOSTE', 'DEFENCE', 'PerfectDefense', 'PARRY COUNTERS', 'A successful parry immediately answers with a free strike.'),
+  p('terror', 'TERROR', 'EXECUTION', 'Execution', 'EXECUTE = FEAR', 'Executions make nearby enemies break and run.'),
+  p('leech', 'LEECH', 'DEFENCE', 'Utility', 'LIGHT HEALS', 'Light attacks return a small amount of health.', true),
+  p('thorns', 'THORNS', 'DEFENCE', 'PerfectDefense', 'RETALIATE', 'Anything that strikes you takes damage in return.'),
+  p('second_wind', 'SECOND WIND', 'DEFENCE', 'Utility', 'SURVIVE ONCE', 'Once per run, a fatal blow leaves you standing at a sliver of health.', false, 0.8),
+  p('hunters_mark', "HUNTER'S MARK", 'UTILITY', 'Revenge', 'TRACK NAMED', 'You always know where the nearest named enemy is, and they take more damage.'),
+  p('stampede', 'STAMPEDE', 'MOVEMENT', 'Movement', 'SPRINT KNOCKS DOWN', 'Sprinting into an enemy knocks them flat.'),
+  p('echo', 'ECHO', 'OFFENCE', 'Posture', 'HEAVY HITS TWICE', 'Heavy attacks land a second, delayed strike.'),
 
   /* ---- Void Needle skills ---- */
-  p('crippling_bolt', 'CRIPPLING BOLT', 'RANGED', 'NEEDLE SLOWS HARD', 'Void Needles slow enemies by far more, for longer. Nothing outruns you.'),
-  p('interruptor', 'INTERRUPTOR', 'RANGED', 'NEEDLE BREAKS WINDUPS', 'A Needle that lands during an attack anticipation deals huge posture damage and can cancel it outright.'),
-  p('chain_shard', 'CHAIN SHARD', 'RANGED', 'NEEDLE JUMPS ONCE', 'Void Needles jump to one nearby enemy after hitting.', true),
-  p('piercing_shard', 'PIERCING SHARD', 'RANGED', 'NEEDLE PIERCES', 'Void Needles pass through one additional enemy.', true),
-  p('toxic_shot', 'TOXIC SHOT', 'RANGED', 'NEEDLE POISONS', 'Void Needles add heavy poison buildup.'),
-  p('return_fire', 'RETURN FIRE', 'DEFENCE', 'PARRY REFLECTS SHOTS', 'Parrying a projectile sends it back at whoever fired it.'),
+  p('crippling_bolt', 'CRIPPLING BOLT', 'RANGED', 'Projectile', 'NEEDLE SLOWS HARD', 'Void Needles slow enemies by far more, for longer. Nothing outruns you.'),
+  p('interruptor', 'INTERRUPTOR', 'RANGED', 'Posture', 'NEEDLE BREAKS WINDUPS', 'A Needle that lands during an attack anticipation deals huge posture damage and can cancel it outright.'),
+  p('chain_shard', 'CHAIN SHARD', 'RANGED', 'Projectile', 'NEEDLE JUMPS ONCE', 'Void Needles jump to one nearby enemy after hitting.', true),
+  p('piercing_shard', 'PIERCING SHARD', 'RANGED', 'Projectile', 'NEEDLE PIERCES', 'Void Needles pass through one additional enemy.', true),
+  p('toxic_shot', 'TOXIC SHOT', 'RANGED', 'Poison', 'NEEDLE POISONS', 'Void Needles add heavy poison buildup.'),
+  p('return_fire', 'RETURN FIRE', 'DEFENCE', 'PerfectDefense', 'PARRY REFLECTS SHOTS', 'Parrying a projectile sends it back at whoever fired it.'),
 
   /* ---- stagger / posture / poison ---- */
-  p('toxic_edge', 'TOXIC EDGE', 'OFFENCE', 'MELEE POISONS', 'Repeated melee hits build poison. Poisoned enemies rot while you reposition.'),
-  p('execution_surge', 'EXECUTION SURGE', 'EXECUTION', 'EXECUTE = SURGE', 'Executions restore a large amount of Surge.'),
-  p('dash_strike', 'DASH STRIKE', 'MOVEMENT', 'DODGE INTO LUNGE', 'Attacking immediately after a dodge performs a long lunging strike.'),
-  p('posture_hunter', 'POSTURE HUNTER', 'OFFENCE', 'FLINCH = MORE POSTURE', 'Staggered enemies take 60% more posture damage. Chain the opening.'),
-  p('toxic_detonation', 'TOXIC DETONATION', 'EXECUTION', 'POISON EXPLODES', 'Executing a poisoned enemy detonates the poison, contaminating everything nearby.'),
+  p('toxic_edge', 'TOXIC EDGE', 'OFFENCE', 'Poison', 'MELEE POISONS', 'Repeated melee hits build poison. Ground Rupture leaves a toxic zone.'),
+  p('execution_surge', 'EXECUTION SURGE', 'EXECUTION', 'Execution', 'EXECUTE = SURGE', 'Executions restore a large amount of Surge.'),
+  p('dash_strike', 'DASH STRIKE', 'MOVEMENT', 'Movement', 'DODGE INTO LUNGE', 'Attacking immediately after a dodge performs a long lunging strike.'),
+  p('posture_hunter', 'POSTURE HUNTER', 'OFFENCE', 'Posture', 'FLINCH = MORE POSTURE', 'Staggered enemies take 60% more posture damage. Void Grasp can interrupt a windup.'),
+  p('toxic_detonation', 'TOXIC DETONATION', 'EXECUTION', 'Poison', 'POISON EXPLODES', 'Executing a poisoned enemy detonates the poison, contaminating everything nearby.'),
 ];
 
 const MAP = new Map<PowerId, PowerDef>(POWERS.map((x) => [x.id, x]));

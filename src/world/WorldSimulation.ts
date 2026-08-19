@@ -52,6 +52,11 @@ export function simulateTurn(mgr: NemesisManager, eventCount = 0): SimulationRes
   mgr.advanceTurn();
   const rng = mgr.simRng;
   const events: WorldEvent[] = [];
+  const mods = mgr.data.territoryMods ?? {};
+  for (const id of Object.keys(mods)) {
+    if (mods[id].untilTurn < mgr.turn) delete mods[id];
+  }
+  mgr.data.territoryMods = mods;
 
   const n = eventCount || 3 + Math.floor(rng.next() * 4);
 
@@ -308,7 +313,9 @@ function buildActions(mgr: NemesisManager, rng: RNG): Action[] {
       a.level++;
       recomputePower(a);
       return mgr.log(
-        makeEvent(mgr.turn, mgr.age, 'territory', `${fullName(a)} seized ${AREA_NAMES[area.id]}.`, [a.id], true)
+        makeEvent(mgr.turn, mgr.age, 'territory', `${fullName(a)} seized ${AREA_NAMES[area.id]}.`, [a.id], true, 'gold', {
+          payload: { areaId: area.id },
+        })
       );
     },
   });
@@ -372,7 +379,8 @@ function buildActions(mgr: NemesisManager, rng: RNG): Action[] {
             `${fullName(thief)} took ${item.name} from ${fullName(victim)}.`,
             [thief.id, victim.id],
             true,
-            'gold'
+            'gold',
+            { payload: { itemName: item.name, itemKind: item.kind, weaponId: item.weaponId } }
           )
         );
       },

@@ -27,7 +27,25 @@ export type WorldEventType =
   | 'enemy_escape'
   | 'overlord_slain'
   | 'age_begins'
-  | 'succession';
+  | 'succession'
+  | 'vendetta'
+  | 'humiliation'
+  | 'bargain'
+  | 'extraction'
+  | 'heat';
+
+/** Facts that cannot be recovered from the display sentence. */
+export interface WorldEventPayload {
+  areaId?: string;
+  rankFrom?: string;
+  rankTo?: string;
+  itemName?: string;
+  itemKind?: string;
+  weaponId?: string;
+  cause?: string;
+  scarId?: string;
+  vendettaState?: 'started' | 'complete' | 'failed';
+}
 
 export interface WorldEvent {
   turn: number;
@@ -41,6 +59,33 @@ export interface WorldEvent {
   important: boolean;
   /** styling hint for the UI */
   tone?: 'neutral' | 'bad' | 'good' | 'gold';
+  /** stable id; assigned on log for new events, migrated for old saves */
+  id?: string;
+  /** player-meta run index when the event happened, if known */
+  runId?: number;
+  /** the player was present when this occurred */
+  witnessed?: boolean;
+  /** the player has been told this happened (death report, chronicle, scouting) */
+  known?: boolean;
+  payload?: WorldEventPayload;
+}
+
+const PLAYER_FACING: Set<WorldEventType> = new Set([
+  'player_kill',
+  'player_death',
+  'player_spared',
+  'player_escape',
+  'enemy_escape',
+  'extraction',
+  'vendetta',
+  'overlord_slain',
+  'humiliation',
+  'bargain',
+  'heat',
+]);
+
+export function isPlayerFacingEvent(type: WorldEventType): boolean {
+  return PLAYER_FACING.has(type);
 }
 
 export function makeEvent(
@@ -50,7 +95,22 @@ export function makeEvent(
   text: string,
   actors: string[] = [],
   important = false,
-  tone: WorldEvent['tone'] = 'neutral'
+  tone: WorldEvent['tone'] = 'neutral',
+  extra?: Partial<Pick<WorldEvent, 'id' | 'runId' | 'witnessed' | 'known' | 'payload'>>
 ): WorldEvent {
-  return { turn, age, type, text: text.toUpperCase(), actors, important, tone };
+  const witnessed = extra?.witnessed ?? isPlayerFacingEvent(type);
+  return {
+    turn,
+    age,
+    type,
+    text: text.toUpperCase(),
+    actors,
+    important,
+    tone,
+    witnessed,
+    known: extra?.known ?? witnessed,
+    id: extra?.id,
+    runId: extra?.runId,
+    payload: extra?.payload,
+  };
 }

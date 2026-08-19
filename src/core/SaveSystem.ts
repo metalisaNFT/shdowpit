@@ -5,10 +5,12 @@
  */
 
 import type { Nemesis } from '../nemesis/Nemesis';
-import type { WorldEvent } from '../world/WorldEvent';
+import { isPlayerFacingEvent, type WorldEvent } from '../world/WorldEvent';
 import { defaultAISettings, emptyAIContent, type AISettings } from '../ai/AITypes';
+import { migrateRunState, type RunState } from '../run/RunState';
+import type { TerritoryMod } from '../world/TerritoryRules';
 
-export const SAVE_VERSION = 1;
+export const SAVE_VERSION = 4;
 const KEY = 'shdowpit.world.v1';
 
 /** Counters used by the enemy adaptation system. */
@@ -45,6 +47,15 @@ export interface PlayerMeta {
   essence: number;
   /** permanent max-health bonus bought with essence */
   vigour: number;
+  /** unlocked weapon techniques by weapon id */
+  techniques: Record<string, string[]>;
+  unlockedStarting: string[];
+  vendettaPatternHistory: string[];
+  telemetryOptIn: boolean;
+  /** permanently unlocked active skills */
+  unlockedSkills: string[];
+  /** last equipped pair [skill1, skill2] */
+  skillLoadout: [string, string];
 }
 
 export type Quality = 'high' | 'medium' | 'low';
@@ -59,6 +70,8 @@ export interface Settings {
   cameraShake: number;
   showMinimap: boolean;
   softLockOn: boolean;
+  reducedMotion: boolean;
+  reducedFlash: boolean;
 
   /**
    * AI preferences ONLY. There is deliberately no API key field here, and
@@ -78,6 +91,8 @@ export function defaultSettings(): Settings {
     cameraShake: 1,
     showMinimap: true,
     softLockOn: true,
+    reducedMotion: false,
+    reducedFlash: false,
     ai: defaultAISettings(),
   };
 }
@@ -99,13 +114,20 @@ export interface SaveData {
   /** territory id -> nemesis id who holds it */
   territories: Record<string, string | null>;
 
-  /** rolling counter so generated ids never collide */
+  /** rolling counter so generated nemesis ids never collide */
   nextId: number;
+  /** rolling counter for world-event ids */
+  nextEventId?: number;
+  /** optional pan/zoom for THE WEB; node positions are derived, not stored */
+  storyView?: { panX: number; panY: number; zoom: number };
   /** name syllable pairs already used, to keep the roster distinct */
   usedNames: string[];
 
   playerMeta: PlayerMeta;
   settings: Settings;
+  /** mid-run snapshot; null between runs */
+  run: RunState | null;
+  territoryMods: Record<string, TerritoryMod>;
 }
 
 export function defaultPlayerMeta(): PlayerMeta {
@@ -121,6 +143,12 @@ export function defaultPlayerMeta(): PlayerMeta {
     habits: emptyHabits(),
     essence: 0,
     vigour: 0,
+    techniques: {},
+    unlockedStarting: [],
+    vendettaPatternHistory: [],
+    telemetryOptIn: false,
+    unlockedSkills: ['shadow_step', 'ground_rupture'],
+    skillLoadout: ['shadow_step', 'ground_rupture'],
   };
 }
 
@@ -221,6 +249,24 @@ export class SaveSystem {
     data.settings.ai = { ...defaultAISettings(), ...(data.settings.ai ?? {}) };
     data.playerMeta = { ...defaultPlayerMeta(), ...(data.playerMeta ?? {}) };
     data.playerMeta.habits = { ...emptyHabits(), ...(data.playerMeta.habits ?? {}) };
+    data.playerMeta.techniques = data.playerMeta.techniques ?? {};
+    data.playerMeta.unlockedStarting = data.playerMeta.unlockedStarting ?? [];
+    data.playerMeta.vendettaPatternHistory = data.playerMeta.vendettaPatternHistory ?? [];
+    data.playerMeta.telemetryOptIn = data.playerMeta.telemetryOptIn ?? false;
+    data.playerMeta.unlockedSkills =
+      data.playerMeta.unlockedSkills && data.playerMeta.unlockedSkills.length
+        ? data.playerMeta.unlockedSkills
+        : ['shadow_step', 'ground_rupture'];
+    data.playerMeta.skillLoadout = (data.playerMeta.skillLoadout as [string, string] | undefined) ?? [
+      'shadow_step',
+      'ground_rupture',
+    ];
+    data.territoryMods = data.territoryMods ?? {};
+    data.run = data.run ? migrateRunState(data.run, data.worldSeed) : null;
+    data.settings.reducedMotion = data.settings.reducedMotion ?? false;
+    data.settings.reducedFlash = data.settings.reducedFlash ?? false;
+    data.storyView = data.storyView ?? { panX: 0, panY: 0, zoom: 1 };
+    migrateEventLog(data);
 
     // Defence in depth. A key should never be able to reach this object, but if
     // a future edit ever puts one here, strip it on the way in and out rather
@@ -243,9 +289,32 @@ export class SaveSystem {
       n.territory ??= 'pit';
       n.ai ??= emptyAIContent();
       n.ai.generatedAt ??= {};
+      n.playerRewardFarms ??= 0;
+      n.informant ??= false;
+      n.humiliations ??= 0;
+      n.branded ??= false;
+      n.abandonedTerritoryTurn ??= null;
+      n.stolenFromThem ??= [];
+      n.fakeDeathPenalty ??= 0;
     }
     return data;
   }
+}
+
+/** Conservative: old chronicle lines become known facts with stable ids. */
+export function migrateEventLog(data: SaveData): void {
+  let next = data.nextEventId ?? 1;
+  for (const ev of data.eventLog) {
+    if (!ev.id) {
+      ev.id = 'e' + next.toString(36);
+      next++;
+    }
+    if (ev.witnessed === undefined) ev.witnessed = isPlayerFacingEvent(ev.type);
+    // Old worlds already showed every line in the chronicle.
+    if (ev.known === undefined) ev.known = true;
+    ev.payload ??= {};
+  }
+  data.nextEventId = Math.max(next, data.nextEventId ?? 1);
 }
 
 const SECRET_KEYS = ['apiKey', 'openaiKey', 'key', 'token', 'secret'];

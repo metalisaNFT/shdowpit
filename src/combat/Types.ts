@@ -14,7 +14,8 @@ export type DamageSource =
   | 'execute'
   | 'thorns'
   | 'counter'
-  | 'environment';
+  | 'environment'
+  | 'skill';
 
 export interface Combatant {
   readonly uid: number;
@@ -56,6 +57,15 @@ export interface DamageInfo {
   poison?: number;
   /** posture damage multiplier (POSTURE HUNTER etc.) */
   postureMul?: number;
+  /**
+   * Who owns this hit for proc purposes. Defaults to primary.
+   * See combat/ProcRules.ts.
+   */
+  channel?: 'primary' | 'secondary' | 'dot' | 'afterimage' | 'reflect' | 'eve' | 'area';
+  /** player may be credited for the kill (CHAIN, remnants, Vendetta) */
+  grantsPlayerKill?: boolean;
+  /** reaction depth — never increment past 1 */
+  reactionDepth?: number;
 }
 
 export interface DamageResult {

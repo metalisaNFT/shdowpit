@@ -11,6 +11,7 @@ import { rankName } from '../nemesis/NemesisManager';
 import { accentColorFor } from '../nemesis/NemesisAppearance';
 import { relationshipLabel } from '../nemesis/EncounterCopy';
 import { css, SIGNAL } from '../data/palette';
+import type { SkillHudState } from '../abilities/AbilityRuntime';
 
 export interface HudWorldInfo {
   areaName: string;
@@ -18,6 +19,14 @@ export interface HudWorldInfo {
   age: number;
   turn: number;
   overlordName: string;
+  heat?: number;
+  heatLabel?: string;
+  remnants?: number;
+  vendetta?: string;
+  territory?: string;
+  holderName?: string;
+  landmarks?: Array<{ x: number; z: number }>;
+  areaColors?: Record<string, string>;
 }
 
 export class HUD {
@@ -42,7 +51,10 @@ export class HUD {
   private plateBroken = div('tbroken hidden', 'POSTURE BROKEN  ·  E TO EXECUTE');
 
   private surgeFill = div('fill');
-  private surgeWrap = div('surge hidden');
+  private surgeWrap = div('surge');
+  private skillRow = div('skill-row');
+  private skillSlots: HTMLElement[] = [];
+  private lastSurgeFull = false;
 
   /** VOID NEEDLE charge pips */
   private needleWrap = div('needles');
@@ -88,7 +100,7 @@ export class HUD {
     needleLabel.append(el('span', undefined, 'VOID NEEDLE'));
     this.needleWrap.append(needleLabel);
 
-    bl.append(label, bar, this.surgeWrap, this.needleWrap);
+    bl.append(label, bar, this.surgeWrap, this.needleWrap, this.skillRow);
     this.root.append(bl);
 
     /* powers */
@@ -169,8 +181,12 @@ export class HUD {
     this.lastHp = frac;
 
     const sf = player.stats.surgeFrac;
-    show(this.surgeWrap, player.stats.surge > 0);
+    show(this.surgeWrap, true);
     this.surgeFill.style.transform = `scaleX(${sf})`;
+    this.surgeWrap.classList.toggle('full', sf >= 0.995);
+    if (sf >= 0.995 && !this.lastSurgeFull) this.surgeWrap.classList.add('ready-flash');
+    else if (sf < 0.995) this.surgeWrap.classList.remove('ready-flash');
+    this.lastSurgeFull = sf >= 0.995;
 
     /* needle charges: filled pips are ready, the charging one shows progress */
     const maxCharges = player.stats.maxRangedCharges;
@@ -191,7 +207,12 @@ export class HUD {
     this.worldLabel.innerHTML =
       `AGE <b>${world.age}</b> &nbsp; TURN <b>${world.turn}</b><br>` +
       `OVERLORD <b>${world.overlordName || '—'}</b><br>` +
-      `KILLS <b>${player.stats.runKills}</b>`;
+      `KILLS <b>${player.stats.runKills}</b>` +
+      (world.heat !== undefined ? `<br>HEAT <b>${Math.round(world.heat)}</b> ${world.heatLabel ?? ''}` : '') +
+      (world.remnants !== undefined ? `<br>REMNANTS <b>${world.remnants}</b>` : '') +
+      (world.vendetta ? `<br>${world.vendetta}` : '') +
+      (world.holderName ? `<br>HELD BY <b>${world.holderName}</b>` : '') +
+      (world.territory ? `<br>${world.territory}` : '');
 
     this.updateTargetPlate(target);
 
@@ -200,7 +221,7 @@ export class HUD {
       if (this.bannerTimer <= 0) show(this.banner, false);
     }
 
-    this.drawMinimap(player, enemies, shrines);
+    this.drawMinimap(player, enemies, shrines, world);
   }
 
   private updateTargetPlate(t: Enemy | null): void {
@@ -239,6 +260,36 @@ export class HUD {
   /* ============================================================
      one-shots
      ============================================================ */
+
+  setSkills(slots: SkillHudState[], surgeFrac: number): void {
+    while (this.skillSlots.length < slots.length) {
+      const slot = div('skill-slot');
+      slot.append(div('skill-icon'), div('skill-cd'), div('skill-bind'), div('skill-name'));
+      this.skillRow.append(slot);
+      this.skillSlots.push(slot);
+    }
+    for (let i = 0; i < this.skillSlots.length; i++) {
+      const elSlot = this.skillSlots[i];
+      const s = slots[i];
+      if (!s) {
+        elSlot.classList.add('hidden');
+        continue;
+      }
+      elSlot.classList.remove('hidden');
+      const frac = s.surgeNeed > 0 ? surgeFrac : 1 - s.cooldown / s.cooldownMax;
+      const ready = s.slot === 'ultimate' ? surgeFrac >= 0.995 : s.ready;
+      elSlot.classList.toggle('ready', ready);
+      elSlot.classList.toggle('fail', s.failed > 0);
+      elSlot.classList.toggle('flash', s.flash > 0);
+      elSlot.classList.toggle('ult', s.slot === 'ultimate');
+      elSlot.classList.toggle('empowered', s.empowered);
+      (elSlot.querySelector('.skill-cd') as HTMLElement).style.setProperty('--cd', String(ready ? 1 : Math.max(0, frac)));
+      (elSlot.querySelector('.skill-bind') as HTMLElement).textContent = s.bind;
+      (elSlot.querySelector('.skill-name') as HTMLElement).textContent = s.name;
+      (elSlot.querySelector('.skill-icon') as HTMLElement).textContent =
+        s.slot === 'ultimate' ? '◆' : s.id === 'shadow_step' ? '⇢' : s.id === 'void_grasp' ? '☍' : '▽';
+    }
+  }
 
   setPowers(list: Array<{ name: string; count: number }>): void {
     clear(this.powerList);
@@ -301,7 +352,10 @@ export class HUD {
     }
   }
 
+  reducedFlash = false;
+
   screenFlash(color = '#fff', alpha = 0.5, ms = 120): void {
+    if (this.reducedFlash) return;
     this.flash.style.background = color;
     this.flash.style.opacity = String(alpha);
     this.flash.style.transition = 'none';
@@ -318,7 +372,8 @@ export class HUD {
   private drawMinimap(
     player: Player,
     enemies: Enemy[],
-    shrines: Array<{ position: { x: number; z: number }; used: boolean }>
+    shrines: Array<{ position: { x: number; z: number }; used: boolean }>,
+    world: HudWorldInfo
   ): void {
     const ctx = this.mmCtx;
     if (!ctx || this.minimap.classList.contains('hidden')) return;
@@ -333,11 +388,17 @@ export class HUD {
     for (const a of AREAS) {
       ctx.beginPath();
       ctx.arc(cx + a.cx * scale, cy + a.cz * scale, a.radius * scale, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255,255,255,0.045)';
+      const hex = world.areaColors?.[a.id];
+      ctx.fillStyle = hex ? hex + '22' : 'rgba(255,255,255,0.045)';
       ctx.fill();
-      ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+      ctx.strokeStyle = hex ? hex + '99' : 'rgba(255,255,255,0.10)';
       ctx.lineWidth = 1;
       ctx.stroke();
+    }
+
+    for (const lm of world.landmarks ?? []) {
+      ctx.fillStyle = 'rgba(232,230,224,0.85)';
+      ctx.fillRect(cx + lm.x * scale - 1.5, cy + lm.z * scale - 1.5, 3, 3);
     }
 
     for (const s of shrines) {

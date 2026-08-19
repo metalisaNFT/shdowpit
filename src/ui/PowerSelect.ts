@@ -27,17 +27,24 @@ export class PowerSelect {
     return !this.root.classList.contains('hidden');
   }
 
-  present(options: PowerDef[], subtitle: string, onPick: (p: PowerDef) => void): void {
+  present(options: PowerDef[], subtitle: string, onPick: (p: PowerDef) => void, extra?: { reactions?: string; onReroll?: () => void; rerolls?: number }): void {
     this.handler = onPick;
     this.current = options;
-    this.subEl.textContent = subtitle;
+    this.subEl.textContent = extra?.reactions ? `${subtitle}\n${extra.reactions}` : subtitle;
     clear(this.grid);
     options.forEach((p, i) => {
       const c = div('power-card');
-      c.append(div('pname', p.name), div('ptag', p.tag), div('pdesc', p.desc), div('pkey', `PRESS ${i + 1}`));
+      const tag = `${p.tag}${p.family ? ' · ' + p.family : ''}`;
+      c.append(div('pname', p.name), div('ptag', tag), div('pdesc', p.desc), div('pkey', `PRESS ${i + 1}`));
       c.addEventListener('click', () => this.pick(p));
       this.grid.append(c);
     });
+    if (extra?.onReroll && (extra.rerolls ?? 0) > 0) {
+      const r = div('power-card');
+      r.append(div('pname', 'REROLL'), div('ptag', 'REMNANT'), div('pdesc', `Spend a Remnant or reroll token. ${extra.rerolls} left.`), div('pkey', 'PRESS R'));
+      r.addEventListener('click', () => extra.onReroll?.());
+      this.grid.append(r);
+    }
     show(this.root, true);
   }
 

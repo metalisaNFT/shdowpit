@@ -13,14 +13,20 @@ import { Telemetry } from './Telemetry';
 
 import { Arena } from '../world/Arena';
 import { World, type ArrivalContext } from '../world/World';
-import { simulateTurn, simulateSuccession } from '../world/WorldSimulation';
+import { makeEvent } from '../world/WorldEvent';
 import type { WorldEvent } from '../world/WorldEvent';
+import { composeRunRecap, composeWorldTurnRecap } from '../story/StoryRecap';
+import { runStorySelfTest, formatStorySelfTest } from '../story/StorySelfTest';
+import { inspectArc, inspectEdge, inspectNode, inspectRecap } from '../story/StoryInspector';
+import { buildStoryModel } from '../story/StoryModel';
+import { simulateTurn, simulateSuccession } from '../world/WorldSimulation';
+import { heatLabel, addHeat } from '../world/Heat';
 
 import { NemesisManager } from '../nemesis/NemesisManager';
 import { fullName, rankIndex, type Archetype, type Nemesis, type Rank, type WeaponType } from '../nemesis/Nemesis';
 import { recomputePower } from '../nemesis/NemesisGenerator';
-import { applyScar } from '../nemesis/NemesisMemory';
-import { makeRivals } from '../nemesis/NemesisRelationships';
+import { applyScar, remember } from '../nemesis/NemesisMemory';
+import { breakBond, makeRivals } from '../nemesis/NemesisRelationships';
 import { NemesisEncounterDirector, aidCallout, betrayalCallout, duelCallout } from '../nemesis/NemesisEncounterDirector';
 import { classifyEncounter, type EncounterKind } from '../nemesis/EncounterKind';
 import { encounterLine } from '../nemesis/EncounterCopy';
@@ -32,16 +38,17 @@ import { CombatSystem } from '../combat/CombatSystem';
 import { ThirdPersonCamera } from '../camera/ThirdPersonCamera';
 import { Particles } from '../fx/Particles';
 import { VFX } from '../fx/VFX';
+import { DamageNumbers } from '../fx/DamageNumbers';
 import { PostFX } from '../fx/PostFX';
 import { crossedFootstep, buildAttackTimeline } from '../anim/AnimEvents';
 import { AudioManager } from '../audio/AudioManager';
-import { AbilityManager } from '../abilities/AbilityManager';
 
 import { HUD } from '../ui/HUD';
 import { TitleScreen } from '../ui/TitleScreen';
 import { HierarchyScreen } from '../ui/HierarchyScreen';
 import { DeathReport } from '../ui/DeathReport';
 import { NemesisIntro } from '../ui/NemesisIntro';
+import { ChoiceOverlay } from '../ui/ChoiceOverlay';
 import { PowerSelect } from '../ui/PowerSelect';
 import { PauseScreen } from '../ui/PauseScreen';
 import { DebugOverlay, type DebugHooks } from '../ui/DebugOverlay';
@@ -50,8 +57,17 @@ import { AIStatus } from '../ui/AIStatus';
 import { AIContentService } from '../ai/AIContentService';
 import type { MythEventKind } from '../ai/AITypes';
 
-import { getArea } from '../data/areas';
 import { type PowerDef, type PowerId } from '../data/abilities';
+import { getArea } from '../data/areas';
+import { rollPowerOffers, rollUncappedStats } from '../abilities/OfferRoller';
+import { activeReactions, potentialReactions } from '../abilities/Reactions';
+import { AbilityRuntime, type FailReason } from '../abilities/AbilityRuntime';
+import { DEFAULT_LOADOUT, getSkill, isUnlockableSkill, profileFor, STARTING_SKILLS, type SkillId } from '../data/skills';
+import { factsFromNemesis, rollVendetta, applyVendettaProgress, vendettaHud } from '../nemesis/Vendetta';
+import { nemesisRewardChoices } from '../nemesis/NemesisRewards';
+import { outcomeOptions, type OutcomeId } from '../nemesis/EncounterOutcomes';
+import { liberationRewardFor } from '../world/TerritoryRules';
+import { HEAT, HEAL_ECON, REMNANT, EXTRACT, OUTCOME } from '../data/balance';
 import { RELIC_WEAPONS } from '../data/weapons';
 import { getPersonality } from '../data/personalities';
 import { traitName } from '../data/traits';
@@ -59,7 +75,7 @@ import { RUN_STATS, formatStat, statValue, type RunStatId } from '../data/stats'
 import { ATTACK_MAP } from '../data/attacks';
 import { DebugDraw } from '../fx/DebugDraw';
 
-type Mode = 'title' | 'playing' | 'paused' | 'hierarchy' | 'report' | 'power' | 'dying';
+type Mode = 'title' | 'playing' | 'paused' | 'hierarchy' | 'report' | 'power' | 'dying' | 'choice';
 
 const RELIC_ORDER = ['sunblade', 'ashfang', 'longtooth'];
 
@@ -71,6 +87,7 @@ export class Game {
   private audio = new AudioManager();
   private particles = new Particles();
   private vfx = new VFX(this.particles);
+  private damageNumbers = new DamageNumbers();
   private prevLocoPhase = 0;
   private arena = new Arena();
   private post!: PostFX;
@@ -79,7 +96,7 @@ export class Game {
   private world: World;
   private player = new Player();
   private combat!: CombatSystem;
-  private abilities: AbilityManager;
+  private abilities = new AbilityRuntime();
   private rng = new RNG(randomSeed());
   /**
    * Presentation only. Nothing this object returns is ever written into a
@@ -97,6 +114,7 @@ export class Game {
     report: DeathReport;
     intro: NemesisIntro;
     power: PowerSelect;
+    choice: ChoiceOverlay;
     pause: PauseScreen;
     debug: DebugOverlay;
     aiStatus: AIStatus;
@@ -145,7 +163,6 @@ export class Game {
 
     this.input = new Input(canvas);
     this.mgr = new NemesisManager(this.saveSys, this.bus);
-    this.abilities = new AbilityManager(this.rng);
 
     this.ui = {
       hud: new HUD(),
@@ -154,6 +171,7 @@ export class Game {
       report: new DeathReport(),
       intro: new NemesisIntro(),
       power: new PowerSelect(),
+      choice: new ChoiceOverlay(),
       pause: new PauseScreen(),
       debug: new DebugOverlay(),
       aiStatus: new AIStatus(),
@@ -161,12 +179,16 @@ export class Game {
     for (const k of Object.keys(this.ui) as Array<keyof typeof this.ui>) {
       uiRoot.append(this.ui[k].root);
     }
+    this.ui.hud.root.append(this.damageNumbers.root);
     this.setupAI();
     this.bindEncounter();
 
     this.world = new World(this.mgr, this.arena, this.arena.scene, this.bus, {
       onNamedArrival: (e, salt, ctx) => this.onNamedArrival(e, salt, ctx),
-      onNamedEscape: (e) => this.encounter.begin(e, this.mgr.turn, { outcome: 'escape' }),
+      onNamedEscape: (e) => {
+        this.finishVendettaAgainst(e, false, true);
+        this.encounter.begin(e, this.mgr.turn, { outcome: 'escape' });
+      },
       onToast: (t, tone) => this.ui.hud.toast(t, tone),
       onOverlordSlain: (e) => this.onOverlordSlain(e),
       onNamedDefeated: (e, escaped) => this.onNamedDefeated(e, escaped),
@@ -187,6 +209,7 @@ export class Game {
       this.arena,
       this.particles,
       this.vfx,
+      this.damageNumbers,
       this.audio,
       this.loopRef(),
       this.camera,
@@ -195,16 +218,31 @@ export class Game {
         onEnemyKilled: (e, executed) => this.onEnemyKilled(e, executed),
         onPlayerKilled: (killer) => this.onPlayerKilled(killer),
         onPlayerDamaged: (from, amount) => this.onPlayerDamaged(from, amount),
-        onParrySuccess: (e) => this.world.noteParry(e),
+        onParrySuccess: (e) => {
+          this.world.noteParry(e);
+          this.world.vendettaCounters.parries++;
+        },
         onEnemyStaggered: () => void 0,
         onHabit: (k, amount) => {
           this.player.stats.habits[k] += amount ?? 1;
         },
         onExecutionStarted: (e) => this.onNamedExecution(e),
+        onPostureBroken: (e) => {
+          this.world.vendettaCounters.posture++;
+          this.maybeOpenOutcome(e);
+        },
+        onInterrupt: () => {
+          this.world.vendettaCounters.interrupts++;
+        },
+        onProcNote: (t) => {
+          this.world.run.lastProcNote = t;
+          this.ui.hud.toast(t, 'gold', 1.6);
+        },
       }
     );
 
     this.combat.telemetry = this.telemetry;
+    this.combat.abilities = this.abilities;
 
     this.bus.on('sfx', ({ name, volume, pitch }) => this.audio.play(name, { volume, pitch }));
     this.bus.on('worldEvent', (ev) => {
@@ -506,6 +544,7 @@ export class Game {
    */
   private rebuildArena(): void {
     this.arena.build(this.mgr.data.worldSeed, this.mgr.mods);
+    this.world.refreshOccupancy();
     this.camera.setArena(this.arena);
     this.arena.scene.add(this.particles.group);
     this.arena.scene.add(this.vfx.group);
@@ -595,9 +634,11 @@ export class Game {
     this.mgr.fillRanks();
     this.world.startRun(this.player);
     this.combat.setEnemies(this.world.enemies);
+    this.combat.run = this.world.run;
     this.combat.clearProjectiles();
     this.particles.clear();
     this.vfx.clear();
+    this.damageNumbers.clear();
     this.nextBoonKills = 7;
 
     this.camera.snapBehind(this.player.position, this.player.facing);
@@ -625,7 +666,61 @@ export class Game {
       this.ui.hud.showAreaBanner('THE PIT', `AGE ${this.mgr.age} — ${this.mgr.ageState.name}`);
     }
     this.ui.hud.toast('FIND SOMETHING WORTH REMEMBERING', 'neutral', 5);
+    this.syncSkillLoadout();
     this.mgr.persist();
+  }
+
+  private syncSkillLoadout(): void {
+    const meta = this.mgr.data.playerMeta;
+    if (!meta.unlockedSkills?.length) meta.unlockedSkills = [...STARTING_SKILLS];
+    this.abilities.unlocked = meta.unlockedSkills.filter(isUnlockableSkill) as SkillId[];
+    if (!this.abilities.unlocked.includes('shadow_step')) this.abilities.unlocked.unshift('shadow_step');
+    const pair = (meta.skillLoadout ?? DEFAULT_LOADOUT) as [SkillId, SkillId];
+    this.abilities.equip(pair[0], pair[1]);
+    meta.skillLoadout = this.abilities.loadout;
+    this.world.run.skillLoadout = this.abilities.loadout;
+    this.abilities.reset();
+  }
+
+  private tryPlayerSkill(slot: 'skill1' | 'skill2' | 'ultimate'): boolean {
+    const p = this.player;
+    const res = this.abilities.tryActivate(slot, p.combat, p.stats);
+    if (!res.ok || !res.def) {
+      this.telemetry.noteFail(res.reason);
+      this.audio.play('skill_fail', { volume: 0.28, pitch: 0.75, minGap: 0.18 });
+      if (res.reason === 'cooldown' || res.reason === 'surge') {
+        this.ui.hud.toast(this.skillFailCopy(res.reason), 'hot', 0.9);
+      }
+      return res.reason === 'cooldown' || res.reason === 'surge' || res.reason === 'empty_slot';
+    }
+    const def = res.def;
+    const prof = profileFor(def, p.stats.weaponId);
+    const fx = -Math.sin(p.facing);
+    const fz = -Math.cos(p.facing);
+    const dist = def.distance * prof.reachMul;
+    const speed = dist / Math.max(0.08, def.active);
+    p.combat.setSkillTimings(
+      def.windup * prof.windupMul,
+      def.active,
+      def.recover * prof.recoverMul,
+      prof.armor || def.id === 'pit_eruption' ? (def.id === 'pit_eruption' ? 0.18 : 0.22) : 0,
+      def.id === 'shadow_step',
+      def.id === 'shadow_step' ? fx * (speed / 42) * 42 : 0,
+      def.id === 'shadow_step' ? fz * (speed / 42) * 42 : 0
+    );
+    if (def.id === 'shadow_step') {
+      p.combat.skillMoveX = fx;
+      p.combat.skillMoveZ = fz;
+    }
+    this.telemetry.noteSkillUse(def.id);
+    this.telemetry.notePlayerVerb();
+    return true;
+  }
+
+  private skillFailCopy(reason: FailReason): string {
+    if (reason === 'surge') return 'SURGE EMPTY';
+    if (reason === 'cooldown') return 'NOT READY';
+    return 'CANNOT';
   }
 
   private endRunAndBank(): void {
@@ -635,7 +730,7 @@ export class Game {
     for (const k of Object.keys(s.habits) as Array<keyof typeof s.habits>) {
       meta.habits[k] += s.habits[k];
     }
-    meta.vigour = Math.min(60, Math.floor(meta.essence / 40) * 2);
+    meta.vigour = Math.min(HEAL_ECON.maxVigour, Math.floor(meta.essence / HEAL_ECON.vigourEssenceStep) * HEAL_ECON.vigourPerStep);
     this.mgr.persist();
   }
 
@@ -679,6 +774,7 @@ export class Game {
     if (this.telemetry.enabled) this.sampleTelemetry(rdt);
     this.particles.update(dt > 0 ? dt : rdt * 0.02);
     this.vfx.update(dt > 0 ? dt : rdt * 0.02, rdt);
+    this.damageNumbers.update(dt > 0 ? dt : rdt * 0.02, this.camera.camera);
     this.arena.update(rdt, this.loop.elapsed, this.player.position.x, this.player.position.z);
     this.post.render();
 
@@ -827,6 +923,7 @@ export class Game {
     if (!this.debugOpen) this.handlePlayingInput();
 
     const lockPoint = this.currentLockPoint();
+    this.combat.lockUid = this.lockTargetUid;
     this.player.update(dt, rdt, this.input, this.camera, this.arena, lockPoint);
 
     // FOOTSTEP events off the shared gait cycle (see anim/AnimEvents.ts):
@@ -858,9 +955,13 @@ export class Game {
     for (const e of this.world.enemies) e.update(dt, rdt);
 
     this.combat.update(dt);
+    this.abilities.update(dt);
     this.combat.checkStampede();
     this.separateBodies();
     this.world.postUpdate(dt, this.player);
+    if (this.world.tickExtraction(dt, this.player)) this.finishExtraction(true);
+    this.tickVendetta();
+    if (!this.player.alive && this.mode === 'playing') this.onPlayerKilled(this.pendingKiller);
 
     if (this.debugDraw.any) {
       this.debugDraw.update(this.player, this.world.enemies, this.combat.liveProjectiles);
@@ -892,16 +993,33 @@ export class Game {
       rdt,
       this.player,
       {
-        areaName: this.world.currentArea.name,
+        areaName: this.world.locationLabel,
         ageName: this.mgr.ageState.name,
         age: this.mgr.age,
         turn: this.mgr.turn,
         overlordName: ov ? ov.name.toUpperCase() : '',
+        heat: this.world.run.heat,
+        heatLabel: heatLabel(this.world.run.heat),
+        remnants: this.world.run.remnants,
+        vendetta: vendettaHud(this.world.run.vendetta),
+        territory: this.world.territoryNow().rules.map((r) => r.title).join(' · '),
+        holderName: this.world.territoryNow().holderName,
+        landmarks: this.arena.landmarks,
+        areaColors: Object.fromEntries(
+          Object.entries(this.world.occupancy).map(([id, o]) => [id, '#' + o.accent.toString(16).padStart(6, '0')])
+        ),
       },
       plateTarget,
       this.world.enemies,
       this.arena.shrines
     );
+    this.ui.hud.setSkills(
+      this.abilities.snapshot({ skill1: '1', skill2: '2', ultimate: 'G' }),
+      this.player.stats.surgeFrac
+    );
+    for (const id of this.abilities.takeReadyPulses()) {
+      this.audio.play('skill_ready', { volume: 0.28, pitch: id === 'pit_eruption' ? 0.8 : 1.15, minGap: 0.15 });
+    }
     this.ui.hud.setLowHealth(this.player.stats.hp / this.player.stats.maxHp);
     this.updatePrompt();
     this.autoQuality(rdt);
@@ -924,6 +1042,11 @@ export class Game {
       const min = p.radius + e.radius;
       const d2 = dx * dx + dz * dz;
       if (d2 >= min * min || d2 < 1e-6) continue;
+      if (p.combat.skillPassThrough) {
+        e.position.x -= dx * 0.02;
+        e.position.z -= dz * 0.02;
+        continue;
+      }
       const d = Math.sqrt(d2);
       const push = (min - d) / d;
       // 25% player, 75% enemy — the world moves around you, not the reverse.
@@ -975,12 +1098,28 @@ export class Game {
 
     if (!p.alive) return;
 
+    if (input.buffered('skill1', 220)) {
+      if (this.tryPlayerSkill('skill1')) input.consume('skill1');
+    }
+    if (input.buffered('skill2', 220)) {
+      if (this.tryPlayerSkill('skill2')) input.consume('skill2');
+    }
+    if (input.buffered('ultimate', 220)) {
+      if (this.tryPlayerSkill('ultimate')) input.consume('ultimate');
+    }
+
     // Buffered inputs are only *consumed* once they actually fire, so a press
     // made half a beat early during recovery or a stagger still comes out.
     if (input.buffered('light')) {
-      if (p.combat.tryAttack('light', p.weapon, p.stats)) input.consume('light');
+      if (p.combat.tryAttack('light', p.weapon, p.stats)) {
+        input.consume('light');
+        this.telemetry.notePlayerVerb();
+      }
     } else if (input.buffered('heavy')) {
-      if (p.combat.tryAttack('heavy', p.weapon, p.stats)) input.consume('heavy');
+      if (p.combat.tryAttack('heavy', p.weapon, p.stats)) {
+        input.consume('heavy');
+        this.telemetry.notePlayerVerb();
+      }
     }
 
     if (input.buffered('dodge', 260)) {
@@ -1022,19 +1161,58 @@ export class Game {
 
   private doInteract(): void {
     const p = this.player;
+    if (this.world.run.outcomeOpen) return;
     const target = this.combat.findExecutable();
     if (target && p.combat.canAct) {
+      if (target.named && target.combat.broken) {
+        this.maybeOpenOutcome(target, true);
+        if (this.mode === 'choice') return;
+      }
       p.combat.startExecute(target.uid);
       p.facing = Math.atan2(-(target.position.x - p.position.x), -(target.position.z - p.position.z));
       this.camera.shake(0.2);
       return;
     }
+    const gate = this.world.nearestExtract(p.position.x, p.position.z, 4.5);
+    if (gate && (this.world.run.extraction.unlocked || this.world.run.remnants >= REMNANT.extractCost)) {
+      this.beginExtraction(gate.id);
+      return;
+    }
     const shrine = this.arena.nearestShrine(p.position.x, p.position.z, 4.5);
     if (shrine) {
+      const rules = this.world.territoryNow().rules;
+      if (rules.some((r) => r.id === 'poisoned_shrines') && this.world.run.remnants > 0) {
+        this.world.run.remnants--;
+        this.ui.hud.toast('SHRINE CLEANSED', 'good');
+      } else if (rules.some((r) => r.id === 'poisoned_shrines')) {
+        this.player.stats.hp = Math.max(1, this.player.stats.hp - 12);
+        this.ui.hud.toast('TAINTED SHRINE', 'hot');
+      }
+      addHeat(this.world.run, HEAT.shrine * (rules.some((r) => r.id === 'ambitious_tithe') ? 1.5 : 1));
       this.arena.markShrineUsed(shrine);
       this.audio.play('pickup', { volume: 0.9 });
       this.particles.pillar(shrine.position.x, shrine.position.z, 0xffb020, 1.2);
+      this.world.run.rerolls++;
       this.offerPower('A SHRINE STILL WORKS');
+      return;
+    }
+    const cache = this.arena.nearestCache(p.position.x, p.position.z, 3.6);
+    if (cache) {
+      this.arena.markCacheTaken(cache);
+      const guarded = this.world.territoryNow().rules.some((r) => r.id === 'guarded_caches');
+      this.world.run.remnants = Math.min(REMNANT.maxCarry, this.world.run.remnants + 1);
+      if (guarded) addHeat(this.world.run, HEAT.shrine);
+      this.ui.hud.toast(guarded ? 'A COLLECTOR STASH' : 'CACHE RIFLED', 'gold');
+      this.audio.play('pickup', { volume: 0.7 });
+      this.particles.pillar(cache.position.x, cache.position.z, 0x9dff6a, 0.85);
+      return;
+    }
+    if (this.world.run.remnants > 0 && p.combat.canAct) {
+      this.world.run.remnants--;
+      p.combat.stagger();
+      p.stats.heal(REMNANT.healAmount, 'remnant');
+      this.ui.hud.toast('REMNANT CONSUMED', 'good');
+      this.audio.play('heal', { volume: 0.5 });
     }
   }
 
@@ -1044,9 +1222,27 @@ export class Game {
       this.ui.hud.setPrompt(`E — EXECUTE ${target.named ? target.nemesis.name.toUpperCase() : 'THEM'}`);
       return;
     }
+    const gate = this.world.nearestExtract(this.player.position.x, this.player.position.z, 4.5);
+    if (gate) {
+      this.ui.hud.setPrompt(
+        this.world.run.extraction.unlocked || this.world.run.remnants >= REMNANT.extractCost
+          ? 'E — BEGIN EXTRACTION'
+          : 'EXTRACTION LOCKED — KILL A NAMED FOE OR PAY REMNANTS'
+      );
+      return;
+    }
     const shrine = this.arena.nearestShrine(this.player.position.x, this.player.position.z, 4.5);
     if (shrine) {
       this.ui.hud.setPrompt('E — TAKE A POWER');
+      return;
+    }
+    const cache = this.arena.nearestCache(this.player.position.x, this.player.position.z, 3.6);
+    if (cache) {
+      this.ui.hud.setPrompt('E — RIFLE CACHE');
+      return;
+    }
+    if (this.world.run.remnants > 0) {
+      this.ui.hud.setPrompt('E — CONSUME REMNANT (VULNERABLE HEAL)');
       return;
     }
     this.ui.hud.setPrompt(null);
@@ -1072,6 +1268,14 @@ export class Game {
       this.ui.power.pickIndex(parseInt(e.code.slice(5), 10) - 1);
       return;
     }
+    if (this.mode === 'choice' && /^Digit[1-9]$/.test(e.code)) {
+      this.ui.choice.pickIndex(parseInt(e.code.slice(5), 10) - 1);
+      return;
+    }
+    if (this.mode === 'power' && e.code === 'KeyR') {
+      this.tryRerollOffer();
+      return;
+    }
     if (e.code === 'Escape') {
       if (this.mode === 'hierarchy') {
         this.closeHierarchy();
@@ -1080,6 +1284,10 @@ export class Game {
       } else if (this.mode === 'title' && this.ui.pause.visible) {
         this.ui.pause.close();
       }
+      return;
+    }
+    if (this.mode === 'hierarchy' && this.ui.hierarchy.handleKey(e)) {
+      e.preventDefault();
       return;
     }
     if (e.code === 'Tab' && this.mode === 'hierarchy') {
@@ -1209,6 +1417,7 @@ export class Game {
     this.ui.hud.clearAreaBanner();
     this.syncAIWorld();
     this.encounter.begin(e, salt, ctx);
+    this.maybeOfferVendetta();
     if (e.nemesis.memory.length === 0 && e.nemesis.defeatsByPlayer === 0) {
       this.myth(e.nemesis, 'first_encounter');
     } else {
@@ -1227,25 +1436,32 @@ export class Game {
   private onEnemyKilled(e: Enemy, executed: boolean): void {
     const rank = e.nemesis.rank;
     const wasOverlord = rank === 'overlord';
-    this.player.stats.essence += e.named ? 30 + rankIndex(rank) * 25 : 4;
-    if (e.named) this.world.noteAllyKilled(e.nemesis);
+    this.player.stats.essence += Math.round((e.named ? 30 + rankIndex(rank) * 25 : 4) * (1 + this.world.run.heat / 250));
+    if (e.named) {
+      this.world.noteAllyKilled(e.nemesis);
+      addHeat(this.world.run, HEAT.namedKill);
+      this.world.run.extraction.unlocked = true;
+      this.world.run.rerolls++;
+      if (this.abilities.unlock('void_grasp')) {
+        this.mgr.data.playerMeta.unlockedSkills = [...this.abilities.unlocked];
+        this.ui.hud.toast('LEARNED VOID GRASP', 'gold', 3.2);
+      }
+    }
+    this.world.dropRemnant(e.named, this.combat.lastKillPlayerCredit, false);
+    this.finishVendettaAgainst(e, executed, false);
     this.world.onEnemyKilled(e, executed);
-    // An Overlord's death starts the succession; a power offer would collide
-    // with it, so the reward for that kill is the relic instead.
-    if (!wasOverlord && e.named && rankIndex(rank) >= 2 && this.mode === 'playing') {
-      // Beating a captain is always worth something.
+    if (!wasOverlord && e.named && this.mode === 'playing') {
       window.setTimeout(() => {
-        if (this.mode === 'playing') this.offerPower(`${e.nemesis.name.toUpperCase()} IS DEAD`);
-      }, 900);
+        if (this.mode === 'playing') this.offerNemesisReward(e.nemesis, executed);
+      }, 700);
     } else if (this.mode === 'playing' && !this.succession && this.player.stats.runKills >= this.nextBoonKills) {
-      // The MegaBonk loop: keep killing, keep growing. Thresholds stretch so
-      // the early run levels fast and the late run has to earn it.
       this.nextBoonKills = Math.ceil(this.nextBoonKills * 1.55 + 3);
       window.setTimeout(() => {
         if (this.mode === 'playing') this.offerBoons('THE PIT FEEDS YOU');
       }, 500);
     }
     this.refreshPowerChips();
+    this.mgr.data.run = this.world.run;
   }
 
   private onNamedDefeated(e: Enemy, escaped: boolean): void {
@@ -1323,17 +1539,20 @@ export class Game {
     const events: WorldEvent[] = this.mgr.data.eventLog.filter(
       (ev) => ev.turn >= result.turn - 1 && ev.type !== 'player_death'
     );
+    this.mgr.markEventsKnown(result.turn - 1);
 
     const highlights = this.mgr.living().map((n) => n.name.toUpperCase());
     this.world.endRun();
     this.ui.hud.setVisible(false);
 
+    const recap = composeWorldTurnRecap(this.mgr.data, events, killerNemesis?.id);
     this.presentReport({
       title: 'YOU DIED',
       subtitle: killerNemesis
         ? `${fullName(killerNemesis)} — WHILE YOU WERE DEAD`
         : 'WHILE YOU WERE DEAD',
       events,
+      recap,
       highlight: highlights,
       buttonLabel: 'RISE  ▸',
       spotlight: killerNemesis
@@ -1405,6 +1624,7 @@ export class Game {
       this.rebuildArena();
       this.mgr.fillRanks();
       this.mgr.persist();
+      this.mgr.markEventsKnown(this.mgr.turn);
 
       this.world.endRun();
       this.ui.hud.setVisible(false);
@@ -1412,6 +1632,7 @@ export class Game {
         title: 'THE SEAT IS EMPTY',
         subtitle: `${name} IS DEAD — ${this.mgr.ageState.name} BEGINS`,
         events: [...successionEvents, ageEvent],
+        recap: composeWorldTurnRecap(this.mgr.data, [...successionEvents, ageEvent]),
         highlight: this.mgr.living().map((n) => n.name.toUpperCase()),
         buttonLabel: 'INTO THE NEW AGE  ▸',
         onContinue: () => {
@@ -1461,6 +1682,7 @@ export class Game {
       id: `stat:${id}` as PowerId,
       name: def.name,
       tag: 'STAT',
+      family: 'Utility',
       desc: `${def.desc}  (${formatStat(def, now)} → ${formatStat(def, then)})`,
       short: def.name,
       stackable: true,
@@ -1481,20 +1703,31 @@ export class Game {
         this.ui.hud.toast(`${p.name} UP`, 'gold');
       } else {
         this.player.stats.addPower(p.id);
+        if (p.family === 'Execution' && !this.world.run.executionPayload) this.world.run.executionPayload = p.id;
         this.ui.hud.toast(`GAINED ${p.name}`, 'gold');
       }
       this.refreshPowerChips();
       this.audio.play('pickup', { volume: 0.8 });
       this.resumeToPlaying();
+    }, {
+      reactions: this.offerReactionText(),
+      rerolls: this.world.run.rerolls + this.world.run.remnants,
+      onReroll: () => this.tryRerollOffer(),
     });
   }
 
   /** Shrines and captain kills: two mechanics and a stat, take one. */
   private offerPower(subtitle: string): void {
-    const powers = this.abilities.roll(this.player.stats.powers, 2);
-    const options: PowerDef[] = [...powers, ...this.rollStatBoons(1).map((id) => this.boonCard(id))];
+    const ctx = {
+      owned: this.player.stats.powers,
+      weaponId: this.player.stats.weaponId,
+      statAtCap: (id: RunStatId) => this.player.stats.statAtCap(id),
+    };
+    const powers = rollPowerOffers(this.rng, ctx, 2);
+    const stats = rollUncappedStats(this.rng, ctx, 1);
+    const options: PowerDef[] = [...powers, ...stats.map((id) => this.boonCard(id))];
     if (!options.length) {
-      this.player.stats.heal(30);
+      this.player.stats.heal(30, 'empty_pool');
       this.ui.hud.toast('NOTHING LEFT TO LEARN — HEALED', 'good');
       return;
     }
@@ -1511,6 +1744,278 @@ export class Game {
   private refreshPowerChips(): void {
     this.ui.hud.setPowers(this.player.stats.powers.list().map((x) => ({ name: x.def.short, count: x.count })));
   }
+
+  private offerReactionText(): string {
+    const act = activeReactions(this.player.stats.powers).map((r) => r.name).join(', ');
+    const pot = potentialReactions(this.player.stats.powers).map((r) => r.name).join(', ');
+    return [act && `ACTIVE: ${act}`, pot && `POTENTIAL: ${pot}`].filter(Boolean).join('  ·  ');
+  }
+
+  private tryRerollOffer(): void {
+    if (this.mode !== 'power') return;
+    if (this.world.run.rerolls > 0) this.world.run.rerolls--;
+    else if (this.world.run.remnants >= REMNANT.rerollCost) this.world.run.remnants -= REMNANT.rerollCost;
+    else return;
+    this.ui.power.hide();
+    this.offerPower('REROLL');
+  }
+
+  private maybeOpenOutcome(e: Enemy, force = false): void {
+    if (!e.named || this.mode !== 'playing') return;
+    if (this.world.run.outcomeOpen) return;
+    const unsafe = this.world.enemies.some(
+      (o) => o.alive && o !== e && Math.hypot(o.position.x - this.player.position.x, o.position.z - this.player.position.z) < OUTCOME.unsafeRadius && o.combat.attacking
+    );
+    if (unsafe && !force) {
+      this.world.run.outcomeProtect = OUTCOME.protectWindow;
+      this.player.combat.invulnerable = true;
+      return;
+    }
+    this.world.run.outcomeOpen = true;
+    this.world.run.outcomeEnemyId = e.nemesis.id;
+    const opts = outcomeOptions(e.nemesis, { allyPresent: this.world.enemies.some((x) => x.alive && x.named && x !== e), heat: this.world.run.heat });
+    this.mode = 'choice';
+    this.loop.paused = true;
+    this.input.setEnabled(false);
+    this.input.exitPointerLock();
+    this.ui.choice.present(
+      'THEIR FATE',
+      fullName(e.nemesis).toUpperCase(),
+      opts.map((o) => ({ id: o.id, title: o.title, tag: o.accepted ? 'OPEN' : 'REFUSED', desc: o.desc, disabled: !o.accepted })),
+      (id) => this.resolveOutcome(e, id as OutcomeId)
+    );
+  }
+
+  private resolveOutcome(e: Enemy, id: OutcomeId): void {
+    this.world.run.outcomeOpen = false;
+    const n = e.nemesis;
+    const turn = this.mgr.turn;
+    if (id === 'execute') {
+      this.resumeToPlaying();
+      this.player.combat.startExecute(e.uid);
+      return;
+    }
+    if (id === 'spare') {
+      remember(n, 'PLAYER_SPARED_ME', turn);
+      this.mgr.log(makeEvent(turn, this.mgr.age, 'player_spared', `You spared ${fullName(n)}.`, [n.id], true, 'good'));
+      e.escaping = true;
+    }
+    if (id === 'tribute') {
+      this.player.stats.essence += 40;
+      remember(n, 'PLAYER_SPARED_ME', turn);
+      e.escaping = true;
+    }
+    if (id === 'take_weapon') {
+      n.stolenFromThem = n.stolenFromThem ?? [];
+      n.stolenFromThem.push({ name: n.weapon, kind: 'weapon' });
+      remember(n, 'PLAYER_STOLE_MY_WEAPON', turn);
+      this.ui.hud.toast(`TOOK ${n.weapon.toUpperCase()}`, 'gold');
+      e.escaping = true;
+    }
+    if (id === 'abandon_territory') {
+      n.abandonedTerritoryTurn = turn;
+      this.world.liberateCurrent(liberationRewardFor(n.personality, n.archetype));
+      e.escaping = true;
+    }
+    if (id === 'informant') {
+      n.informant = true;
+      this.world.run.informantIds.push(n.id);
+      addHeat(this.world.run, HEAT.informant);
+      e.escaping = true;
+    }
+    if (id === 'betrayal' && n.master) {
+      const m = this.mgr.byId(n.master);
+      if (m) {
+        breakBond(n, m);
+        makeRivals(n, m);
+        remember(n, 'I_BETRAYED_ALLY', turn, m.id);
+        remember(m, 'I_WAS_BETRAYED', turn, n.id);
+        this.mgr.log(makeEvent(turn, this.mgr.age, 'betrayal', `${fullName(n)} turned on ${fullName(m)}.`, [n.id, m.id], true, 'bad'));
+      }
+      e.escaping = true;
+    }
+    if (id === 'humiliate') {
+      remember(n, 'PLAYER_HUMILIATED_ME', turn);
+      n.humiliations = (n.humiliations ?? 0) + 1;
+      n.branded = true;
+      addHeat(this.world.run, HEAT.humiliate);
+      if (rankIndex(n.rank) >= 2) this.mgr.demote(n, 'humiliation');
+      this.mgr.log(makeEvent(turn, this.mgr.age, 'humiliation', `You branded ${fullName(n)}.`, [n.id], true, 'bad'));
+      e.escaping = true;
+    }
+    if (id === 'message' && n.master) {
+      remember(n, 'PLAYER_SPARED_ME', turn, n.master);
+      e.escaping = true;
+    }
+    this.world.markResolved(n.id);
+    this.resumeToPlaying();
+  }
+
+  private offerNemesisReward(n: Nemesis, executed: boolean): void {
+    const vendetta = this.world.run.vendetta?.complete && this.world.run.vendetta.targetId === n.id;
+    const rng = new RNG(this.world.run.runSeed ^ n.id.length * 997);
+    const choices = nemesisRewardChoices(n, rng, { vendetta: !!vendetta, executed, farms: n.playerRewardFarms ?? 0 });
+    this.mode = 'choice';
+    this.loop.paused = true;
+    this.input.setEnabled(false);
+    this.input.exitPointerLock();
+    this.ui.choice.present(
+      'THE SPOILS',
+      `FROM ${fullName(n).toUpperCase()}`,
+      choices.map((c) => ({ id: c.id, title: c.title, tag: c.kind.toUpperCase(), desc: c.desc })),
+      (id) => {
+        this.applyNemesisReward(n, choices.find((c) => c.id === id) ?? choices[0]);
+        this.resumeToPlaying();
+        if (rankIndex(n.rank) >= 2) this.offerPower(`${n.name.toUpperCase()} IS DEAD`);
+      }
+    );
+  }
+
+  private applyNemesisReward(n: Nemesis, c: { kind: string; trait?: string }): void {
+    n.playerRewardFarms = (n.playerRewardFarms ?? 0) + 1;
+    if (c.kind === 'steal_strength' && c.trait) this.player.stats.stolenTraits.push(c.trait);
+    if (c.kind === 'steal_adapt' && c.trait) {
+      n.adaptations = n.adaptations.filter((t) => t !== c.trait);
+      this.player.stats.stolenTraits.push(c.trait);
+    }
+    if (c.kind === 'tribute') this.player.stats.essence += 55;
+    if (c.kind === 'permanence') n.fakeDeathPenalty = Math.min(1, (n.fakeDeathPenalty ?? 0) + 0.45);
+    if (c.kind === 'destabilise') this.world.liberateCurrent('destabilised');
+    if (c.kind === 'intel') this.ui.hud.toast(`INTEL: ${n.master ? 'SERVES ' + (this.mgr.byId(n.master)?.name ?? '?') : 'NO MASTER'}`, 'gold', 5);
+    if (c.kind === 'technique') {
+      const wid = this.player.stats.weaponId;
+      const list = this.mgr.data.playerMeta.techniques[wid] ?? [];
+      const add = wid.includes('sword') || wid === 'sunblade' ? 'sword_riposte_drive' : wid.includes('great') || wid === 'ashfang' ? 'gs_breaker' : 'spear_chase';
+      if (!list.includes(add)) list.push(add);
+      this.mgr.data.playerMeta.techniques[wid] = list;
+      this.player.stats.techniques = list;
+    }
+    if (c.kind === 'scar_power') this.player.stats.addPower('ember');
+    this.ui.hud.toast(c.kind.replace(/_/g, ' ').toUpperCase(), 'gold');
+    this.mgr.persist();
+  }
+
+  private beginExtraction(siteId: string): void {
+    if (this.world.run.lockedExits) {
+      this.ui.hud.toast('EXITS LOCKED — HEAT', 'hot');
+      return;
+    }
+    if (!this.world.run.extraction.unlocked && this.world.run.remnants >= REMNANT.extractCost) {
+      this.world.run.remnants -= REMNANT.extractCost;
+      this.world.run.extraction.paid = true;
+    }
+    this.world.run.extraction.active = true;
+    this.world.run.extraction.siteId = siteId;
+    this.world.run.extraction.progress = 0;
+    addHeat(this.world.run, EXTRACT.heatOnStart);
+    this.ui.hud.toast('EXTRACTION — HOLD THE GATE', 'hot');
+  }
+
+  private finishExtraction(success: boolean): void {
+    this.world.run.extraction.active = false;
+    if (success) {
+      this.player.stats.essence += 80 + Math.round(this.world.run.heat);
+      this.mgr.log(makeEvent(this.mgr.turn, this.mgr.age, 'extraction', 'You extracted from the Pit.', [], true, 'gold'));
+      for (const e of this.world.enemies) {
+        if (e.named && e.alive) remember(e.nemesis, 'PLAYER_RAN_FROM_ME', this.mgr.turn);
+      }
+      this.mgr.markEventsKnown(this.mgr.turn);
+      this.endRunAndBank();
+      this.world.endRun();
+      this.showWalkAway('YOU EXTRACTED', 'BONUS BANKED. THE WORLD REMEMBERS THE ESCAPE.');
+    }
+  }
+
+  private showWalkAway(title: string, sub: string): void {
+    this.mode = 'report';
+    this.input.setEnabled(false);
+    this.loop.paused = true;
+    this.ui.hud.setVisible(false);
+    this.ui.report.present({
+      title,
+      subtitle: sub,
+      events: this.mgr.data.eventLog.slice(-8),
+      recap: composeRunRecap(this.mgr.data, { extracted: true }),
+      reducedMotion: this.mgr.data.settings.reducedMotion,
+      reducedFlash: this.mgr.data.settings.reducedFlash,
+      buttonLabel: 'CONTINUE',
+      extras: [{ label: 'VIEW THE WEB', onClick: () => this.openHierarchyFromReport() }],
+      onContinue: () => this.startRun(),
+    });
+  }
+
+  private tickVendetta(): void {
+    /* progress is applied on kills/escapes */
+  }
+
+  private maybeOfferVendetta(): void {
+    if (this.world.run.vendetta) return;
+    const named = this.world.enemies.find((e) => e.alive && e.named);
+    if (!named) return;
+    if (this.world.run.offeredVendettaId === named.nemesis.id) return;
+    this.world.run.offeredVendettaId = named.nemesis.id;
+    const facts = factsFromNemesis(
+      named.nemesis,
+      (id) => this.mgr.byId(id) ?? undefined,
+      (id) => !!this.mgr.byId(id)?.alive
+    );
+    const v = rollVendetta(facts, this.mgr.data.playerMeta.vendettaPatternHistory, this.mgr.data.worldSeed, this.mgr.turn, this.player.stats.powers);
+    if (!v) return;
+    this.world.run.vendetta = v;
+    this.mode = 'choice';
+    this.loop.paused = true;
+    this.input.setEnabled(false);
+    this.input.exitPointerLock();
+    this.ui.choice.present(
+      'VENDETTA',
+      `${v.title} — ${v.reward.text}`,
+      [
+        { id: 'accept', title: 'ACCEPT', tag: 'OPTIONAL', desc: v.desc },
+        { id: 'refuse', title: 'NOT NOW', tag: 'PASS', desc: 'The slight will wait. Failure still writes history if you later abandon it.' },
+      ],
+      (id) => {
+        if (id === 'accept') {
+          v.committed = true;
+          this.mgr.data.playerMeta.vendettaPatternHistory.push(v.pattern);
+          this.ui.hud.toast(v.title, 'hot');
+        } else this.world.run.vendetta = null;
+        this.resumeToPlaying();
+      }
+    );
+  }
+
+  private finishVendettaAgainst(e: Enemy, executed: boolean, fled: boolean): void {
+    const v = this.world.run.vendetta;
+    if (!v || !v.committed || v.targetId !== e.nemesis.id) return;
+    const master = e.nemesis.master ? this.mgr.byId(e.nemesis.master) : null;
+    const next = applyVendettaProgress(v, {
+      postureBreaks: this.world.vendettaCounters.posture,
+      interrupts: this.world.vendettaCounters.interrupts,
+      perfectParries: this.world.vendettaCounters.parries,
+      targetFled: fled,
+      targetDead: !fled,
+      executed,
+      allyPresent: this.world.enemies.some((x) => x.alive && x.named && x !== e && e.nemesis.allies.includes(x.nemesis.id)),
+      inMasterTerritory: !!master && this.world.currentArea.id === master.territory,
+      heat: this.world.run.heat,
+      heatMax: HEAT.max,
+      weaponId: this.player.stats.weaponId,
+      usedWeakness: true,
+      usedAdaptedHabit: this.player.stats.habits.parry + this.player.stats.habits.dodge > 0,
+      loyalistSeparated: !this.world.enemies.some((x) => x.alive && x.nemesis.personality === 'loyalist' && x.nemesis.master === e.nemesis.id),
+    });
+    this.world.run.vendetta = next;
+    if (next.complete) {
+      this.player.stats.essence += 45;
+      this.ui.hud.toast('VENDETTA COMPLETE', 'gold');
+      this.mgr.log(makeEvent(this.mgr.turn, this.mgr.age, 'vendetta', `Vendetta against ${fullName(e.nemesis)} complete.`, [e.nemesis.id], true, 'gold'));
+    } else if (next.failed) {
+      this.ui.hud.toast('VENDETTA FAILED', 'hot');
+      remember(e.nemesis, 'PLAYER_HUMILIATED_ME', this.mgr.turn);
+      this.mgr.log(makeEvent(this.mgr.turn, this.mgr.age, 'vendetta', `Vendetta against ${fullName(e.nemesis)} failed.`, [e.nemesis.id], false, 'bad'));
+    }
+  }
+
 
   /* ============================================================
      screens
@@ -1536,9 +2041,12 @@ export class Game {
       title: opts.title,
       subtitle: opts.subtitle,
       events: opts.events,
+      recap: opts.recap,
+      reducedMotion: this.mgr.data.settings.reducedMotion,
+      reducedFlash: this.mgr.data.settings.reducedFlash,
       highlight: opts.highlight,
       buttonLabel: opts.buttonLabel,
-      extras: [{ label: 'VIEW HIERARCHY', onClick: () => this.openHierarchyFromReport() }],
+      extras: [{ label: 'VIEW THE WEB', onClick: () => this.openHierarchyFromReport() }],
       onContinue: opts.onContinue,
       spotlight: opts.spotlight,
     });
@@ -1604,6 +2112,22 @@ export class Game {
         ai: this.aiSettingsHooks(),
         runStats: () =>
           this.player.stats.statList().map((s) => ({ name: s.def.name, text: s.text, count: s.count })),
+        skills: {
+          unlocked: this.abilities.unlocked,
+          loadout: this.abilities.loadout,
+          descriptions: this.abilities.unlocked.map((id) => {
+            const d = getSkill(id);
+            return { id, name: d.name, desc: d.desc };
+          }),
+          onEquip: (slot, id) => {
+            const cur = [...this.abilities.loadout] as [SkillId, SkillId];
+            cur[slot] = id;
+            this.abilities.equip(cur[0], cur[1]);
+            this.mgr.data.playerMeta.skillLoadout = this.abilities.loadout;
+            this.world.run.skillLoadout = this.abilities.loadout;
+            this.mgr.persist();
+          },
+        },
       },
       this.world.runActive
     );
@@ -1623,6 +2147,8 @@ export class Game {
     this.lockGrace = 0.8;
     this.input.requestPointerLock();
     this.ui.hud.setVisible(true);
+    this.ui.choice.hide();
+    this.ui.power.hide();
   }
 
   /* ============================================================
@@ -1632,7 +2158,11 @@ export class Game {
   private applySettings(s: Settings): void {
     this.audio.setVolume(s.masterVolume);
     this.camera.shakeScale = s.cameraShake;
+    this.vfx.reduced = s.cameraShake < 0.35 || s.quality === 'low';
     this.ui.hud.setMinimapVisible(s.showMinimap);
+    this.ui.hud.reducedFlash = s.reducedFlash;
+    document.documentElement.classList.toggle('reduced-motion', s.reducedMotion);
+    document.documentElement.classList.toggle('reduced-flash', s.reducedFlash);
     this.ai.setSettings(s.ai);
     this.applyQuality(s.quality);
     if (this.mode === 'title' && this.saveSys.exists()) this.warmTitleGeneration();
@@ -1718,6 +2248,7 @@ export class Game {
       damagePlayer(amount: number) {
         g.player.stats.hp = Math.max(0, g.player.stats.hp - amount);
         g.ui.hud.damageVignette(0.4);
+        g.damageNumbers.spawnOn(g.player, String(amount), 'hurt');
         if (g.player.stats.hp <= 0) {
           g.player.combat.die();
           g.onPlayerKilled(null);
@@ -1925,7 +2456,44 @@ export class Game {
       },
       toggleInfiniteSurge() {
         g.debugInfiniteSurge = !g.debugInfiniteSurge;
+        g.abilities.infinite = g.debugInfiniteSurge;
         return g.debugInfiniteSurge;
+      },
+      resetSkillCooldowns() {
+        g.abilities.reset();
+      },
+      freezeSkillCooldowns() {
+        g.abilities.freeze = !g.abilities.freeze;
+        return g.abilities.freeze;
+      },
+      fillSurge() {
+        g.player.stats.surge = g.player.stats.surgeMax;
+      },
+      forceUltimate() {
+        g.player.stats.surge = g.player.stats.surgeMax;
+        g.abilities.infinite = true;
+        g.tryPlayerSkill('ultimate');
+        g.abilities.infinite = g.debugInfiniteSurge;
+      },
+      unlockAllSkills() {
+        for (const id of ['shadow_step', 'ground_rupture', 'void_grasp'] as SkillId[]) g.abilities.unlock(id);
+        g.mgr.data.playerMeta.unlockedSkills = [...g.abilities.unlocked];
+        g.mgr.persist();
+      },
+      equipSkill(slot: 0 | 1, id: string) {
+        if (!isUnlockableSkill(id) || id === 'pit_eruption') return;
+        const cur = [...g.abilities.loadout] as [SkillId, SkillId];
+        cur[slot] = id;
+        g.abilities.equip(cur[0], cur[1]);
+      },
+      kitDump() {
+        return {
+          ...g.telemetry.kit,
+          abilities: g.abilities.events.slice(-20),
+          vfx: g.vfx.poolStats(),
+          loadout: g.abilities.loadout,
+          surge: g.player.stats.surge,
+        };
       },
       setTimeScale(s: number) {
         g.loop.timeScale = s;
@@ -2024,7 +2592,14 @@ export class Game {
           area: g.world.currentArea.name,
           namedAlive: g.mgr.living().length,
           mode: g.mode,
+          heat: g.world.run.heat,
         };
+      },
+      depthAction(cmd: string) {
+        g.__sim(cmd);
+      },
+      storyAction(cmd: string) {
+        return g.__storyAction(cmd);
       },
       aiState() {
         const st = g.ai.status();
@@ -2168,10 +2743,15 @@ export class Game {
       enemiesAlive: this.world.enemies.filter((e) => e.alive).length,
       named: named.map((e) => `${fullName(e.nemesis)} [${e.nemesis.rank}] ${Math.round(e.hp)}/${e.maxHp}`),
       runKills: this.player.stats.runKills,
+      heat: this.world.run.heat,
+      remnants: this.world.run.remnants,
+      vendetta: this.world.run.vendetta?.title ?? null,
       powers: this.player.stats.powers.ids(),
       worldTurn: this.mgr.turn,
       worldAge: this.mgr.age,
       shrinesLeft: this.arena.shrines.filter((s) => !s.used).length,
+      cachesLeft: this.arena.caches.filter((c) => !c.taken).length,
+      landmarks: this.arena.landmarks.map((l) => l.name),
       colliders: this.arena.colliders.length,
       axisX: this.input.axisX,
       axisY: this.input.axisY,
@@ -2180,6 +2760,14 @@ export class Game {
       lockGrace: Math.round(this.lockGrace * 100) / 100,
       vel: Math.round(Math.hypot(this.player.controller.velocity.x, this.player.controller.velocity.z) * 100) / 100,
       dodgeCd: Math.round(this.player.combat.dodgeCooldown * 100) / 100,
+      surge: Math.round(this.player.stats.surge),
+      loadout: this.abilities.loadout,
+      skillCd: {
+        a: Math.round(this.abilities.remaining(this.abilities.loadout[0]) * 100) / 100,
+        b: Math.round(this.abilities.remaining(this.abilities.loadout[1]) * 100) / 100,
+      },
+      skillId: this.player.combat.skillId,
+      kit: this.telemetry.kit,
       deathTimer: Math.round(this.deathTimer * 100) / 100,
       quality: this.quality,
       drawCalls: this.renderer.info.render.calls,
@@ -2196,6 +2784,20 @@ export class Game {
     this.debugInvulnerable = on;
     this.player.godMode = on;
     if (on) this.player.stats.hp = this.player.stats.maxHp;
+  }
+
+  __fillSurge(): void {
+    this.player.stats.surge = this.player.stats.surgeMax;
+  }
+
+  __kit(): Record<string, unknown> {
+    return {
+      ...this.telemetry.kit,
+      loadout: this.abilities.loadout,
+      events: this.abilities.events.slice(-24),
+      vfx: this.vfx.poolStats(),
+      surge: this.player.stats.surge,
+    };
   }
 
   __playerPos(): { x: number; z: number } {
@@ -2744,9 +3346,167 @@ export class Game {
     return localStorage.getItem('shdowpit.world.v1') ?? '';
   }
 
+  __storySelfTest(): { passed: number; failed: number; log: string } {
+    const r = runStorySelfTest();
+    return { passed: r.passed, failed: r.failed, log: formatStorySelfTest(r) };
+  }
+
+  __storyAction(cmd: string): string {
+    const id = this.ui.debug.selectedId;
+    const n = this.mgr.byId(id);
+    switch (cmd) {
+      case 'openWeb':
+        if (this.mode === 'playing') this.openHierarchy();
+        this.ui.hierarchy.setTab('web');
+        return 'web';
+      case 'openTimeline':
+        if (this.mode === 'playing') this.openHierarchy();
+        this.ui.hierarchy.setTab('timeline');
+        return 'timeline';
+      case 'openThreads':
+        if (this.mode === 'playing') this.openHierarchy();
+        this.ui.hierarchy.setTab('threads');
+        return 'threads';
+      case 'focus':
+        if (n) {
+          if (this.mode === 'playing') this.openHierarchy();
+          this.ui.hierarchy.focusCharacter(n.id);
+        }
+        return id;
+      case 'steal':
+        if (!n) return 'no target';
+        n.stolen.push({ name: 'Ashfang', kind: 'weapon', weaponId: 'ashfang' });
+        if (!this.mgr.data.playerMeta.lostWeapons.includes('ashfang')) {
+          this.mgr.data.playerMeta.lostWeapons.push('ashfang');
+        }
+        this.mgr.log(
+          makeEvent(this.mgr.turn, this.mgr.age, 'weapon_theft', `${fullName(n)} took Ashfang.`, [n.id], true, 'gold', {
+            payload: { itemName: 'Ashfang', weaponId: 'ashfang' },
+            known: true,
+            witnessed: true,
+          })
+        );
+        this.mgr.persist();
+        return 'stolen';
+      case 'territory':
+        if (!n) return 'no target';
+        this.mgr.data.territories[this.world.currentArea.id] = n.id;
+        n.territory = this.world.currentArea.id;
+        this.mgr.log(
+          makeEvent(
+            this.mgr.turn,
+            this.mgr.age,
+            'territory',
+            `${fullName(n)} seized ${this.world.currentArea.name}.`,
+            [n.id],
+            true,
+            'gold',
+            { payload: { areaId: this.world.currentArea.id }, known: true }
+          )
+        );
+        this.mgr.persist();
+        return n.territory;
+      case 'recap':
+        return inspectRecap(this.mgr.data);
+      case 'inspect': {
+        const model = buildStoryModel(this.mgr.data, undefined, true);
+        const edge = model.edges[0];
+        const arc = model.arcs[0];
+        return [
+          inspectNode(this.mgr.data, id || 'player'),
+          edge ? inspectEdge(this.mgr.data, edge.id) : '',
+          arc ? inspectArc(this.mgr.data, arc.id) : '',
+        ].join('\n---\n');
+      }
+      case 'selftest':
+        return formatStorySelfTest(runStorySelfTest());
+      case 'stress': {
+        const t0 = performance.now();
+        for (let i = 0; i < 100; i++) simulateTurn(this.mgr);
+        const model = buildStoryModel(this.mgr.data);
+        return `100 turns in ${(performance.now() - t0).toFixed(0)}ms · nodes ${model.visibleNodes.length} · events ${this.mgr.data.eventLog.length}`;
+      }
+      case 'clearLayout':
+        this.mgr.data.storyView = { panX: 0, panY: 0, zoom: 1 };
+        this.mgr.persist();
+        return 'cleared';
+      default:
+        return 'unknown';
+    }
+  }
+
   __grantPower(id: PowerId): void {
     this.player.stats.addPower(id);
     this.refreshPowerChips();
+  }
+
+  __sim(cmd: string, arg?: string): Record<string, unknown> {
+    const run = this.world.run;
+    switch (cmd) {
+      case 'heat+':
+        addHeat(run, 20);
+        break;
+      case 'heatmax':
+        addHeat(run, 100);
+        break;
+      case 'setHeat':
+        run.heat = Math.max(0, Number(arg) || 0);
+        break;
+      case 'remnants':
+        run.remnants = Math.min(6, run.remnants + 3);
+        break;
+      case 'extract':
+        run.extraction.unlocked = true;
+        this.beginExtraction(this.world.extractSites[0]?.id ?? 'ex');
+        break;
+      case 'vendetta':
+        this.maybeOfferVendetta();
+        if (run.vendetta) run.vendetta.committed = true;
+        break;
+      case 'vendettaDone':
+        if (run.vendetta) {
+          run.vendetta.complete = true;
+          run.vendetta.progress = run.vendetta.goal;
+        }
+        break;
+      case 'tech': {
+        const wid = this.player.stats.weaponId;
+        const list = this.mgr.data.playerMeta.techniques[wid] ?? [];
+        if (!list.includes('sword_riposte_drive')) list.push('sword_riposte_drive');
+        this.mgr.data.playerMeta.techniques[wid] = list;
+        this.player.stats.techniques = list;
+        break;
+      }
+      case 'liberate':
+        this.world.liberateCurrent('heal_site');
+        break;
+      case 'fakedeath':
+        run.blockFakeDeath = true;
+        break;
+      case 'surrender': {
+        const e = this.world.enemies.find((x) => x.alive && x.named);
+        if (e) this.maybeOpenOutcome(e, true);
+        break;
+      }
+      case 'reward': {
+        const e = this.world.enemies.find((x) => x.named);
+        if (e) this.offerNemesisReward(e.nemesis, true);
+        break;
+      }
+      default:
+        break;
+    }
+    return {
+      heat: run.heat,
+      remnants: run.remnants,
+      vendetta: run.vendetta,
+      extraction: run.extraction,
+      lastProc: run.lastProcNote,
+      saveVersion: this.mgr.data.saveVersion,
+      aiMode: this.mgr.data.settings.ai.mode,
+      channel: this.combat.lastKillChannel,
+      playerCredit: this.combat.lastKillPlayerCredit,
+    };
   }
 
   __teleport(areaId: string): void {
@@ -2816,6 +3576,7 @@ export class Game {
     this.combat.dispose();
     this.particles.clear();
     this.vfx.dispose();
+    this.damageNumbers.clear();
     this.arena.clear();
     this.renderer.dispose();
     while (this.uiRoot.firstChild) this.uiRoot.removeChild(this.uiRoot.firstChild);
@@ -2848,6 +3609,7 @@ interface ReportArgs {
   title: string;
   subtitle: string;
   events: WorldEvent[];
+  recap?: import('../story/StoryTypes').RecapBeat[];
   highlight?: string[];
   buttonLabel: string;
   onContinue: () => void;

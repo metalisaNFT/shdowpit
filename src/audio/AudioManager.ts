@@ -267,6 +267,44 @@ export class AudioManager {
       this.tone('square', 1200, 900, 0.06, g);
     });
 
+    V.set('skill_cast', (_t, _g, _c, pitch) => {
+      const g = this.env(0.004, 0.22, 0.28);
+      this.noise(0.22, g, 'bandpass', 700 * pitch, 1.1);
+      const g2 = this.env(0.003, 0.18, 0.22);
+      this.tone('sawtooth', 180 * pitch, 70 * pitch, 0.18, g2);
+    });
+
+    V.set('skill_hit', (_t, _g, _c, pitch) => {
+      const g = this.env(0.001, 0.2, 0.42);
+      this.noise(0.2, g, 'lowpass', 900 * pitch, 1);
+      const g2 = this.env(0.001, 0.16, 0.3);
+      this.tone('square', 260 * pitch, 80, 0.16, g2);
+    });
+
+    V.set('skill_fail', (_t, _g, _c) => {
+      const g = this.env(0.001, 0.09, 0.18);
+      this.tone('square', 220, 90, 0.08, g);
+    });
+
+    V.set('skill_ready', (_t, _g, _c, pitch) => {
+      const g = this.env(0.002, 0.16, 0.16);
+      this.tone('sine', 880 * pitch, 1320 * pitch, 0.14, g);
+    });
+
+    V.set('surge_full', (_t, _g, _c) => {
+      const g = this.env(0.01, 0.55, 0.28);
+      this.tone('triangle', 220, 660, 0.4, g);
+      const g2 = this.env(0.02, 0.7, 0.18, 0.05);
+      this.tone('sine', 330, 990, 0.5, g2, 0.05);
+    });
+
+    V.set('ultimate', (_t, _g, _c, pitch) => {
+      const g = this.env(0.004, 0.55, 0.62);
+      this.noise(0.5, g, 'lowpass', 280 * pitch, 0.8);
+      const g2 = this.env(0.006, 0.8, 0.5);
+      this.tone('sawtooth', 70 * pitch, 28, 0.7, g2);
+    });
+
     V.set('bow', (_t, _g, _c, pitch) => {
       const g = this.env(0.002, 0.14, 0.26);
       this.noise(0.16, g, 'highpass', 2200 * pitch, 1);

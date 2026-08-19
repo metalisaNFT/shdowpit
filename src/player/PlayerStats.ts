@@ -5,8 +5,9 @@
 
 import { PowerSet, type PowerId } from '../data/abilities';
 import type { PlayerHabits } from '../core/SaveSystem';
-import { PLAYER, RANGED } from '../data/balance';
+import { PLAYER, RANGED, HEAL_ECON } from '../data/balance';
 import { RUN_STATS, RUN_STAT_MAP, statValue, formatStat, type RunStatId, type RunStatDef } from '../data/stats';
+import type { RunState } from '../run/RunState';
 
 export const BASE_MAX_HP = 100;
 
@@ -120,6 +121,7 @@ export class PlayerStats {
 
   /** traits stolen with PARASITE, applied as flat multipliers */
   stolenTraits: string[] = [];
+  techniques: string[] = [];
 
   /** temporary buffs */
   speedBuff = 0;
@@ -132,6 +134,7 @@ export class PlayerStats {
   runKills = 0;
   runNamedKills = 0;
   essence = 0;
+  run: RunState | null = null;
 
   /** the player's own habit counters for this run, folded into the save later */
   habits: PlayerHabits = {
@@ -157,6 +160,7 @@ export class PlayerStats {
     this.momentum = 0;
     this.secondWindUsed = false;
     this.stolenTraits = [];
+    this.techniques = [];
     this.speedBuff = 0;
     this.speedBuffTime = 0;
     this.weaponId = weaponId;
@@ -172,7 +176,9 @@ export class PlayerStats {
     if (this.powers.has('glass')) m *= 1.55;
     if (this.powers.has('momentum')) m *= 1 + this.momentum * 0.05;
     for (const t of this.stolenTraits) {
-      if (t === 'brutal') m *= 1.2;
+      if (t === 'brutal') m *= 1.12;
+      if (t === 'blood_fury') m *= 1.08;
+      if (t === 'relentless') m *= 1.06;
     }
     return m;
   }
@@ -192,7 +198,8 @@ export class PlayerStats {
     let m = 1;
     if (this.powers.has('glass')) m *= 1.3;
     for (const t of this.stolenTraits) {
-      if (t === 'iron_hide') m *= 0.85;
+      if (t === 'iron_hide') m *= 0.92;
+      if (t === 'thick_plate') m *= 0.95;
     }
     return m;
   }
@@ -201,7 +208,8 @@ export class PlayerStats {
     let m = this.stat('moveSpeed');
     if (this.speedBuffTime > 0) m *= 1 + this.speedBuff;
     for (const t of this.stolenTraits) {
-      if (t === 'quick') m *= 1.12;
+      if (t === 'quick') m *= 1.08;
+      if (t === 'swift_step') m *= 1.05;
     }
     return m;
   }
@@ -211,10 +219,19 @@ export class PlayerStats {
     if (id === 'second_wind') this.secondWindUsed = false;
   }
 
-  heal(amount: number): number {
+  heal(amount: number, source = 'generic'): number {
+    if (amount <= 0 || this.run?.healLocked) return 0;
+    if (this.run) {
+      const already = this.run.healedBySource[source] ?? 0;
+      amount = amount / (1 + already / HEAL_ECON.dimPerSource);
+      if (source === 'regen' && this.run.severeDamage > 0) amount *= HEAL_ECON.regenVsSevere;
+      this.run.healedBySource[source] = already + amount;
+    }
     const before = this.hp;
     this.hp = Math.min(this.maxHp, this.hp + amount);
-    return this.hp - before;
+    const gained = this.hp - before;
+    if (gained > 0.5 && this.run?.vendetta) this.run.vendetta.healed = true;
+    return gained;
   }
 
   tick(dt: number): void {
@@ -229,7 +246,7 @@ export class PlayerStats {
     // HEALTH REGEN run stat.
     const regen = this.stat('hpRegen');
     if (regen > 0 && this.hp > 0 && this.hp < this.maxHp) {
-      this.hp = Math.min(this.maxHp, this.hp + regen * dt);
+      this.heal(regen * dt, 'regen');
     }
   }
 
@@ -237,6 +254,6 @@ export class PlayerStats {
   lifestealFrom(damage: number): number {
     const frac = this.stat('lifesteal');
     if (frac <= 0 || damage <= 0) return 0;
-    return this.heal(damage * frac);
+    return this.heal(damage * frac, 'lifesteal');
   }
 }

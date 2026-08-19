@@ -161,6 +161,16 @@ export interface Nemesis {
    * becoming a mechanical fact. See src/ai/AITypes.ts.
    */
   ai?: NemesisAIContent;
+
+  /** how many times the player has taken a named reward from this record */
+  playerRewardFarms?: number;
+  informant?: boolean;
+  humiliations?: number;
+  branded?: boolean;
+  abandonedTerritoryTurn?: number | null;
+  stolenFromThem?: StolenItem[];
+  /** extra chance their next apparent death is real */
+  fakeDeathPenalty?: number;
 }
 
 export function hasMemory(n: Nemesis, type: MemoryType): boolean {

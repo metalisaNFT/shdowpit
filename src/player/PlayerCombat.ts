@@ -8,7 +8,7 @@
 
 import type { WeaponDef } from '../data/weapons';
 import type { PlayerStats } from './PlayerStats';
-import { PLAYER, RANGED } from '../data/balance';
+import { PLAYER, RANGED, DODGE_RULES } from '../data/balance';
 
 /** total seconds of the Void Needle throw overlay animation */
 export const RANGED_THROW_TIME = 0.32;
@@ -17,7 +17,7 @@ const RANGED_RELEASE = 0.1;
 /** attacking within this window after a dodge triggers DASH STRIKE */
 const DASH_STRIKE_WINDOW = 0.28;
 
-export type PlayerAction = 'idle' | 'attack' | 'dodge' | 'parry' | 'stagger' | 'execute' | 'dead';
+export type PlayerAction = 'idle' | 'attack' | 'dodge' | 'parry' | 'stagger' | 'execute' | 'dead' | 'skill' | 'ultimate';
 export type AttackKind = 'light' | 'heavy';
 export type Phase = 'windup' | 'active' | 'recover';
 
@@ -113,6 +113,20 @@ export class PlayerCombat {
   /** set while the current attack is a dash strike */
   dashStrike = false;
 
+  /* ---- ACTIVE SKILLS ---- */
+  skillId: string | null = null;
+  pendingSkillHit = false;
+  /** brief stagger armor (not i-frames vs red melee) */
+  skillArmor = 0;
+  skillMoveX = 0;
+  skillMoveZ = 0;
+  skillPassThrough = false;
+  /** uid -> remaining mark time from Shadow Step */
+  stepMarks = new Map<number, number>();
+  skillWindup = 0.1;
+  skillActive = 0.2;
+  skillRecover = 0.2;
+
   reset(): void {
     this.action = 'idle';
     this.phase = 'windup';
@@ -138,6 +152,13 @@ export class PlayerCombat {
     this.rangedReleased = true;
     this.sinceDodgeEnd = 99;
     this.dashStrike = false;
+    this.skillId = null;
+    this.pendingSkillHit = false;
+    this.skillArmor = 0;
+    this.skillMoveX = 0;
+    this.skillMoveZ = 0;
+    this.skillPassThrough = false;
+    this.stepMarks.clear();
   }
 
   get busy(): boolean {
@@ -180,6 +201,9 @@ export class PlayerCombat {
 
   tryAttack(kind: AttackKind, weapon: WeaponDef, stats: PlayerStats): boolean {
     if (this.action === 'dead' || this.action === 'execute' || this.action === 'stagger') return false;
+    if (this.action === 'skill' || this.action === 'ultimate') {
+      if (!(this.action === 'skill' && this.skillId === 'shadow_step' && this.phase === 'recover')) return false;
+    }
     if (this.action === 'dodge' && this.t < DODGE_TIME * 0.62) return false;
     if (this.action === 'parry' && this.t < PARRY_ACTIVE) return false;
     if (this.action === 'attack' && this.phase !== 'recover') return false;
@@ -222,6 +246,7 @@ export class PlayerCombat {
 
   tryDodge(dirX: number, dirZ: number): boolean {
     if (this.action === 'dead' || this.action === 'execute' || this.action === 'stagger') return false;
+    if (this.action === 'skill' || this.action === 'ultimate') return false;
     if (this.dodgeCooldown > 0) return false;
     if (this.action === 'attack' && this.phase === 'windup') return false;
     if (this.action === 'dodge') return false;
@@ -230,13 +255,14 @@ export class PlayerCombat {
     this.t = 0;
     this.dodgeX = dirX;
     this.dodgeZ = dirZ;
-    this.dodgeCooldown = DODGE_TIME + DODGE_COOLDOWN * this.dodgeCooldownMul;
+    this.dodgeCooldown = Math.max(DODGE_RULES.cooldownFloor, DODGE_TIME + DODGE_COOLDOWN * this.dodgeCooldownMul);
     this.comboTimer = 0;
     return true;
   }
 
   tryParry(): boolean {
     if (this.action === 'dead' || this.action === 'execute' || this.action === 'stagger') return false;
+    if (this.action === 'skill' || this.action === 'ultimate') return false;
     if (this.parryCooldown > 0) return false;
     if (this.action === 'attack' && this.phase === 'windup') return false;
     if (this.action === 'dodge') return false;
@@ -245,6 +271,42 @@ export class PlayerCombat {
     this.t = 0;
     this.parryCooldown = PARRY_TIME + PARRY_COOLDOWN;
     this.comboTimer = 0;
+    return true;
+  }
+
+  /**
+   * Begin a skill or ultimate. Timings are written by the caller after this
+   * returns true (`setSkillTimings`).
+   */
+  trySkill(kind: 'skill' | 'ultimate', id: string): boolean {
+    if (this.action === 'dead' || this.action === 'execute' || this.action === 'stagger') return false;
+    if (this.action === 'skill' || this.action === 'ultimate') return false;
+    if (kind !== 'skill' && this.action === 'attack' && this.phase === 'windup') return false;
+    this.action = kind;
+    this.phase = 'windup';
+    this.t = 0;
+    this.skillId = id;
+    this.pendingSkillHit = false;
+    this.invulnerable = false;
+    this.comboTimer = 0;
+    this.dashStrike = false;
+    return true;
+  }
+
+  setSkillTimings(windup: number, active: number, recover: number, armor = 0, passThrough = false, dirX = 0, dirZ = 0): void {
+    this.skillWindup = Math.max(0.02, windup);
+    this.skillActive = Math.max(0.04, active);
+    this.skillRecover = Math.max(0.04, recover);
+    this.skillArmor = armor;
+    this.skillPassThrough = passThrough;
+    this.skillMoveX = dirX;
+    this.skillMoveZ = dirZ;
+  }
+
+  consumeStepMark(uid: number): boolean {
+    const left = this.stepMarks.get(uid) ?? 0;
+    if (left <= 0) return false;
+    this.stepMarks.delete(uid);
     return true;
   }
 
@@ -261,11 +323,14 @@ export class PlayerCombat {
 
   stagger(): void {
     if (this.action === 'dead' || this.action === 'execute') return;
+    if (this.skillArmor > 0 && (this.action === 'skill' || this.action === 'ultimate')) return;
     this.action = 'stagger';
     this.staggerTimer = STAGGER_TIME;
     this.t = 0;
     this.invulnerable = false;
     this.comboTimer = 0;
+    this.skillPassThrough = false;
+    this.pendingSkillHit = false;
   }
 
   die(): void {
@@ -300,8 +365,16 @@ export class PlayerCombat {
     this.perfectDodgeThisFrame = false;
     this.executeStrike = false;
     this.pendingRanged = false;
+    this.pendingSkillHit = false;
     if (this.hasteTime > 0) this.hasteTime -= dt;
+    if (this.skillArmor > 0) this.skillArmor -= dt;
     if (this.riposteWindow <= 0) this.counterArmed = false;
+
+    for (const [uid, t] of this.stepMarks) {
+      const n = t - dt;
+      if (n <= 0) this.stepMarks.delete(uid);
+      else this.stepMarks.set(uid, n);
+    }
 
     if (this.dodgeCooldown > 0) this.dodgeCooldown -= dt;
     if (this.parryCooldown > 0) this.parryCooldown -= dt;
@@ -326,7 +399,9 @@ export class PlayerCombat {
         this.updateAttack(weapon, stats);
         break;
       case 'dodge':
-        this.invulnerable = this.t >= DODGE_IFRAME_START && this.t <= DODGE_IFRAME_END;
+        this.invulnerable =
+          this.t >= DODGE_IFRAME_START &&
+          this.t <= DODGE_IFRAME_END + (stats.powers.has('blink') ? DODGE_RULES.blinkIFrameEndBonus : 0);
         if (this.t >= DODGE_TIME) {
           this.action = 'idle';
           this.invulnerable = false;
@@ -350,9 +425,39 @@ export class PlayerCombat {
           this.executeTarget = null;
         }
         break;
+      case 'skill':
+      case 'ultimate':
+        this.updateSkill();
+        break;
       default:
         break;
     }
+  }
+
+  private updateSkill(): void {
+    if (this.phase === 'windup' && this.t >= this.skillWindup) {
+      this.phase = 'active';
+      this.t -= this.skillWindup;
+      this.pendingSkillHit = true;
+    } else if (this.phase === 'active' && this.t >= this.skillActive) {
+      this.phase = 'recover';
+      this.t -= this.skillActive;
+      this.skillPassThrough = false;
+    } else if (this.phase === 'recover' && this.t >= this.skillRecover) {
+      this.action = 'idle';
+      this.phase = 'windup';
+      this.t = 0;
+      this.skillId = null;
+      this.skillPassThrough = false;
+    }
+  }
+
+  skillProgress(): number {
+    const total = this.skillWindup + this.skillActive + this.skillRecover;
+    let done = this.t;
+    if (this.phase === 'active') done += this.skillWindup;
+    else if (this.phase === 'recover') done += this.skillWindup + this.skillActive;
+    return Math.max(0, Math.min(1, done / Math.max(0.01, total)));
   }
 
   private updateAttack(weapon: WeaponDef, stats: PlayerStats): void {
@@ -390,7 +495,7 @@ export class PlayerCombat {
     //   0  fast horizontal opener
     //   1  opposite diagonal — quicker still, so the pair reads as a flurry
     //   2  committed forward finisher: slower, longer, and it moves you
-    const c = LIGHT_COMBO[this.comboIndex] ?? LIGHT_COMBO[0];
+    const c = (weapon.lightCombo ?? LIGHT_COMBO)[this.comboIndex] ?? LIGHT_COMBO[0];
     return {
       windup: weapon.windup * c.windup * haste,
       active: 0.07,
@@ -409,17 +514,26 @@ export class PlayerCombat {
         halfArc: weapon.arc * 1.25,
         combo: 0,
         knockback: 7,
-        ignite: false,
+        ignite: stats.techniques.includes('sun_ignite'),
       };
     }
-    const c = LIGHT_COMBO[this.comboIndex] ?? LIGHT_COMBO[0];
+    const c = (weapon.lightCombo ?? LIGHT_COMBO)[this.comboIndex] ?? LIGHT_COMBO[0];
     const dash = this.dashStrike;
+    const techs = stats.techniques;
+    let reachMul = dash ? 1.35 : 1;
+    if (dash && techs.includes('spear_chase')) {
+      reachMul *= 1.15;
+    }
+    let arc = weapon.arc * c.arc;
+    if (this.comboIndex === 2 && techs.includes('gs_spin')) arc *= 1.35;
+    let reach = weapon.reach * c.reach * reachMul;
+    if (this.comboIndex === 2 && techs.includes('tooth_pierce')) reach *= 1.12;
     return {
       kind: 'light',
-      damage: weapon.damage * c.damage * mult * (dash ? 1.25 : 1),
+      damage: weapon.damage * c.damage * mult * (dash ? 1.25 : 1) * (this.counterArmed && techs.includes('sword_riposte_drive') ? 1.35 : 1),
       stagger: weapon.stagger * c.posture * (dash ? 1.4 : 1),
-      reach: weapon.reach * c.reach * (dash ? 1.35 : 1),
-      halfArc: weapon.arc * c.arc,
+      reach,
+      halfArc: arc,
       combo: this.comboIndex,
       knockback: c.knockback,
       ignite: stats.powers.has('ember'),

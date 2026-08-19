@@ -55,7 +55,10 @@ export function updateEnemyAI(e: Enemy, ctx: AIContext): void {
   /* ---------------- should they break? ---------------- */
   const hpFrac = e.hp / e.maxHp;
   const flee = e.fleeThreshold;
-  if (!e.escaping && flee > 0 && hpFrac <= flee && e.stateTime > 1 && !e.introHold) {
+  if (e.huntedByPlayer) {
+    e.escaping = false;
+  }
+  if (!e.escaping && !e.huntedByPlayer && flee > 0 && hpFrac <= flee && e.stateTime > 1 && !e.introHold) {
     // Give it a moment of hesitation so it does not look scripted.
     if (Math.random() < 0.6 * pers.survival * dt * 4) e.escaping = true;
   }

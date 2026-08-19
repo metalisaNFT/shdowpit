@@ -1739,3 +1739,409 @@ button.brut:disabled {
   transform-origin: left center;
   transition: transform 140ms linear;
 }
+
+.hud-bl .surge.full .fill {
+  background: #e4ff2b;
+}
+
+.hud-bl .surge.ready-flash {
+  animation: brokenPulse 700ms ease-in-out 2;
+}
+
+.skill-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.skill-slot {
+  width: 58px;
+  height: 58px;
+  border: 1px solid rgba(196, 255, 46, 0.35);
+  background: rgba(8, 9, 12, 0.72);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.skill-slot.ult {
+  border-color: rgba(228, 255, 43, 0.55);
+  width: 64px;
+}
+
+.skill-slot.ready {
+  box-shadow: 0 0 10px rgba(161, 76, 255, 0.45);
+}
+
+.skill-slot.ult.ready {
+  box-shadow: 0 0 12px rgba(228, 255, 43, 0.55);
+}
+
+.skill-slot.fail {
+  border-color: #ff2a3c;
+}
+
+.skill-slot.flash {
+  animation: brokenPulse 280ms ease-in-out 1;
+}
+
+.skill-slot.empowered .skill-icon {
+  color: #2ff2ff;
+}
+
+.skill-icon {
+  font-size: 18px;
+  color: #c4ff2e;
+  line-height: 1;
+}
+
+.skill-name {
+  font-size: 8px;
+  letter-spacing: 0.12em;
+  opacity: 0.75;
+  text-align: center;
+  padding: 0 2px;
+}
+
+.skill-bind {
+  position: absolute;
+  top: 2px;
+  left: 4px;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  opacity: 0.7;
+}
+
+.skill-cd {
+  position: absolute;
+  inset: 0;
+  background: conic-gradient(rgba(10, 12, 16, 0.78) calc((1 - var(--cd, 1)) * 360deg), transparent 0);
+  pointer-events: none;
+}
+
+/* ---------- floating damage ---------- */
+
+#dmg-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 8;
+}
+
+.dmg {
+  position: absolute;
+  left: 0;
+  top: 0;
+  margin: 0;
+  font-family: var(--ui-font);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+  will-change: transform, opacity;
+  text-shadow:
+    0 1px 0 #000,
+    0 0 10px rgba(0, 0, 0, 0.85);
+}
+
+.dmg.hit {
+  color: #e8e6e0;
+  font-size: 18px;
+}
+
+.dmg.crit {
+  color: #e4ff2b;
+  font-size: 26px;
+  text-shadow:
+    0 1px 0 #000,
+    0 0 12px rgba(228, 255, 43, 0.55);
+}
+
+.dmg.hurt {
+  color: #ff2a3c;
+  font-size: 22px;
+  text-shadow:
+    0 1px 0 #000,
+    0 0 12px rgba(255, 42, 60, 0.5);
+}
+
+.dmg.fire {
+  color: #ff9a1f;
+  font-size: 16px;
+}
+
+.dmg.poison {
+  color: #76ff35;
+  font-size: 15px;
+}
+
+.dmg.block,
+.dmg.miss,
+.dmg.parry {
+  color: #2ff2ff;
+  font-size: 13px;
+  letter-spacing: 0.22em;
+}
+
+.dmg.parry {
+  font-size: 15px;
+}
+
+/* ---------- story web / recap ---------- */
+
+.story-screen .body {
+  max-height: 68vh;
+  width: min(1240px, 98vw);
+}
+
+.story-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+  pointer-events: auto;
+}
+
+.story-filters .brut.on {
+  background: var(--ink);
+  color: var(--bg);
+}
+
+.story-search {
+  pointer-events: auto;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font: inherit;
+  letter-spacing: 0.2em;
+  padding: 6px 10px;
+  text-transform: uppercase;
+  min-width: 140px;
+}
+
+.story-web-wrap {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(240px, 0.9fr);
+  gap: 12px;
+  min-height: 420px;
+}
+
+.story-web {
+  border: 1px solid var(--line);
+  background: rgba(8, 8, 12, 0.85);
+  min-height: 400px;
+  outline: none;
+  pointer-events: auto;
+}
+
+.story-web svg {
+  width: 100%;
+  height: 420px;
+  display: block;
+}
+
+.story-edge path {
+  stroke: #8a8680;
+}
+.story-edge.kind-rival path {
+  stroke: var(--hot);
+}
+.story-edge.kind-revenge path {
+  stroke: var(--hot);
+}
+.story-edge.kind-master path {
+  stroke: var(--gold);
+}
+.story-edge.kind-ally path {
+  stroke: var(--cold);
+}
+.story-edge.kind-former_ally path {
+  stroke: var(--dim);
+}
+.story-edge.kind-betrayal path,
+.story-edge .cross {
+  stroke: var(--hot);
+}
+.story-edge.kind-stolen_weapon path {
+  stroke: var(--gold);
+  stroke-dasharray: 2 6 8 6;
+}
+.story-edge.kind-territory_war path {
+  stroke: #c4ff2e;
+}
+.story-edge.spectral path {
+  opacity: 0.42;
+  stroke-dasharray: 1 5;
+}
+.story-edge.dim {
+  opacity: 0.18;
+}
+.story-edge.sel path {
+  stroke-width: 5;
+}
+.story-edge .pulse {
+  animation: edgePulse 1.4s ease-in-out infinite;
+}
+.edge-icon {
+  fill: var(--gold);
+  font-size: 12px;
+}
+
+.node-ring {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1.5;
+}
+.story-node.player .node-ring {
+  stroke: var(--gold);
+  stroke-width: 2.5;
+}
+.story-node.overlord .node-ring {
+  stroke: var(--gold);
+}
+.story-node.dead {
+  opacity: 0.45;
+}
+.story-node.dim {
+  opacity: 0.22;
+}
+.story-node.sel .node-ring {
+  stroke: var(--hot);
+  stroke-width: 3;
+}
+.node-name {
+  fill: var(--ink);
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  font-family: var(--ui-font);
+}
+.unresolved {
+  fill: var(--hot);
+}
+
+.story-side {
+  pointer-events: auto;
+  overflow: auto;
+  max-height: 420px;
+}
+
+.story-jumps {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.thread-card {
+  pointer-events: auto;
+  cursor: pointer;
+  border: 1px solid var(--line);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.thread-card.open {
+  border-color: var(--hot);
+}
+
+.timeline-card {
+  cursor: pointer;
+  pointer-events: auto;
+}
+.timeline-card.witnessed b {
+  color: var(--ink);
+}
+.timeline-card.important {
+  border-left: 3px solid var(--gold);
+  padding-left: 8px;
+}
+
+.recap-card {
+  border: 1px solid var(--line);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  opacity: 0;
+  animation: reportIn 400ms ease-out forwards;
+}
+.recap-h {
+  font-size: 13px;
+  letter-spacing: 0.28em;
+  color: var(--gold);
+}
+.recap-l {
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  margin-top: 4px;
+}
+.recap-d {
+  font-size: 11px;
+  color: var(--dim);
+  margin-top: 4px;
+  letter-spacing: 0.14em;
+}
+.recap-card.vfx-betrayal {
+  border-color: var(--hot);
+}
+.recap-card.vfx-promotion,
+.recap-card.vfx-succession {
+  border-color: var(--gold);
+}
+.recap-card.vfx-death {
+  border-color: #5a1010;
+}
+.recap-card.vfx-resurrection {
+  border-style: dashed;
+}
+.recap-card.vfx-theft {
+  border-color: var(--gold);
+}
+.recap-card.vfx-territory {
+  border-color: #c4ff2e;
+}
+.recap-card.vfx-revenge {
+  box-shadow: inset 4px 0 0 var(--hot);
+}
+.recap-card.vfx-age {
+  border-color: var(--cold);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+}
+
+@keyframes edgePulse {
+  from {
+    opacity: 0.35;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (max-width: 900px) {
+  .story-web-wrap {
+    grid-template-columns: 1fr;
+  }
+  .tabs {
+    flex-wrap: wrap;
+  }
+}
+
+.reduced-motion .report-line,
+.reduced-motion .recap-card,
+html.reduced-motion .report-line,
+html.reduced-motion .recap-card,
+html.reduced-motion .story-edge .pulse {
+  animation: none !important;
+  opacity: 1 !important;
+}
+
+html.reduced-flash .killer-portrait {
+  filter: grayscale(0.3);
+}

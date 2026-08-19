@@ -114,6 +114,8 @@ export class Enemy implements Combatant {
 
   rivalTarget: Enemy | null = null;
   protectTarget: Enemy | null = null;
+  /** Terror+Predator: fleeing becomes a hunt, not an exit */
+  huntedByPlayer = false;
 
   patrolTarget = new THREE.Vector3();
   attackTimer = 0;
@@ -219,6 +221,11 @@ export class Enemy implements Combatant {
     const pers = getPersonality(n.personality);
     this.damage =
       this.weapon.damage * (1 + n.level * 0.035) * this.mods.damageMul * age.damage * (0.85 + pers.aggression * 0.3);
+    if (n.stolen.length) {
+      this.damage *= 1.14;
+      this.weapon = { ...this.weapon, reach: this.weapon.reach + 0.35, damage: this.weapon.damage + 2 };
+    }
+    if (n.stolenFromThem?.length) this.damage *= 0.86;
     this.speed = (ARCH_SPEED[n.archetype] ?? 4.8) * this.mods.speedMul;
 
     this.rig = buildEnemyRig(n);
@@ -486,8 +493,10 @@ export class Enemy implements Combatant {
       const dz = this.position.z - info.fromZ;
       const len = Math.hypot(dx, dz) || 1;
       const resist = this.nemesis.archetype === 'heavy' ? 0.35 : 1;
-      this.velocity.x += (dx / len) * kb * resist;
-      this.velocity.z += (dz / len) * kb * resist;
+      const cc = info.source === 'skill' ? this.combat.displaceScale() : 1;
+      this.velocity.x += (dx / len) * kb * resist * cc;
+      this.velocity.z += (dz / len) * kb * resist * cc;
+      if (info.source === 'skill') this.combat.noteDisplace();
     }
 
     if (info.stagger > 0) {
@@ -520,6 +529,16 @@ export class Enemy implements Combatant {
       res.killed = true;
     }
     return res;
+  }
+
+  pullToward(x: number, z: number, speed: number): void {
+    const dx = x - this.position.x;
+    const dz = z - this.position.z;
+    const len = Math.hypot(dx, dz) || 1;
+    const s = speed * this.combat.displaceScale();
+    this.velocity.x += (dx / len) * s;
+    this.velocity.z += (dz / len) * s;
+    this.combat.noteDisplace();
   }
 
   currentDamage(): number {

@@ -11,17 +11,32 @@ import type { GameLoop } from '../core/GameLoop';
 import type { AudioManager } from '../audio/AudioManager';
 import type { Particles } from '../fx/Particles';
 import type { VFX } from '../fx/VFX';
+import type { DamageFloatKind, DamageNumbers } from '../fx/DamageNumbers';
 import type { ThirdPersonCamera } from '../camera/ThirdPersonCamera';
 import type { Arena } from '../world/Arena';
 import type { PlayerHabits } from '../core/SaveSystem';
 import { Player } from '../player/Player';
 import { Enemy } from '../enemy/Enemy';
 import { arcHits, isBehind, radiusHits } from './Hitbox';
-import type { DamageInfo } from './Types';
+import type { Combatant, DamageInfo, DamageResult } from './Types';
 import { chooseAttack, type AttackIntent, type ProjectileKind } from '../data/attacks';
-import { PLAYER, POSTURE, RANGED, PROJ, POISON, STAGGER } from '../data/balance';
+import { PLAYER, POSTURE, RANGED, PROJ, POISON, STAGGER, HEAL_ECON, EXECUTION_RULES, SKILLS, ULTIMATE } from '../data/balance';
 import { SIGNAL } from '../data/palette';
 import type { Telemetry } from '../core/Telemetry';
+import { canProc, withChannel } from './ProcRules';
+import type { RunState } from '../run/RunState';
+import { hasReaction } from '../abilities/Reactions';
+import type { AbilityRuntime } from '../abilities/AbilityRuntime';
+import { getSkill, profileFor, type SkillId } from '../data/skills';
+import {
+  enemiesAlongSegment,
+  enemiesInCone,
+  enemiesInDisk,
+  pickTetherTarget,
+  scaledDistance,
+  scaledRadius,
+} from '../abilities/SkillTargeting';
+import { rankIndex } from '../nemesis/Nemesis';
 
 export interface CombatCallbacks {
   onEnemyKilled(e: Enemy, executed: boolean): void;
@@ -35,6 +50,8 @@ export interface CombatCallbacks {
   onPerfectDodge?(e: Enemy): void;
   /** an enemy's posture broke — they are open and executable */
   onPostureBroken?(e: Enemy): void;
+  onInterrupt?(e: Enemy): void;
+  onProcNote?(text: string): void;
 }
 
 /**
@@ -105,6 +122,15 @@ export class CombatSystem {
    * context to judge whether it was fair — see core/Telemetry.ts.
    */
   telemetry: Telemetry | null = null;
+  run: RunState | null = null;
+  lastKillChannel: DamageInfo['channel'] = 'primary';
+  lastKillPlayerCredit = true;
+  combatClock = 0;
+  abilities: AbilityRuntime | null = null;
+  lockUid: number | null = null;
+  private lastStepX = 0;
+  private lastStepZ = 0;
+  private skillArmed = false;
 
   /** enemies that have been executed this frame, for the caller */
   constructor(
@@ -113,6 +139,7 @@ export class CombatSystem {
     private arena: Arena,
     private particles: Particles,
     private vfx: VFX,
+    private floats: DamageNumbers,
     private audio: AudioManager,
     private loop: GameLoop,
     private camera: ThirdPersonCamera,
@@ -129,14 +156,44 @@ export class CombatSystem {
      ============================================================ */
 
   update(dt: number): void {
+    this.combatClock += dt;
     this.resolvePlayerSwing();
     this.resolvePlayerRanged();
+    this.resolvePlayerSkills();
     this.resolvePlayerExecution();
     this.resolveEnemySwings(dt);
     this.updateProjectiles(dt);
     this.updateHazards(dt);
     this.updateBurning(dt);
     this.updateTrails();
+    this.reapDotKills();
+  }
+
+  private reapDotKills(): void {
+    for (const e of this.enemies) {
+      if (!e.alive) continue;
+      if (e.hp > 0.011) continue;
+      if (e.poisonTimer > 0 || e.burning > 0) {
+        e.hp = 0;
+        this.killEnemy(
+          e,
+          false,
+          undefined,
+          withChannel(
+            {
+              amount: 1,
+              source: 'fire',
+              stagger: 0,
+              attacker: this.player,
+              fromX: e.position.x,
+              fromZ: e.position.z,
+            },
+            'dot',
+            true
+          )
+        );
+      }
+    }
   }
 
   /* ============================================================
@@ -172,6 +229,15 @@ export class CombatSystem {
       if (behind) this.cb.onHabit('backstab');
 
       let damage = hit.damage;
+      let stagger = hit.stagger;
+      if (stats.techniques.includes('gs_breaker') && hit.kind === 'heavy' && e.combat.attacking) {
+        stagger *= 1.2;
+      }
+      if (p.combat.consumeStepMark(e.uid)) {
+        stagger += SKILLS.markPosture;
+        this.vfx.impact('posture_break', e.position.x, 1.15, e.position.z);
+        this.audio.play('stagger', { volume: 0.45, pitch: 1.4, minGap: 0.08 });
+      }
       // BLOOD DEBT — the ones who have killed you before bleed harder.
       if (stats.powers.has('blood_debt') && e.nemesis.killsAgainstPlayer > 0) damage *= 1.75;
       if (stats.powers.has('hunters_mark') && e.named) damage *= 1.2;
@@ -187,7 +253,7 @@ export class CombatSystem {
       const info: DamageInfo = {
         amount: damage,
         source: hit.kind === 'heavy' ? 'heavy' : 'light',
-        stagger: hit.stagger,
+        stagger,
         attacker: p,
         fromX: p.position.x,
         fromZ: p.position.z,
@@ -197,8 +263,13 @@ export class CombatSystem {
         critical: crit,
         postureMul: stats.stat('postureDamage') * hunter,
         poison: stats.powers.has('toxic_edge') ? POISON.buildupMelee * stats.stat('poisonDamage') : 0,
+        channel: 'primary',
+        grantsPlayerKill: true,
+        slowFactor: this.player.stats.techniques.includes('spear_chase') && this.player.combat.dashStrike ? 0.7 : undefined,
+        slowDuration: 1.1,
       };
-      const res = e.applyDamage(info);
+      if (e.combat.state === 'windup' || e.combat.state === 'hold') this.cb.onInterrupt?.(e);
+      const res = this.strike(e, info);
 
       if (res.dodged) {
         this.particles.dust(e.position.x, 0.4, e.position.z, 6);
@@ -231,18 +302,45 @@ export class CombatSystem {
         });
       }
       this.onDamageFeedback(e, res.applied, hit.kind, res.critical, hit.ignite);
-      this.afterPlayerHit(e, res, hit.kind === 'heavy');
+      this.afterPlayerHit(e, res, hit.kind === 'heavy', info);
 
-      if (stats.powers.has('leech')) {
-        const healed = stats.heal(1 + stats.powers.count('leech'));
+      if (stats.powers.has('leech') && canProc(info, 'leech')) {
+        const healed = stats.heal(Math.min(HEAL_ECON.leechCapPerHit, 1 + stats.powers.count('leech')), 'leech');
         if (healed > 0) this.audio.play('heal', { volume: 0.15, minGap: 0.4 });
       }
-      if (stats.powers.has('momentum')) {
+      if (stats.powers.has('momentum') && canProc(info, 'momentum')) {
         stats.momentum = Math.min(stats.momentumMax, stats.momentum + 1);
       }
-      stats.addSurge(hit.kind === 'heavy' ? PLAYER.surgeOnHeavyHit : PLAYER.surgeOnHit);
+      this.grantSurge(hit.kind === 'heavy' ? PLAYER.surgeOnHeavyHit : PLAYER.surgeOnHit, hit.kind === 'heavy' ? 'heavy' : 'light');
       if (res.killed) {
-        this.killEnemy(e, false);
+        this.killEnemy(e, false, undefined, info);
+      }
+    }
+
+    // VOID TOOTH — light finisher pierces to a second target in line.
+    if (hit.kind === 'light' && p.combat.comboIndex === 2 && stats.techniques.includes('tooth_pierce')) {
+      const extraReach = hit.reach * 1.35;
+      const q2 = { x: p.position.x, z: p.position.z, facing: p.facing, reach: extraReach, halfArc: 0.28 };
+      let pierced = 0;
+      for (const e of this.enemies) {
+        if (!e.alive || pierced >= 1) continue;
+        if (!arcHits(q2, e.position.x, e.position.z, e.radius)) continue;
+        if (arcHits(q, e.position.x, e.position.z, e.radius)) continue;
+        pierced++;
+        const info: DamageInfo = {
+          amount: hit.damage * 0.7,
+          source: 'light',
+          stagger: hit.stagger * 0.6,
+          attacker: p,
+          fromX: p.position.x,
+          fromZ: p.position.z,
+          knockback: 2,
+          channel: 'secondary',
+          grantsPlayerKill: true,
+        };
+        const res = this.strike(e, info);
+        if (res.applied > 0) this.onDamageFeedback(e, res.applied, 'light', false, false);
+        if (res.killed) this.killEnemy(e, false, undefined, info);
       }
     }
 
@@ -273,18 +371,23 @@ export class CombatSystem {
     for (const e of this.enemies) {
       if (!e.alive) continue;
       if (!arcHits(q, e.position.x, e.position.z, e.radius)) continue;
-      const res = e.applyDamage({
+      const res = this.strike(e, {
         amount: damage,
         source: 'heavy',
-        stagger: 8,
+        stagger: hasReaction(this.player.stats.powers, 'posture_echo') ? 22 : 8,
         attacker: this.player,
         fromX: x,
         fromZ: z,
         knockback: 2,
+        channel: 'secondary',
+        grantsPlayerKill: true,
+        postureMul: hasReaction(this.player.stats.powers, 'posture_echo') ? 1.8 : 1,
       });
       if (res.applied > 0) this.onDamageFeedback(e, res.applied, 'heavy', false, false);
       this.afterPlayerHit(e, res, true);
-      if (res.killed) this.killEnemy(e, false);
+      if (res.killed) this.killEnemy(e, false, undefined, {
+        amount: damage, source: 'heavy', stagger: 8, attacker: this.player, fromX: x, fromZ: z, channel: 'secondary', grantsPlayerKill: true,
+      });
     }
   }
 
@@ -297,7 +400,7 @@ export class CombatSystem {
     for (const e of this.enemies) {
       if (!e.alive) continue;
       if (!radiusHits(x, z, radius, e.position.x, e.position.z, e.radius)) continue;
-      const res = e.applyDamage({
+      const info: DamageInfo = {
         amount: damage,
         source: 'blast',
         stagger,
@@ -305,16 +408,20 @@ export class CombatSystem {
         fromX: x,
         fromZ: z,
         knockback: 9,
-      });
+        channel: 'secondary',
+        grantsPlayerKill: true,
+      };
+      if (hasReaction(this.player.stats.powers, 'poison_shockwave')) {
+        info.poison = 18 * this.player.stats.stat('poisonDamage');
+        if (e.poisoned) info.poison += 24;
+        this.cb.onProcNote?.('PLAGUE WAVE');
+      }
+      const res = this.strike(e, info);
       if (res.applied > 0) this.onDamageFeedback(e, res.applied, 'heavy', false, false);
       this.afterPlayerHit(e, res, true);
-      if (res.killed) this.killEnemy(e, false);
+      if (res.killed) this.killEnemy(e, false, undefined, info);
     }
   }
-
-  /* ============================================================
-     VOID NEEDLE — the player's ranged tool
-     ============================================================ */
 
   /**
    * The needle exists to interact with enemies the sword cannot reach: it
@@ -410,7 +517,7 @@ export class CombatSystem {
     let damage = a.damage;
     if (e.combat.broken) damage *= stats.stat('executionPower');
 
-    const res = e.applyDamage({
+    const res = this.strike(e, {
       amount: damage,
       source: 'ranged',
       stagger: RANGED.posture,
@@ -428,8 +535,12 @@ export class CombatSystem {
     if (res.applied > 0) {
       this.vfx.impact('projectile', a.x, a.y, a.z);
       this.audio.play('arrow_hit', { volume: 0.5, pitch: 1.4, minGap: 0.05 });
-      stats.addSurge(2);
+      this.grantSurge(2, 'needle');
       this.afterPlayerHit(e, res, false);
+      if (stats.techniques.includes('sword_needle_bind') && this.player.combat.parryActive) {
+        stats.rangedCharges = Math.min(stats.maxRangedCharges, stats.rangedCharges + 1);
+        this.cb.onProcNote?.('NEEDLE BIND');
+      }
     }
     if (this.telemetry) {
       this.telemetry.pushHit({
@@ -486,6 +597,231 @@ export class CombatSystem {
      executions
      ============================================================ */
 
+  /* ============================================================
+     active skills
+     ============================================================ */
+
+  private resolvePlayerSkills(): void {
+    const p = this.player;
+    const c = p.combat;
+    if (c.action !== 'skill' && c.action !== 'ultimate') {
+      this.skillArmed = false;
+      return;
+    }
+    const id = (c.skillId ?? 'shadow_step') as SkillId;
+    const def = getSkill(id);
+    const prof = profileFor(def, p.stats.weaponId);
+    const mom = p.stats.powers.has('momentum') ? 1 + p.stats.momentum * 0.02 : 1;
+    const empower = this.abilities?.nextEmpowered && id !== 'pit_eruption';
+
+    if (c.phase === 'windup' && !this.skillArmed) {
+      this.skillArmed = true;
+      this.lastStepX = p.position.x;
+      this.lastStepZ = p.position.z;
+      if (id === 'ground_rupture' || id === 'pit_eruption') {
+        const r = scaledRadius(def, prof, mom);
+        this.vfx.crackDecal(p.position.x, p.position.z, r * 0.55, id === 'pit_eruption' ? 0xe4ff2b : 0xa14cff, 0.9);
+        this.vfx.ring(p.position.x, 0.06, p.position.z, 0xa14cff, 0.4, r, c.skillWindup + 0.05, 0.7);
+        this.audio.play('skill_cast', { volume: 0.55, pitch: id === 'pit_eruption' ? 0.7 : 0.9 });
+      } else if (id === 'shadow_step') {
+        this.vfx.ring(p.position.x, 0.05, p.position.z, 0xa14cff, 0.2, 1.6, 0.22, 0.55);
+        this.audio.play('skill_cast', { volume: 0.4, pitch: 1.3 });
+      } else {
+        this.audio.play('skill_cast', { volume: 0.45, pitch: 1.05 });
+      }
+    }
+
+    if (id === 'shadow_step' && c.phase === 'active') {
+      const crossed = enemiesAlongSegment(
+        this.enemies,
+        this.lastStepX,
+        this.lastStepZ,
+        p.position.x,
+        p.position.z,
+        scaledRadius(def, prof, mom)
+      );
+      this.lastStepX = p.position.x;
+      this.lastStepZ = p.position.z;
+      const markT = SKILLS.markDuration * (empower ? 1.4 : 1);
+      for (const e of crossed) {
+        c.stepMarks.set(e.uid, markT);
+        this.vfx.flash(e.position.x, 1.1, e.position.z, 0xa14cff, 0.45, 0.1);
+        if (p.stats.powers.has('ember')) e.burning = Math.max(e.burning, 2.2);
+      }
+      this.vfx.flash(p.position.x, 1.0, p.position.z, 0x6a3cff, 0.35, 0.08);
+    }
+
+    if (!c.pendingSkillHit) return;
+    this.abilities?.nextEmpowered && id !== 'pit_eruption' && (this.abilities.nextEmpowered = false);
+
+    if (id === 'ground_rupture') this.fireRupture(def, prof, mom, !!empower);
+    else if (id === 'void_grasp') this.fireGrasp(def, prof, mom, !!empower);
+    else if (id === 'pit_eruption') this.fireEruption(def, prof, mom);
+  }
+
+  private fireRupture(def: ReturnType<typeof getSkill>, prof: ReturnType<typeof profileFor>, mom: number, empower: boolean): void {
+    const p = this.player;
+    const r = scaledRadius(def, prof, mom);
+    const reach = Math.max(r, scaledDistance(def, prof, mom) || r);
+    this.vfx.shockwave(p.position.x, p.position.z, prof.fissure ? reach * 0.7 : r, 0xa14cff);
+    this.audio.play('shockwave', { volume: 0.7, pitch: 0.85 });
+    this.loop.hitStop(0.06);
+    this.camera.shake(0.42);
+    const targets = prof.fissure
+      ? enemiesInCone(this.enemies, p.position.x, p.position.z, p.facing, reach * 1.6, 0.42)
+      : enemiesInDisk(this.enemies, p.position.x, p.position.z, r, 10);
+    let i = 0;
+    const posture = def.posture * prof.postureMul * (empower ? SKILLS.perfectEmpowerPosture : 1);
+    for (const e of targets) {
+      const armored = e.combat.current && !e.combat.current.interruptible && (e.combat.state === 'windup' || e.combat.state === 'hold' || e.combat.state === 'active');
+      const info: DamageInfo = {
+        amount: p.weapon.damage * def.damageMul * prof.damageMul * p.stats.meleeDamageMultiplier(),
+        source: 'skill',
+        stagger: armored ? posture * 0.35 : posture,
+        attacker: p,
+        fromX: p.position.x,
+        fromZ: p.position.z,
+        knockback: def.knockback * e.combat.displaceScale(),
+        channel: i === 0 ? 'primary' : 'area',
+        grantsPlayerKill: true,
+        poison: p.stats.powers.has('toxic_edge') ? POISON.buildupMelee * 0.6 : 0,
+        ignite: p.stats.powers.has('ember'),
+      };
+      i++;
+      const res = this.strike(e, info);
+      if (res.applied > 0) {
+        this.onDamageFeedback(e, res.applied, 'heavy', false, !!info.ignite);
+        this.afterPlayerHit(e, res, true, info);
+        this.abilities?.logHit('ground_rupture', `d${Math.round(res.applied)}`);
+        this.telemetry?.noteSkillHit('ground_rupture', res.applied, posture);
+        if (canProc(info, 'surge')) this.grantSurge(2, 'skill_hit');
+      }
+      if (res.killed) this.killEnemy(e, false, undefined, info);
+    }
+    if (p.stats.powers.has('toxic_edge')) {
+      this.spawnHazard(p.position.x, p.position.z, r * 0.55, POISON.dps * 0.7, 2.4, 'player');
+    }
+  }
+
+  private fireGrasp(def: ReturnType<typeof getSkill>, prof: ReturnType<typeof profileFor>, mom: number, empower: boolean): void {
+    const p = this.player;
+    const range = scaledDistance(def, prof, mom);
+    const target = pickTetherTarget(
+      this.enemies,
+      { x: p.position.x, z: p.position.z, facing: p.facing, lockUid: this.lockUid },
+      this.arena,
+      range,
+      def.halfArc
+    );
+    if (!target) {
+      this.audio.play('skill_fail', { volume: 0.4, pitch: 0.7 });
+      this.vfx.flash(p.position.x, 1.2, p.position.z, 0x5544aa, 0.4, 0.1);
+      this.cb.onProcNote?.('NO TARGET');
+      return;
+    }
+    const ri = rankIndex(target.nemesis.rank);
+    const heavy = target.nemesis.archetype === 'heavy' || ri >= 3;
+    const protectedBoss = ri >= 4 || (target.combat.current && !target.combat.current.interruptible && target.combat.state !== 'ready');
+    this.vfx.slash(p.position.x, 1.2, p.position.z, p.facing, range * 0.5, 0.2, 0xa14cff, 0.2);
+    this.vfx.flash(target.position.x, 1.3, target.position.z, 0xa14cff, 0.7, 0.14);
+    this.audio.play('skill_hit', { volume: 0.65, pitch: 0.9 });
+
+    if (protectedBoss) {
+      this.floats.spawnOn(target, 'RESIST', 'block');
+      target.applySlow(0.7, 0.8);
+      return;
+    }
+
+    if (heavy) {
+      const dx = target.position.x - p.position.x;
+      const dz = target.position.z - p.position.z;
+      const len = Math.hypot(dx, dz) || 1;
+      p.controller.knockback(dx / len, dz / len, 14);
+      p.combat.skillMoveX = (dx / len) * 18;
+      p.combat.skillMoveZ = (dz / len) * 18;
+    } else {
+      target.pullToward(p.position.x, p.position.z, 22);
+      if (p.stats.powers.has('posture_hunter') && target.combat.interruptible) {
+        target.combat.stagger(0.4);
+        this.cb.onInterrupt?.(target);
+      }
+    }
+
+    const info: DamageInfo = {
+      amount: p.weapon.damage * def.damageMul * p.stats.meleeDamageMultiplier(),
+      source: 'skill',
+      stagger: def.posture * prof.postureMul * (empower ? SKILLS.perfectEmpowerPosture : 1),
+      attacker: p,
+      fromX: p.position.x,
+      fromZ: p.position.z,
+      slowFactor: 0.55,
+      slowDuration: 1.1,
+      channel: 'primary',
+      grantsPlayerKill: true,
+    };
+    const res = this.strike(target, info);
+    if (res.applied > 0) {
+      this.onDamageFeedback(target, res.applied, 'light', false, false);
+      this.afterPlayerHit(target, res, false, info);
+      this.telemetry?.noteSkillHit('void_grasp', res.applied, info.stagger);
+      if (canProc(info, 'surge')) this.grantSurge(2, 'skill_hit');
+    }
+    if (res.killed) this.killEnemy(target, false, undefined, info);
+  }
+
+  private fireEruption(def: ReturnType<typeof getSkill>, prof: ReturnType<typeof profileFor>, mom: number): void {
+    const p = this.player;
+    const r = scaledRadius(def, prof, mom);
+    this.loop.slowMo(ULTIMATE.slowMo, ULTIMATE.slowMoScale);
+    this.camera.shake(0.7);
+    this.vfx.shockwave(p.position.x, p.position.z, r, 0xe4ff2b);
+    this.vfx.ring(p.position.x, 0.08, p.position.z, 0xffffff, 0.6, r * 1.05, 0.45, 0.8);
+    this.audio.play('ultimate', { volume: 1, pitch: 0.85 });
+    this.loop.hitStop(0.1);
+    const heavyDmg = p.weapon.damage * 1.95 * p.stats.meleeDamageMultiplier();
+    const cap = heavyDmg * ULTIMATE.namedDamageCapMul;
+    const targets = enemiesInDisk(this.enemies, p.position.x, p.position.z, r, ULTIMATE.maxTargets);
+    let i = 0;
+    for (const e of targets) {
+      const named = e.named;
+      let amount = p.weapon.damage * def.damageMul * prof.damageMul * p.stats.meleeDamageMultiplier();
+      if (named) amount = Math.min(amount, cap);
+      const held = e.combat.current && !e.combat.current.interruptible && (e.combat.state === 'hold' || e.combat.state === 'active');
+      const info: DamageInfo = {
+        amount,
+        source: 'skill',
+        stagger: named ? ULTIMATE.namedPosture : def.posture * prof.postureMul,
+        attacker: p,
+        fromX: p.position.x,
+        fromZ: p.position.z,
+        knockback: named ? 3 : def.knockback,
+        channel: i === 0 ? 'primary' : 'area',
+        grantsPlayerKill: true,
+      };
+      i++;
+      const res = this.strike(e, info);
+      if (!held && !named) e.combat.stagger(0.55 * e.combat.displaceScale());
+      else if (named && !held) e.combat.stagger(ULTIMATE.namedStagger);
+      if (res.applied > 0) {
+        this.onDamageFeedback(e, res.applied, 'heavy', false, false);
+        this.afterPlayerHit(e, res, true, info);
+        this.telemetry?.noteSkillHit('pit_eruption', res.applied, info.stagger);
+      }
+      if (res.killed) this.killEnemy(e, false, undefined, info);
+    }
+    this.abilities?.logHit('pit_eruption', `${targets.length} targets`);
+  }
+
+  private grantSurge(amount: number, source: string, notable = false): void {
+    if (amount <= 0) return;
+    const gained = this.player.stats.addSurge(amount);
+    this.telemetry?.noteSurge(source, gained);
+    if (notable && gained >= 10) this.cb.onProcNote?.(`${source.replace(/_/g, ' ').toUpperCase()} +${Math.round(gained)} SURGE`);
+    if (this.player.stats.surge >= this.player.stats.surgeMax - 0.01 && gained > 0) {
+      this.audio.play('surge_full', { volume: 0.45, pitch: 1, minGap: 2.5 });
+    }
+  }
+
   /** Nearest enemy the player could execute right now. */
   findExecutable(): Enemy | null {
     const p = this.player;
@@ -529,13 +865,30 @@ export class CombatSystem {
     this.audio.play('execute', { volume: 1 });
     this.vfx.impact('execute', target.position.x, 1.2, target.position.z);
 
+    if (target.burning > 0 && this.player.stats.techniques.includes('ash_execute')) {
+      this.vfx.flash(target.position.x, 1.2, target.position.z, SIGNAL.unblockable, 1.1, 0.16);
+      this.shockwave(target.position.x, target.position.z, 4.2, 22, 16);
+    }
+
     // TOXIC DETONATION — a poisoned kill contaminates the ground and the crowd.
     const wasPoisoned = target.poisoned;
     target.hp = 0;
-    this.killEnemy(target, true);
+    this.killEnemy(target, true, undefined, {
+      amount: 999,
+      source: 'execute',
+      stagger: 0,
+      attacker: this.player,
+      fromX: this.player.position.x,
+      fromZ: this.player.position.z,
+      channel: 'primary',
+      grantsPlayerKill: true,
+    });
 
     const stats = this.player.stats;
-    if (wasPoisoned && stats.powers.has('toxic_detonation')) {
+    const named = target.named;
+    const allow = (id: string) => this.executionAllowed(id, named);
+
+    if (wasPoisoned && stats.powers.has('toxic_detonation') && allow('toxic_detonation')) {
       const px = target.position.x;
       const pz = target.position.z;
       const dmg = POISON.detonateDamage * stats.stat('poisonDamage');
@@ -544,7 +897,7 @@ export class CombatSystem {
       for (const e of this.enemies) {
         if (!e.alive || e === target) continue;
         if (!radiusHits(px, pz, POISON.detonateRadius, e.position.x, e.position.z, e.radius)) continue;
-        const res = e.applyDamage({
+        const res = this.strike(e, {
           amount: dmg,
           source: 'blast',
           stagger: 18,
@@ -561,33 +914,59 @@ export class CombatSystem {
       this.spawnHazard(px, pz, POISON.detonateRadius * 0.7, POISON.dps * stats.stat('poisonDamage'), 3.2, 'player');
     }
 
-    // EXECUTION SURGE — the kill feeds the next ability.
-    if (stats.powers.has('execution_surge')) {
-      stats.addSurge(30);
+    if (stats.powers.has('execution_surge') && allow('execution_surge')) {
+      this.grantSurge(30, 'execution_surge', true);
     }
-    stats.addSurge(PLAYER.surgeOnExecute);
+    this.grantSurge(PLAYER.surgeOnExecute, 'execute', true);
+    if (named) this.abilities?.namedExecuteRefund();
 
-    if (stats.powers.has('vulture')) {
-      const healed = stats.heal(22);
+    if (stats.powers.has('vulture') && allow('vulture')) {
+      const amt = named ? HEAL_ECON.vultureBase : HEAL_ECON.vultureBase * HEAL_ECON.vultureFalloff;
+      const healed = stats.heal(amt, 'vulture');
       if (healed) this.audio.play('heal', { volume: 0.6 });
     }
-    if (stats.powers.has('predator')) {
+    if (stats.powers.has('predator') && allow('predator')) {
       stats.speedBuff = 0.55;
       stats.speedBuffTime = 6;
     }
-    if (stats.powers.has('terror')) {
+    if (stats.powers.has('terror') && allow('terror')) {
       for (const e of this.enemies) {
         if (!e.alive || e === target) continue;
         if (radiusHits(target.position.x, target.position.z, 14, e.position.x, e.position.z, e.radius)) {
-          if (e.fleeThreshold !== -1) e.escaping = true;
+          if (e.fleeThreshold !== -1) {
+            if (hasReaction(stats.powers, 'terror_predator')) {
+              e.escaping = false;
+              e.huntedByPlayer = true;
+              this.run && (this.run.pursuitTargetId = e.named ? e.nemesis.id : this.run.pursuitTargetId);
+              this.cb.onProcNote?.('THE CHASE');
+            } else e.escaping = true;
+          }
         }
       }
       this.vfx.ring(target.position.x, 0.05, target.position.z, 0x9d7bff, 0.5, 14, 0.7, 0.5);
     }
-    if (stats.powers.has('parasite') && target.named && target.nemesis.strengths.length) {
+    if (stats.powers.has('parasite') && allow('parasite') && target.named && target.nemesis.strengths.length) {
       const stolen = target.nemesis.strengths[0];
       if (!stats.stolenTraits.includes(stolen)) stats.stolenTraits.push(stolen);
+      if (hasReaction(stats.powers, 'parasite_debt') && target.nemesis.killsAgainstPlayer > 0) {
+        stats.stolenTraits.push('brutal');
+        this.cb.onProcNote?.('BLOOD TITHE');
+      }
     }
+  }
+
+  private executionAllowed(id: string, named: boolean): boolean {
+    if (named) return true;
+    const pri = this.run?.executionPayload;
+    if (pri) return pri === id;
+    for (const cand of EXECUTION_RULES.gruntPayloadPriority) {
+      if (this.player.stats.powers.has(cand as 'vulture')) {
+        if (!this.run) return cand === id;
+        this.run.executionPayload = cand;
+        return cand === id;
+      }
+    }
+    return true;
   }
 
   /* ============================================================
@@ -656,14 +1035,16 @@ export class CombatSystem {
       if (e.rivalTarget && e.rivalTarget.alive) {
         const r = e.rivalTarget;
         if (arcHits(q, r.position.x, r.position.z, r.radius)) {
-          const res = r.applyDamage({
-            amount: hit.damage,
+          const res = this.strike(r, {
+            amount: hit.damage * 0.55,
             source: 'light',
-            stagger: hit.stagger,
+            stagger: hit.stagger * 0.5,
             attacker: e,
             fromX: e.position.x,
             fromZ: e.position.z,
             knockback: 2,
+            channel: 'eve',
+            grantsPlayerKill: false,
           });
           if (res.applied > 0) {
             this.particles.burst(r.position.x, 1.2, r.position.z, 8, 0xff6a4a, 6, { size: 0.11, life: 0.35 });
@@ -705,7 +1086,7 @@ export class CombatSystem {
 
       const behind = isBehind(p.facing, e.position.x, e.position.z, p.position.x, p.position.z);
       const hpBefore = p.stats.hp;
-      const res = p.applyDamage({
+      const res = this.strike(p, {
         amount: hit.damage,
         source: 'light',
         stagger: hit.stagger,
@@ -743,13 +1124,15 @@ export class CombatSystem {
 
         // THORNS answers back.
         if (p.stats.powers.has('thorns')) {
-          const tr = e.applyDamage({
+          const tr = this.strike(e, {
             amount: 12,
             source: 'thorns',
             stagger: 6,
             attacker: p,
             fromX: p.position.x,
             fromZ: p.position.z,
+            channel: 'secondary',
+            grantsPlayerKill: true,
           });
           if (tr.applied > 0) this.onDamageFeedback(e, tr.applied, 'light', false, false);
           if (tr.killed) this.killEnemy(e, false);
@@ -799,10 +1182,16 @@ export class CombatSystem {
     this.camera.shake(perfect ? 0.5 : 0.28);
     void colour;
     this.vfx.impact(perfect ? 'perfect_parry' : 'parry', mid.x, 1.3, mid.z);
+    this.floats.spawn(mid.x, 1.45, mid.z, perfect ? 'PERFECT' : 'PARRY', 'parry');
     if (perfect) {
-      p.stats.addSurge(PLAYER.parrySurge);
+      this.grantSurge(PLAYER.parrySurge, 'perfect_parry', true);
+      this.abilities && (this.abilities.nextEmpowered = true);
+      if (p.stats.techniques.includes('spear_pin') && e.combat.current?.id === 'shoulder_charge') {
+        e.applySlow(0.15, 1.4);
+        this.cb.onProcNote?.('PIN');
+      }
     } else {
-      p.stats.addSurge(Math.round(PLAYER.parrySurge * 0.45));
+      this.grantSurge(Math.round(PLAYER.parrySurge * 0.45), 'parry');
     }
 
     // Posture is the real payload. A perfect parry is worth more than a heavy.
@@ -817,9 +1206,9 @@ export class CombatSystem {
       e.staggerImmune = Math.max(e.staggerImmune, STAGGER.immunity);
     }
 
-    // REVERSAL sends the blow back.
-    if (p.stats.powers.has('reversal')) {
-      const res = e.applyDamage({
+    // REVERSAL sends the blow back — perfect parries only, as the card says.
+    if (p.stats.powers.has('reversal') && perfect) {
+      const res = this.strike(e, {
         amount: e.currentDamage() * 1.6,
         source: 'counter',
         stagger: 20,
@@ -827,13 +1216,17 @@ export class CombatSystem {
         fromX: p.position.x,
         fromZ: p.position.z,
         knockback: 5,
+        channel: 'reflect',
+        grantsPlayerKill: true,
+        ignite: hasReaction(p.stats.powers, 'reversal_ember'),
       });
+      if (hasReaction(p.stats.powers, 'reversal_ember')) this.cb.onProcNote?.('CINDER PARRY');
       if (res.applied > 0) this.onDamageFeedback(e, res.applied, 'heavy', true, false);
       if (res.killed) this.killEnemy(e, false);
     }
     // RIPOSTE answers immediately.
     if (p.stats.powers.has('riposte')) {
-      const res = e.applyDamage({
+      const res = this.strike(e, {
         amount: p.weapon.damage * 1.8 * p.stats.damageMultiplier(),
         source: 'light',
         stagger: 18,
@@ -857,7 +1250,7 @@ export class CombatSystem {
   private onPerfectDodge(e: Enemy): void {
     const p = this.player;
     p.combat.onPerfectDodge();
-    p.stats.addSurge(PLAYER.perfectDodgeSurge);
+    this.grantSurge(PLAYER.perfectDodgeSurge, 'perfect_dodge', true);
     this.loop.slowMo(PLAYER.perfectDodgeSlowMo, 0.42);
     this.camera.shake(0.12);
     this.audio.play('dodge', { volume: 0.85, pitch: 1.3 });
@@ -870,7 +1263,7 @@ export class CombatSystem {
   private onPerfectDodgeProjectile(): void {
     const p = this.player;
     p.combat.onPerfectDodge();
-    p.stats.addSurge(Math.round(PLAYER.perfectDodgeSurge * 0.5));
+    this.grantSurge(Math.round(PLAYER.perfectDodgeSurge * 0.5), 'perfect_dodge_shot');
     this.loop.slowMo(PLAYER.perfectDodgeSlowMo * 0.6, 0.45);
     this.audio.play('dodge', { volume: 0.7, pitch: 1.4 });
     this.vfx.ring(p.position.x, 0.05, p.position.z, SIGNAL.player, 0.3, 2.6, 0.3, 0.7);
@@ -1050,7 +1443,7 @@ export class CombatSystem {
 
         if (h.owner === 'enemy' && p.alive && !p.combat.invulnerable && !p.godMode) {
           if (radiusHits(h.x, h.z, h.r, p.position.x, p.position.z, p.radius)) {
-            const res = p.applyDamage({
+            const res = this.strike(p, {
               amount: h.dps * PROJ.zoneTick,
               source: 'environment',
               stagger: 0,
@@ -1069,7 +1462,7 @@ export class CombatSystem {
           for (const e of this.enemies) {
             if (!e.alive) continue;
             if (!radiusHits(h.x, h.z, h.r, e.position.x, e.position.z, e.radius)) continue;
-            const res = e.applyDamage({
+            const res = this.strike(e, {
               amount: h.dps * PROJ.zoneTick,
               source: 'fire',
               stagger: 0,
@@ -1159,7 +1552,7 @@ export class CombatSystem {
             this.particles.burst(a.x, a.y, a.z, perfect ? 22 : 12, SIGNAL.parryable, 9, { size: 0.11, life: 0.32 });
             if (perfect) this.vfx.flash(a.x, a.y, a.z, SIGNAL.parryable, 0.8, 0.16);
             p.combat.onParrySuccess(perfect);
-            p.stats.addSurge(perfect ? PLAYER.parrySurge : 6);
+            this.grantSurge(perfect ? PLAYER.parrySurge : 6, perfect ? 'perfect_parry' : 'parry');
             this.cb.onHabit('parry');
 
             // RETURN FIRE — the projectile goes home.
@@ -1179,6 +1572,10 @@ export class CombatSystem {
               a.ownerUid = p.uid;
               a.damage *= 1.4;
               a.life = Math.max(a.life, 1.2);
+              if (hasReaction(p.stats.powers, 'return_chain')) {
+                a.chainLeft = Math.max(a.chainLeft, 1);
+                this.cb.onProcNote?.('RICOCHET');
+              }
               this.vfx.flash(a.x, a.y, a.z, SIGNAL.player, 0.6, 0.12);
               done = false;
             }
@@ -1187,7 +1584,7 @@ export class CombatSystem {
             // answer, even to red. (Perfect dodges pay out here too.)
             const owner = this.enemies.find((e) => e.uid === a.ownerUid) ?? null;
             const hpBefore = p.stats.hp;
-            const res = p.applyDamage({
+            const res = this.strike(p, {
               amount: a.damage,
               source: 'ranged',
               stagger: 5,
@@ -1266,7 +1663,7 @@ export class CombatSystem {
           if (a.targetsPlayer && !e.rivalTarget) continue; // no accidental friendly fire in a crowd
           if (CombatSystem.sweptHit(px0, pz0, a.x, a.z, e.position.x, e.position.z, e.radius + a.radius) && a.y < 2.4) {
             done = true;
-            const res = e.applyDamage({
+            const res = this.strike(e, {
               amount: a.damage,
               source: 'ranged',
               stagger: 5,
@@ -1396,9 +1793,10 @@ export class CombatSystem {
    * escalation, flinch feedback, poison ignition, lifesteal. One place, so a
    * needle and a greatsword pay into the same systems.
    */
-  private afterPlayerHit(e: Enemy, res: { applied: number; staggered: boolean; flinched: boolean; poisoned: boolean; critical: boolean }, strong: boolean): void {
+  private afterPlayerHit(e: Enemy, res: { applied: number; staggered: boolean; flinched: boolean; poisoned: boolean; critical: boolean }, strong: boolean, info?: DamageInfo): void {
     const stats = this.player.stats;
-    if (res.applied > 0) stats.lifestealFrom(res.applied);
+    if (res.applied > 0 && canProc(info, 'lifesteal')) stats.lifestealFrom(res.applied);
+    if (res.applied > 0) this.telemetry?.noteEnemyHurt(e.uid);
     if (res.poisoned) {
       e.poisonDps = POISON.dps * stats.stat('poisonDamage');
       this.audio.play('fire', { volume: 0.35, pitch: 1.5, minGap: 0.2 });
@@ -1453,7 +1851,7 @@ export class CombatSystem {
     this.audio.play(kind === 'heavy' ? 'heavy_hit' : 'light_hit', { volume: 0.75, minGap: 0.04 });
   }
 
-  private killEnemy(e: Enemy, executed: boolean, killer?: Enemy): void {
+  private killEnemy(e: Enemy, executed: boolean, killer?: Enemy, info?: DamageInfo): void {
     if (!e.alive) return;
     e.kill();
     this.audio.play('enemy_death', { volume: 0.8, pitch: e.named ? 0.75 : 1 });
@@ -1463,14 +1861,25 @@ export class CombatSystem {
     });
     this.vfx.ring(e.position.x, 0.05, e.position.z, e.rig.accent, 0.3, executed ? 5 : 2.6, 0.4);
 
-    if (!killer) {
+    const playerCredit = !killer && canProc(info, 'killCredit');
+    this.lastKillChannel = info?.channel ?? (killer ? 'eve' : 'primary');
+    this.lastKillPlayerCredit = playerCredit;
+
+    if (playerCredit) {
       const stats = this.player.stats;
       stats.runKills++;
       if (e.named) stats.runNamedKills++;
-      // CHAIN — a kill refreshes your dodge.
-      if (stats.powers.has('chain')) this.player.combat.dodgeCooldown = 0;
+      if (canProc(info, 'surge')) this.grantSurge(PLAYER.surgeOnKill, 'kill');
+      if (stats.powers.has('chain') && canProc(info, 'chainDodge')) {
+        this.player.combat.dodgeCooldown = 0;
+        if (hasReaction(stats.powers, 'chain_momentum')) {
+          stats.momentum = Math.min(stats.momentumMax, stats.momentum + 1);
+          this.cb.onProcNote?.('KILL RHYTHM');
+        }
+      }
     }
     this.cb.onEnemyKilled(e, executed);
+    this.telemetry?.noteEnemyDown(e.uid, e.nemesis.rank, e.named);
   }
 
   /** Called by Game when the player dodges, for PHANTOM. */
@@ -1489,7 +1898,7 @@ export class CombatSystem {
         for (const e of this.enemies) {
           if (!e.alive) continue;
           if (!radiusHits(x, z, 3.2, e.position.x, e.position.z, e.radius)) continue;
-          const res = e.applyDamage({
+          const res = this.strike(e, {
             amount: 16,
             source: 'counter',
             stagger: 14,
@@ -1497,6 +1906,8 @@ export class CombatSystem {
             fromX: x,
             fromZ: z,
             knockback: 3,
+            channel: 'afterimage',
+            grantsPlayerKill: true,
           });
           if (res.applied > 0) this.onDamageFeedback(e, res.applied, 'light', false, false);
           if (res.killed) this.killEnemy(e, false);
@@ -1515,7 +1926,7 @@ export class CombatSystem {
       const d = Math.hypot(e.position.x - p.position.x, e.position.z - p.position.z);
       if (d < p.radius + e.radius + 0.35) {
         e.combat.knockdown(1.6);
-        const res = e.applyDamage({
+        const res = this.strike(e, {
           amount: 14,
           source: 'blast',
           stagger: 40,
@@ -1539,7 +1950,7 @@ export class CombatSystem {
     for (const e of this.enemies) {
       if (!e.alive) continue;
       if (!radiusHits(x, z, radius, e.position.x, e.position.z, e.radius)) continue;
-      const res = e.applyDamage({
+      const res = this.strike(e, {
         amount: damage,
         source: 'fire',
         stagger: 4,
@@ -1551,6 +1962,40 @@ export class CombatSystem {
       if (res.applied > 0) this.onDamageFeedback(e, res.applied, 'light', false, true);
       if (res.killed) this.killEnemy(e, false);
     }
+  }
+
+  /**
+   * Apply damage and float the result. Every blow in this file goes through
+   * here so a number (or BLOCK / MISS) always matches what actually landed.
+   */
+  private strike(target: Enemy | Player, info: DamageInfo): DamageResult {
+    if (!info.channel) info.channel = target.isPlayer ? 'primary' : info.attacker?.isPlayer ? 'primary' : 'primary';
+    const res = target.applyDamage(info);
+    this.announceHit(target, res, info);
+    return res;
+  }
+
+  private announceHit(target: Combatant, res: DamageResult, info: DamageInfo): void {
+    if (res.dodged) {
+      this.floats.spawnOn(target, 'MISS', 'miss');
+      return;
+    }
+    if (res.blocked) {
+      this.floats.spawnOn(target, 'BLOCK', 'block');
+      return;
+    }
+    if (res.applied <= 0) return;
+    const n = String(Math.max(1, Math.round(res.applied)));
+    this.floats.spawnOn(target, n, this.floatKind(target, res, info));
+  }
+
+  private floatKind(target: Combatant, res: DamageResult, info: DamageInfo): DamageFloatKind {
+    if (target.isPlayer) return 'hurt';
+    if (res.critical) return 'crit';
+    if (info.source === 'fire') return 'fire';
+    if (info.source === 'environment') return 'poison';
+    if (info.source === 'execute') return 'crit';
+    return 'hit';
   }
 
   dispose(): void {

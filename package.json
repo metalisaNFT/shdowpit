@@ -12,6 +12,7 @@
     "preview:mock": "SHDOWPIT_AI_MOCK=1 vite preview --port 4173",
     "serve": "node server/index.mjs",
     "test": "node tools/playtest.mjs",
+    "test:story": "node tools/storytest.mjs",
     "test:backend": "node tools/backendtest.mjs",
     "test:ai": "node tools/aitest.mjs",
     "test:ai-success": "node tools/aisuccess.mjs",
