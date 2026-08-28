@@ -150,15 +150,24 @@ export class GodClock {
 }
 
 /** Pick the loudest beat worth pausing on from a cycle batch. */
+const PAUSE_KIND_BOOST: Record<string, number> = {
+  act: 100,
+  chaos: 90,
+  heresy: 85,
+  crisis: 80,
+};
+
 export function pickPauseBeat(beats: readonly Beat[]): Beat | null {
   let best: Beat | null = null;
-  let bestRank = -1;
+  let bestScore = -1;
   for (const b of beats) {
     if (b.kind === 'intervention') continue;
     const r = BEAT_RANK[b.priority];
-    if (r >= BEAT_RANK.major && r > bestRank) {
+    if (r < BEAT_RANK.major) continue;
+    const score = r * 10 + (PAUSE_KIND_BOOST[b.kind] ?? 0);
+    if (score > bestScore) {
       best = b;
-      bestRank = r;
+      bestScore = score;
     }
   }
   return best;

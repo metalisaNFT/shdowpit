@@ -16,6 +16,8 @@ export interface MapAreaStyle {
   selected?: boolean;
   crisis?: boolean;
   focus?: boolean;
+  /** Player god-marks active in this territory (short labels). */
+  marks?: string[];
 }
 
 export interface MapActorDot {
@@ -112,6 +114,13 @@ export function drawWorldMap(ctx: CanvasRenderingContext2D, input: MapDrawInput,
       ctx.strokeStyle = 'rgba(255,80,60,0.75)';
       ctx.lineWidth = 2;
       ctx.stroke();
+    }
+    if (st?.marks?.length) {
+      ctx.font = '6px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = 'rgba(255,200,60,0.92)';
+      const label = st.marks.slice(0, 2).join(' · ');
+      ctx.fillText(label, px, py + r * 0.35);
     }
   }
 

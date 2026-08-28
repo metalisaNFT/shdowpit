@@ -9,8 +9,9 @@ import { button, div } from './Dom';
 import { snapshotOccupancy } from '../world/WorldOccupancy';
 import { paletteFor } from '../nemesis/NemesisAppearance';
 import { rankIndex } from '../nemesis/Nemesis';
-import { livingFactions } from '../god/Factions';
+import { livingFactions, factionFor } from '../god/Factions';
 import { getArea, AREAS } from '../data/areas';
+import { CONDITION_LABEL } from '../god/Conditions';
 import {
   MAP_SIZE,
   areaAtMap,
@@ -21,7 +22,20 @@ import {
 } from '../world/MapDraw';
 import type { GodRun } from '../god/GodRun';
 import type { Nemesis } from '../nemesis/Nemesis';
-import { factionFor } from '../god/Factions';
+import type { Condition } from '../god/GodTypes';
+
+const CONDITION_SHORT: Partial<Record<Condition['kind'], string>> = {
+  bounty: 'PRICE',
+  ward: 'WARD',
+  rumour: 'RUMOUR',
+  mark: 'MARK',
+  blessing: 'BLESS',
+  curse: 'CURSE',
+  opportunity: 'OPEN',
+  exposure: 'EXPOSED',
+  omen: 'OMEN',
+  unrest: 'UNREST',
+};
 
 const SHORT: Record<string, string> = {
   pit: 'PIT',
@@ -35,6 +49,7 @@ const SHORT: Record<string, string> = {
 interface ChipEl {
   root: HTMLElement;
   count: HTMLElement;
+  marks: HTMLElement;
 }
 
 export class GodMap {
@@ -68,10 +83,11 @@ export class GodMap {
       root.dataset.areaId = a.id;
       const label = div('god-map-chip-label', SHORT[a.id] ?? a.id.toUpperCase());
       const count = div('god-map-chip-count', '0');
-      root.append(label, count);
+      const marks = div('god-map-chip-marks', '');
+      root.append(label, count, marks);
       root.addEventListener('click', () => this.onAreaClick?.(a.id));
       this.stripEl.append(root);
-      this.chips.set(a.id, { root, count });
+      this.chips.set(a.id, { root, count, marks });
     }
 
     document.addEventListener('pointerdown', (e) => {
@@ -120,22 +136,25 @@ export class GodMap {
 
     const occ = snapshotOccupancy(run.mgr, null);
     const areas: MapAreaStyle[] = AREAS.map((a) => {
-      const o = occ[a.id];
-      const accent = o?.accent ?? a.accent;
+      const house = houseForArea(run, a.id);
+      const accent = house?.colour ?? occ[a.id]?.accent ?? a.accent;
       const hex = (n: number, al: string) => {
         const r = ((n >> 16) & 255).toString(16).padStart(2, '0');
         const g = ((n >> 8) & 255).toString(16).padStart(2, '0');
         const b = (n & 255).toString(16).padStart(2, '0');
         return `#${r}${g}${b}${al}`;
       };
-      const crisis = run.god.crisis?.bodyId && run.mgr.byId(run.god.crisis.bodyId)?.territory === a.id;
+      const crisisBody = run.god.crisis?.bodyId ? run.mgr.byId(run.god.crisis.bodyId) : null;
+      const crisis = run.god.crisis?.resolved === 'none' && crisisBody?.territory === a.id;
+      const marks = godMarksForArea(run, a.id);
       return {
         id: a.id,
         accent,
-        fill: hex(accent, '28'),
-        stroke: hex(accent, this.focusAreaId === a.id ? 'ff' : '99'),
+        fill: hex(accent, house ? '38' : '28'),
+        stroke: hex(accent, this.focusAreaId === a.id ? 'ff' : crisis ? 'cc' : '99'),
         selected: this.focusAreaId === a.id,
         crisis: !!crisis && Math.sin(this.pulse * 4) > 0,
+        marks: marks.length ? marks : undefined,
       };
     });
 
@@ -178,16 +197,20 @@ export class GodMap {
     for (const a of AREAS) {
       const chip = this.chips.get(a.id);
       if (!chip) continue;
-      const o = occ[a.id];
-      const accent = o?.accent ?? a.accent;
+      const house = houseForArea(run, a.id);
+      const accent = house?.colour ?? occ[a.id]?.accent ?? a.accent;
       const r = ((accent >> 16) & 255).toString(16).padStart(2, '0');
       const g = ((accent >> 8) & 255).toString(16).padStart(2, '0');
       const b = (accent & 255).toString(16).padStart(2, '0');
       chip.root.style.setProperty('--chip-accent', `#${r}${g}${b}`);
       chip.count.textContent = String(counts.get(a.id) ?? 0);
+      const marks = godMarksForArea(run, a.id);
+      chip.marks.textContent = marks.length ? marks.join(' · ') : '';
+      chip.root.classList.toggle('marked', marks.length > 0);
       chip.root.classList.toggle('selected', this.focusAreaId === a.id);
       chip.root.classList.toggle('occupied', (counts.get(a.id) ?? 0) > 0);
-      const crisis = run.god.crisis?.bodyId && run.mgr.byId(run.god.crisis.bodyId)?.territory === a.id;
+      const crisisBody = run.god.crisis?.bodyId ? run.mgr.byId(run.god.crisis.bodyId) : null;
+      const crisis = run.god.crisis?.resolved === 'none' && crisisBody?.territory === a.id;
       chip.root.classList.toggle('crisis', !!crisis && Math.sin(this.pulse * 4) > 0);
     }
   }
@@ -215,6 +238,32 @@ function centroidForFaction(run: GodRun, memberIds: string[]): { x: number; z: n
   }
   if (!n) return null;
   return { x: sx / n, z: sz / n };
+}
+
+function houseForArea(run: GodRun, areaId: string) {
+  for (const f of livingFactions(run.god)) {
+    if (f.territories.includes(areaId)) return f;
+  }
+  const holder = run.mgr.territoryHolder(areaId);
+  return holder ? factionFor(run.god, holder) : null;
+}
+
+function godMarksForArea(run: GodRun, areaId: string): string[] {
+  const out: string[] = [];
+  for (const c of run.god.conditions) {
+    if (c.source !== 'god') continue;
+    if (c.targetKind === 'area' && c.targetId === areaId) {
+      out.push(CONDITION_SHORT[c.kind] ?? CONDITION_LABEL[c.kind] ?? c.kind.toUpperCase());
+      continue;
+    }
+    if (c.targetKind === 'nemesis') {
+      const n = run.mgr.byId(c.targetId);
+      if (n?.alive && mapTerritoryFor(n, run) === areaId) {
+        out.push(CONDITION_SHORT[c.kind] ?? CONDITION_LABEL[c.kind] ?? c.kind.toUpperCase());
+      }
+    }
+  }
+  return out.slice(0, 3);
 }
 
 export function situationAreaId(run: GodRun, actors: string[]): string {

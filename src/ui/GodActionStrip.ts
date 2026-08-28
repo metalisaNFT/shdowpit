@@ -145,7 +145,7 @@ function slot(
   row.append(div('god-slot-label', label));
   const n = run.mgr.byId(id);
   if (!n) {
-    row.append(div('god-slot-empty', 'PICK FROM THE MAP OR NOW CARD'));
+    row.append(div('god-slot-empty', 'CLICK CAST · SHIFT+CLICK FOR B'));
     return row;
   }
   const name = div('god-slot-name', fullName(n) + (n.alive ? '' : ' (DEAD)'));

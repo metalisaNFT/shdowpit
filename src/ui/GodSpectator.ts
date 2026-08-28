@@ -58,6 +58,7 @@ export class GodSpectator {
   private ambientDur = 0;
   private ambientBeats: TimedBeat[] = [];
   private ambientBeatIdx = 0;
+  private observeFocus = false;
 
   private playing: DuelSpectacle | null = null;
   private timeline: TimedBeat[] = [];
@@ -67,6 +68,7 @@ export class GodSpectator {
 
   onCaption: ((text: string) => void) | null = null;
   onSpectacleDone: (() => void) | null = null;
+  onAmbientChange: ((active: boolean) => void) | null = null;
 
   constructor(
     camera: ThirdPersonCamera,
@@ -108,6 +110,15 @@ export class GodSpectator {
     this.idleT = 0;
     this.areaTransition = 1;
     this.applyAreaFraming(areaId, true);
+  }
+
+  /** When the player is watching a focused board, skip dishonest ambient fights. */
+  setObserveFocus(on: boolean): void {
+    this.observeFocus = on;
+  }
+
+  isAmbient(): boolean {
+    return this.ambientPlaying;
   }
 
   /** 3D juice when the player marks one or more characters. */
@@ -170,7 +181,7 @@ export class GodSpectator {
 
     this.proxy.spawn(a, b, stage);
     this.worldPop.setSuppressed(true);
-    this.ambientPlaying = false;
+    this.setAmbientPlaying(false);
   }
 
   isPlaying(): boolean {
@@ -179,7 +190,7 @@ export class GodSpectator {
 
   update(dt: number): void {
     if (this.playing) {
-      this.ambientPlaying = false;
+      this.setAmbientPlaying(false);
       this.playT += dt;
       while (this.beatIdx < this.timeline.length && this.timeline[this.beatIdx]!.t <= this.playT) {
         this.fireBeat(this.timeline[this.beatIdx]!);
@@ -214,7 +225,7 @@ export class GodSpectator {
       this.targetDistance = 19;
       if (this.ambientT >= this.ambientDur) {
         this.proxy.clear();
-        this.ambientPlaying = false;
+        this.setAmbientPlaying(false);
         this.ambientBeats = [];
         this.ambientBeatIdx = 0;
         this.worldPop.setSuppressed(false);
@@ -227,6 +238,7 @@ export class GodSpectator {
         this.idleT += dt;
         if (this.idleT > 7) {
           this.idleT = 0;
+          this.observeFocus = false;
           const next = this.idleAreas[Math.floor(performance.now() / 7000) % this.idleAreas.length]!;
           this.focusArea(next);
         }
@@ -259,12 +271,14 @@ export class GodSpectator {
 
   private playAmbientSkirmish(): void {
     if (this.playing || this.ambientPlaying) return;
+    if (this.observeFocus) return;
     const areaId = this.focusAreaId ?? this.idleAreas[0] ?? 'pit';
+    if (this.worldPop.countInArea(areaId) > 0) return;
     const seed = mixSeed(mixSeed(performance.now() | 0, this.mgr.data.worldSeed), this.mgr.turn) >>> 0;
     const a = generateGrunt(seed, 2 + (seed % 4), this.mgr.mods, areaId);
     const b = generateGrunt(seed + 913, 2 + ((seed >> 4) % 4), this.mgr.mods, areaId);
     const stage = this.arena.duelStage(areaId, seed);
-    this.ambientPlaying = true;
+    this.setAmbientPlaying(true);
     this.ambientT = 0;
     this.ambientDur = 2.6;
     this.targetFocus.set(stage.cx, 1.1, stage.cz);
@@ -279,6 +293,12 @@ export class GodSpectator {
     ];
     this.ambientBeatIdx = 0;
     this.worldPop.setSuppressed(true);
+  }
+
+  private setAmbientPlaying(on: boolean): void {
+    if (this.ambientPlaying === on) return;
+    this.ambientPlaying = on;
+    this.onAmbientChange?.(on);
   }
 
   dispose(): void {

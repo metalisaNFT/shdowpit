@@ -503,6 +503,8 @@ export interface AftermathReport {
   links: CausalLink[];
   nextProblem: string;
   uncertainty: string;
+  /** Beat carrying WHY for the decision that mattered most this cycle. */
+  explainBeat?: Beat | null;
 }
 
 export interface ScenarioFlags {
@@ -526,6 +528,10 @@ export interface GodState {
   /** rises with every intervention; bends the whole simulation */
   chaos: number;
   chaosPeak: number;
+  /** highest chaos tier threshold (`at`) already announced this run */
+  chaosTierAt: number;
+  /** legendary heresy-threshold beat has fired */
+  heresyThresholdAnnounced: boolean;
 
   conditions: Condition[];
   nextConditionId: number;

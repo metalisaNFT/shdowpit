@@ -69,10 +69,7 @@ export function actIndex(id: ActId): number {
   return ACT_ORDER.indexOf(id);
 }
 
-/**
- * Advance the act clock. Returns the act if it just changed, so the caller can
- * announce it — the only scheduled beat in the whole layer.
- */
+/** Advance the act clock. Returns the act if it just changed — caller emits the mandatory NOW beat. */
 export function advanceAct(god: GodState): ActDef | null {
   const next = actForCycle(god.cycle);
   if (next.id === god.act) return null;

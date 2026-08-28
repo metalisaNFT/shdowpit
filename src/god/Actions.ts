@@ -918,7 +918,8 @@ export const ACTIONS: ActionDef[] = [
         [
           'They have worked out that something has been arranging this.',
           'They have decided to do something about it.',
-        ],
+          wasHeretic ? '' : 'You cannot touch them directly. Find someone who can, or stop feeding the fire.',
+        ].filter(Boolean),
         [actor.id],
         'bad'
       );

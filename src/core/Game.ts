@@ -115,6 +115,7 @@ import { populatedAreas } from '../ui/GodMap';
 import { activeConditionLabels, applyLegacyPresence, applyTiltToEnemy, legacyArrivalToast, legendOmenFor, legacyTiltFor, legendSpawnBias, mergeCombatTilts, nemesisTilt, resolveLegacyEcho } from '../god/PitBridge';
 import { encounterTuningFromKit } from '../core/Telemetry';
 import { removeConditions } from '../god/Conditions';
+import { describeQuietDecline, spectacleCauseCaption } from '../god/Aftermath';
 
 import { AIContentService } from '../ai/AIContentService';
 import type { MythEventKind } from '../ai/AITypes';
@@ -264,6 +265,7 @@ export class Game {
   private godIdleCycles = 0;
   private godClock: GodClock | null = null;
   private godSpectator: GodSpectator | null = null;
+  private pendingSpectacleBeat: Beat | null = null;
   /** the roster screen is shared; this says where CLOSE should return to */
   private hierarchyFromGod = false;
   private lockGrace = 0;
@@ -1319,11 +1321,18 @@ export class Game {
         this.syncAIWorld();
         observeInspect(this.ai, this.mgr, this.godRun.god, n);
       },
-      clearAftermath: () => this.godRun?.clearAftermath(),
+      clearAftermath: () => {
+        this.godRun?.clearAftermath();
+        this.playPendingGodSpectacle();
+      },
       clearDescentReport: () => this.godRun?.clearDescentReport(),
       onTeach: (ev) => this.onGodTeach(ev),
+      canCompleteAftermath: () => this.godAftermathGate(),
       openSettings: () => this.openGodSettings(),
-      onAreaFocus: (areaId) => this.godSpectator?.focusArea(areaId),
+      onAreaFocus: (areaId) => {
+        this.godSpectator?.focusArea(areaId);
+        this.godSpectator?.setObserveFocus(true);
+      },
       onClockToggle: () => this.godClock?.togglePause(),
       onClockDismiss: () => this.onGodClockDismiss(),
     });
@@ -1362,6 +1371,7 @@ export class Game {
       });
       this.godSpectator.onCaption = (text) => this.ui.god.setCaption(text);
       this.godSpectator.onSpectacleDone = () => this.onGodSpectacleDone();
+      this.godSpectator.onAmbientChange = (active) => this.ui.god.setDistantViolence(active);
     }
     if (!this.godClock) {
       this.godClock = new GodClock(this.mgr.data.settings.god);
@@ -1392,11 +1402,11 @@ export class Game {
       this.godClock.enterSpectating();
       return;
     }
+    if (this.godClock.waitingBeat) return;
     if (run.spentThisCycle) {
       this.godClock.enterIntervening();
       return;
     }
-    if (this.ui.god.visible && this.godClock.waitingBeat) return;
     this.godClock.enterObserve(run.act().tempo);
   }
 
@@ -1435,12 +1445,18 @@ export class Game {
     this.ui.god.refresh();
   }
 
-  private maybePlayGodSpectacle(beats: Beat[]): void {
-    const b = pickSpectacleBeat(beats);
-    if (!b?.spectacle || !this.godSpectator) return;
+  private playPendingGodSpectacle(): void {
+    const beat = this.pendingSpectacleBeat;
+    if (!beat?.spectacle) return;
+    this.pendingSpectacleBeat = null;
+    this.maybePlayGodSpectacle(beat);
+  }
+
+  private maybePlayGodSpectacle(beat: Beat, causeCaption?: string | null): void {
+    if (!beat.spectacle || !this.godSpectator) return;
     this.godClock?.enterSpectating();
-    this.ui.god.setSpectacleBeat(b);
-    this.godSpectator.playDuel(b.spectacle);
+    this.ui.god.setSpectacleBeat(beat, causeCaption ?? null);
+    this.godSpectator.playDuel(beat.spectacle);
   }
 
   private onGodTeach(ev: GuideEvent): void {
@@ -1451,6 +1467,16 @@ export class Game {
       this.mgr.persist();
       this.refreshGodTeach();
     }
+  }
+
+  /** Cycles 1–2: aftermath cannot clear until WHY has been opened once. */
+  private godAftermathGate(): { ok: boolean; reason?: string } {
+    const tut = this.mgr.data.settings.tutorial;
+    if (tut.skipped) return { ok: true };
+    const a = this.godRun?.god.lastAftermath;
+    if (!a || a.cycle > 2) return { ok: true };
+    if (this.godGuide.whyOpened) return { ok: true };
+    return { ok: false, reason: 'OPEN WHY ON THIS CYCLE — THEN CONTINUE' };
   }
 
   private refreshGodTeach(): void {
@@ -1470,6 +1496,9 @@ export class Game {
       this.ui.god.teach.set({ kind: 'guide', step, index, total: STEP_COUNT });
       return;
     }
+    if (this.godGuide.boardReady && this.godRun && !this.godRun.god.boardUnlocked) {
+      this.godRun.unlockBoard();
+    }
     if (this.godLesson) {
       this.ui.god.teach.set({ kind: 'lesson', lesson: this.godLesson });
       return;
@@ -1482,6 +1511,7 @@ export class Game {
     this.godGuide.finish();
     this.godLesson = null;
     this.mgr.data.settings.tutorial.godGuide = 'done';
+    this.godRun?.unlockBoard();
     this.mgr.persist();
     this.refreshGodTeach();
     this.ui.hud.toast('TUTORIALS SKIPPED', 'neutral');
@@ -1594,6 +1624,12 @@ export class Game {
       else if (res.effect?.headline) {
         this.ui.god.flash(`YOUR MARK — ${res.effect.headline}`, flashTone, 3800);
       }
+      const tierBeat = res.pauseBeats?.length ? pickPauseBeat(res.pauseBeats) : null;
+      if (tierBeat) {
+        this.ui.god.setPauseBeat(tierBeat);
+        this.ui.god.pulseChaosTier();
+        this.onGodTeach('beatOpened');
+      }
       this.godClock?.enterIntervening();
       this.ui.god.refresh();
       this.syncGodWorldPop();
@@ -1694,12 +1730,25 @@ export class Game {
     if (pauseBeat) {
       this.godClock?.pauseForBeat(pauseBeat);
       this.ui.god.setPauseBeat(pauseBeat);
+      if (pauseBeat.kind === 'chaos') this.ui.god.pulseChaosTier();
       this.onGodTeach('beatOpened');
     }
 
     const spectacleBeat = pickSpectacleBeat(beats);
-    if (spectacleBeat?.spectacle) {
-      this.maybePlayGodSpectacle(beats);
+    if (spectacleBeat?.spectacle && spent) {
+      this.pendingSpectacleBeat = spectacleBeat;
+      this.syncAIWorld();
+      observeAftermath(this.ai, this.mgr, run.god, run.god.lastAftermath!);
+      this.godClock?.enterModal();
+      this.onGodTeach('beatOpened');
+    } else if (spectacleBeat?.spectacle) {
+      const report = run.god.lastAftermath;
+      const caption = report
+        ? spectacleCauseCaption(report, (cycle, label, text) =>
+            aftermathLinkFor(this.ai, run.god.run, cycle, label, text)
+          )
+        : null;
+      this.maybePlayGodSpectacle(spectacleBeat, caption);
     } else if (run.god.lastAftermath) {
       this.syncAIWorld();
       observeAftermath(this.ai, this.mgr, run.god, run.god.lastAftermath);
@@ -1741,11 +1790,14 @@ export class Game {
     this.refreshGodTeach();
   }
 
-  /** Fallback when cycles produce no related beat — condition / who it leans on. */
+  /** Fallback when cycles produce no related beat — who declined the mark. */
   private quietAdvanceNotice(
     run: GodRun,
     actorFocus: Set<string>
   ): { id: string; headline: string } | null {
+    const decline = describeQuietDecline(this.mgr, run.god, run.god.decisions, [...actorFocus]);
+    if (decline) return { id: `quiet:${run.god.cycle}`, headline: decline };
+
     const condSit =
       run.situations.find((s) => s.kind === 'condition' && s.actors.some((id) => actorFocus.has(id))) ??
       run.situations.find((s) => s.kind === 'condition') ??
@@ -1762,7 +1814,7 @@ export class Game {
         const label = CONDITION_LABEL[cond.kind] ?? cond.kind.toUpperCase();
         return {
           id: `cond:${cond.id}`,
-          headline: `${fullName(n).toUpperCase()} — ${label} STILL HOLDS`,
+          headline: `${fullName(n).toUpperCase()} — ${label} UNCHANGED`,
         };
       }
     }
@@ -6324,6 +6376,8 @@ export class Game {
       case 'clearBoards': {
         this.godRun?.clearAftermath();
         this.godRun?.clearDescentReport();
+        this.ui.god.dismissPauseBeat();
+        this.godClock?.dismissBeat();
         if (this.mode === 'god') this.ui.god.refresh();
         return { ok: true, ...this.__god('state') };
       }

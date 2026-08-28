@@ -44,6 +44,8 @@ export interface GodHooks {
   clearAftermath?(): void;
   clearDescentReport?(): void;
   onTeach?(ev: GuideEvent): void;
+  /** Opening cycles 1–2: block clearing aftermath until WHY opened. */
+  canCompleteAftermath?(): { ok: boolean; reason?: string };
   openSettings?(): void;
   onAreaFocus?(areaId: string): void;
   onClockToggle?(): void;
@@ -91,14 +93,16 @@ export class GodScreen {
   private aftermathLinkIdx = 0;
   private pendingDef: InterventionDef | null = null;
   private spectacleBeat: Beat | null = null;
+  private spectacleCauseCaption = '';
   private liveCaption = '';
+  private distantViolenceEl = div('god-distant-label hidden');
   private clockState: GodClockState = 'paused';
   private boardOpen = false;
 
   constructor() {
     this.root.id = 'god-screen';
     this.clockEl.append(this.clockFill, this.clockLabel);
-    this.bodyEl.append(this.actors.root, this.now.root, this.action.root, this.feed.root, this.inspectDrawer.root);
+    this.bodyEl.append(this.distantViolenceEl, this.actors.root, this.now.root, this.action.root, this.feed.root, this.inspectDrawer.root);
     this.root.append(this.topBar, this.teach.root, this.bodyEl, this.footEl, this.flashEl, this.overlayEl);
 
     this.action.onChange = () => this.render();
@@ -161,6 +165,7 @@ export class GodScreen {
     this.inspectDrawer.open(null);
     this.stripState.expanded = false;
     this.spectacleBeat = null;
+    this.spectacleCauseCaption = '';
     this.liveCaption = '';
   }
 
@@ -182,10 +187,16 @@ export class GodScreen {
     this.now.setCaption(text);
   }
 
-  setSpectacleBeat(b: Beat | null): void {
+  setSpectacleBeat(b: Beat | null, causeCaption?: string | null): void {
     this.spectacleBeat = b;
+    this.spectacleCauseCaption = causeCaption ?? '';
     if (b) this.phase = 'observe';
     this.render();
+  }
+
+  setDistantViolence(active: boolean): void {
+    this.distantViolenceEl.textContent = 'DISTANT VIOLENCE — NOT YOUR BOARD';
+    this.distantViolenceEl.classList.toggle('hidden', !active);
   }
 
   isSpectating(): boolean {
@@ -212,6 +223,13 @@ export class GodScreen {
     this.topBar.classList.remove('god-spend-flash');
     void this.topBar.offsetWidth;
     this.topBar.classList.add('god-spend-flash');
+  }
+
+  /** Top-bar pulse when chaos tier escalates. */
+  pulseChaosTier(): void {
+    this.topBar.classList.remove('god-tier-pulse');
+    void this.topBar.offsetWidth;
+    this.topBar.classList.add('god-tier-pulse');
   }
 
   markNoticed(_id: string, headline: string): void {
@@ -272,7 +290,7 @@ export class GodScreen {
       this.phase = 'descent_return';
       return;
     }
-    if (run.god.lastAftermath && this.phase !== 'beat_pause') {
+    if (run.god.lastAftermath && this.phase !== 'beat_pause' && !this.spectacleBeat) {
       this.phase = 'aftermath';
       return;
     }
@@ -344,17 +362,26 @@ export class GodScreen {
   }
 
   private renderActors(run: GodRun, h: GodHooks): void {
+    const crisisActors = this.crisisSpotlightIds(run);
     const sit = this.primarySituation(run);
-    const ids = sit?.actors ?? [];
+    const ids = crisisActors.length ? crisisActors : (sit?.actors ?? []);
+    const headLabel = crisisActors.length ? 'THE RUNWAY' : 'CAST';
     this.actors.render(
       run,
       h,
       ids,
       this.stripState.selA,
       this.stripState.selB,
+      headLabel,
+      crisisActors[0] ?? null,
       (id) => {
-        if (this.stripState.selA !== id) this.stripState.selA = id;
-        else if (this.stripState.selB !== id) this.stripState.selB = id;
+        this.stripState.selA = id;
+        this.stripState.expanded = true;
+        this.render();
+      },
+      (id) => {
+        this.stripState.selB = id;
+        this.stripState.expanded = true;
         this.render();
       },
       (id) => this.openInspect(id)
@@ -369,6 +396,7 @@ export class GodScreen {
       model = {
         mode: 'spectacle',
         kicker: 'COMBAT · LIVE',
+        causeCaption: this.spectacleCauseCaption || undefined,
         headline: b.headline,
         body: b.detail[0],
         beat: b,
@@ -393,11 +421,14 @@ export class GodScreen {
       const text = link ? h.aftermathLinkFor?.(a.cycle, link.label, link.text) ?? link.text : a.intention;
       model = {
         mode: 'aftermath',
-        kicker: `CYCLE ${a.cycle} · CONSEQUENCE`,
+        kicker: `CYCLE ${a.cycle} · CONSEQUENCE · ${this.aftermathLinkIdx + 1}/${a.links.length}`,
         headline: aftermathHeadline(a.intention),
         body: text,
+        beat: a.explainBeat ?? undefined,
         showDismiss: true,
       };
+    } else if (this.activeCrisis(run)) {
+      model = this.crisisNowModel(run, h);
     } else {
       const sit = this.primarySituation(run);
       const voice = sit ? h.situationVoiceFor?.(sit) : null;
@@ -432,6 +463,40 @@ export class GodScreen {
       ? run.situations.find((s) => s.id === run.god.focusSituationId)
       : null;
     return focus ?? run.situations[0];
+  }
+
+  private activeCrisis(run: GodRun): boolean {
+    const c = run.god.crisis;
+    return !!c && c.resolved === 'none';
+  }
+
+  private crisisNowModel(run: GodRun, h: GodHooks): NowCardModel {
+    const crisis = run.god.crisis!;
+    const runway = run.crisisRunway();
+    const body = crisis.bodyId ? run.mgr.byId(crisis.bodyId) : null;
+    const voice = h.crisisVoiceFor?.() ?? crisis.description;
+    const label = body ? fullName(body) : run.crisisHeadline();
+    return {
+      mode: 'crisis',
+      kicker: `CRISIS · +${runway?.growthPerCycle ?? crisis.growth}/CYCLE · ${runway?.cyclesLeft ?? run.cyclesLeft()} LEFT`,
+      headline: `${crisis.title} — ${label}`,
+      body: voice,
+      crisisRunway: runway ?? undefined,
+      tone: 'hot',
+      showInterfere: true,
+    };
+  }
+
+  /** Crisis body + hope/champion for the actor rail spotlight. */
+  private crisisSpotlightIds(run: GodRun): string[] {
+    if (!this.activeCrisis(run)) return [];
+    const runway = run.crisisRunway();
+    if (!runway) return [];
+    const ids: string[] = [];
+    const spotlight = runway.hopeId ?? runway.championId ?? runway.bodyId;
+    if (runway.bodyId) ids.push(runway.bodyId);
+    if (spotlight && !ids.includes(spotlight)) ids.unshift(spotlight);
+    return ids.slice(0, 4);
   }
 
   private selectSituation(s: Situation, rerender = true): void {
@@ -544,6 +609,11 @@ export class GodScreen {
     if (this.aftermathLinkIdx < a.links.length - 1) {
       this.aftermathLinkIdx++;
       this.render();
+      return true;
+    }
+    const gate = this.hooks?.canCompleteAftermath?.();
+    if (gate && !gate.ok) {
+      this.flash(gate.reason ?? 'OPEN WHY BEFORE YOU MOVE ON', 'gold', 3600);
       return true;
     }
     this.hooks?.clearAftermath?.();

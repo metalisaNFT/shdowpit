@@ -21,8 +21,8 @@ import { recomputePower } from '../nemesis/NemesisGenerator';
 import { remember } from '../nemesis/NemesisMemory';
 import { addCondition } from './Conditions';
 import type { GodContext } from './Context';
-import { addChaos } from './Influence';
-import { simOf, type BeatPriority, type GodState } from './GodTypes';
+import { addChaos, emitChaosEscalation } from './Influence';
+import { simOf, type Beat, type BeatPriority, type GodState } from './GodTypes';
 
 export type InterventionTargeting = 'none' | 'nemesis' | 'pair' | 'area' | 'dead';
 
@@ -658,6 +658,8 @@ export interface SpendResult {
   ok: boolean;
   reason?: string;
   effect?: InterventionEffect;
+  /** legendary tier / heresy threshold beats from this spend */
+  pauseBeats?: Beat[];
 }
 
 /**
@@ -680,7 +682,9 @@ export function performIntervention(
   god.influence = Math.round((god.influence - def.cost) * 10) / 10;
   god.influenceSpent += def.cost;
   god.interventionsUsed[def.id] = (god.interventionsUsed[def.id] ?? 0) + 1;
+  const beforeChaos = god.chaos;
   addChaos(god, def.chaos);
+  const pauseBeats = emitChaosEscalation(ctx, beforeChaos);
 
   const effect = def.apply(ctx, a, b, areaId);
   ctx.refreshConditions();
@@ -695,5 +699,5 @@ export function performIntervention(
     effect.actors,
     effect.tone ?? 'neutral'
   );
-  return { ok: true, effect };
+  return { ok: true, effect, pauseBeats: pauseBeats.length ? pauseBeats : undefined };
 }

@@ -8,7 +8,8 @@
  * something has been arranging it.
  */
 
-import type { GodState } from './GodTypes';
+import type { GodContext } from './Context';
+import type { Beat, GodState } from './GodTypes';
 
 export const INFLUENCE = {
   start: 7,
@@ -151,6 +152,64 @@ export function decayChaos(god: GodState): void {
 export function addChaos(god: GodState, amount: number): void {
   god.chaos = Math.max(0, Math.min(CHAOS.max, god.chaos + amount));
   god.chaosPeak = Math.max(god.chaosPeak, god.chaos);
+}
+
+/** Tier threshold (`at`) the run has already announced — avoids repeat beats on decay/recross. */
+export function syncChaosTierAt(god: GodState): void {
+  god.chaosTierAt = chaosTier(god.chaos).at;
+}
+
+/**
+ * After chaos rises, emit legendary pause beats for tier crossings and the
+ * heresy threshold. Returns beats worth surfacing on the NOW card.
+ */
+export function emitChaosEscalation(ctx: GodContext, beforeChaos: number): Beat[] {
+  const god = ctx.god;
+  const after = god.chaos;
+  if (after <= beforeChaos) return [];
+
+  const out: Beat[] = [];
+  const beforeTier = chaosTier(beforeChaos);
+  const afterTier = chaosTier(after);
+
+  if (afterTier.at > beforeTier.at && afterTier.at >= 20 && afterTier.at > god.chaosTierAt) {
+    god.chaosTierAt = afterTier.at;
+    const detail = [afterTier.blurb, ...afterTier.effects.map((e) => `· ${e}`)];
+    out.push(
+      ctx.emit(
+        'chaos',
+        'legendary',
+        `CHAOS — ${afterTier.name}`,
+        detail,
+        [],
+        afterTier.at >= 60 ? 'bad' : 'gold'
+      )
+    );
+  }
+
+  if (
+    after >= CHAOS.heresyFrom &&
+    beforeChaos < CHAOS.heresyFrom &&
+    !god.heresyThresholdAnnounced
+  ) {
+    god.heresyThresholdAnnounced = true;
+    out.push(
+      ctx.emit(
+        'chaos',
+        'legendary',
+        'THE THRESHOLD — HERESY',
+        [
+          'Chaos has crossed the line where characters can begin to work out they are being handled.',
+          'Someone may look up. When they do, they will spend their cycles tearing up whatever you put down.',
+          'You cannot touch them directly. You bought this.',
+        ],
+        [],
+        'bad'
+      )
+    );
+  }
+
+  return out;
 }
 
 function trim(v: number): string {

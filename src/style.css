@@ -2715,6 +2715,21 @@ body.god-oracle-active #ui[data-mode='god'] {
   color: var(--dimmer);
 }
 
+.god-map-chip-marks {
+  font-size: 6px;
+  letter-spacing: 0.1em;
+  line-height: 1.1;
+  margin-top: 2px;
+  color: rgba(255, 200, 60, 0.88);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.god-map-chip.marked {
+  border-bottom-color: rgba(255, 200, 60, 0.75);
+}
+
 .god-map-popover {
   position: absolute;
   left: 50%;
@@ -2858,6 +2873,14 @@ body.god-oracle-active #ui[data-mode='god'] {
   margin-bottom: 4px;
 }
 
+.god-now-hints {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--gold);
+  margin-top: 6px;
+  text-transform: uppercase;
+}
+
 .god-now-caption {
   font-size: 10px;
   letter-spacing: 0.14em;
@@ -2871,11 +2894,71 @@ body.god-oracle-active #ui[data-mode='god'] {
   display: none;
 }
 
+.god-now-cause {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  line-height: 1.45;
+  color: var(--gold);
+  margin-top: 4px;
+  margin-bottom: 6px;
+  text-transform: none;
+  border-left: 2px solid rgba(255, 213, 106, 0.45);
+  padding-left: 8px;
+}
+
+.god-now-cause.hidden {
+  display: none;
+}
+
+.god-distant-label {
+  position: fixed;
+  top: 52%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 13;
+  pointer-events: none;
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  color: rgba(200, 208, 255, 0.72);
+  background: rgba(4, 4, 8, 0.55);
+  border: 1px solid rgba(200, 208, 255, 0.18);
+  padding: 6px 10px;
+  backdrop-filter: blur(4px);
+}
+
+.god-distant-label.hidden {
+  display: none;
+}
+
 .god-now-actions {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
   margin-top: 10px;
+}
+
+.god-now.god-now-crisis {
+  border-color: rgba(255, 90, 60, 0.45);
+  box-shadow: 0 0 24px rgba(255, 60, 40, 0.12);
+}
+
+.god-now-crisis-stat {
+  color: var(--hot) !important;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.god-now-crisis-hope {
+  color: var(--gold) !important;
+}
+
+.god-now-crisis-deadline {
+  font-weight: 600;
+}
+
+.god-actor-chip.spotlight {
+  border-color: var(--gold);
+  box-shadow: 0 0 12px rgba(255, 213, 106, 0.28);
 }
 
 .god-action-strip {
@@ -3047,6 +3130,25 @@ body.god-oracle-active #ui[data-mode='god'] {
 
 .god-topbar.god-spend-flash .god-meter-fill {
   animation: god-meter-spend 0.55s ease-out;
+}
+
+.god-topbar.god-tier-pulse {
+  animation: god-tier-bar-pulse 1.1s ease-out;
+}
+
+.god-topbar.god-tier-pulse .god-meter-fill.hot,
+.god-topbar.god-tier-pulse .god-meter-fill.gold {
+  animation: god-meter-spend 0.85s ease-out;
+}
+
+@keyframes god-tier-bar-pulse {
+  0%,
+  100% {
+    box-shadow: inset 0 0 0 0 rgba(255, 90, 60, 0);
+  }
+  45% {
+    box-shadow: inset 0 -4px 28px rgba(255, 90, 60, 0.42);
+  }
 }
 
 @keyframes god-meter-spend {

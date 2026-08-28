@@ -7,7 +7,10 @@ import { fullName } from '../nemesis/Nemesis';
 import { getPersonality } from '../data/personalities';
 import { CONDITION_LABEL } from './Conditions';
 import type { GodContext } from './Context';
+import type { NemesisManager } from '../nemesis/NemesisManager';
 import type { AftermathReport, Beat, CausalLink, ConditionKind, Decision, GodState } from './GodTypes';
+
+export type AftermathVoiceFn = (cycle: number, label: string, text: string) => string;
 import { simOf } from './GodTypes';
 
 const CONDITION_VOICE: Partial<Record<ConditionKind, string>> = {
@@ -41,7 +44,79 @@ const QUIET_HIGH = [
   'Nothing settled. The world felt ready to break.',
 ];
 
-function quietLine(god: GodState, ctx: GodContext): string {
+/** Who weighed a god mark and passed — from opportunity scores in decisions. */
+export function describeQuietDecline(
+  mgr: NemesisManager,
+  god: GodState,
+  decisions: Decision[],
+  focusActorIds: string[]
+): string | null {
+  const focus = new Set(focusActorIds.filter(Boolean));
+  const markedIds = new Set(
+    god.conditions.filter((c) => c.source === 'god' && (focus.size === 0 || focus.has(c.targetId))).map((c) => c.targetId)
+  );
+  if (!markedIds.size) return null;
+
+  let best: {
+    actorName: string;
+    actionName: string;
+    targetName: string;
+    opp: number;
+    choseInstead: string;
+  } | null = null;
+
+  for (const d of decisions) {
+    for (const opt of d.considered) {
+      if (!opt.targetId || !markedIds.has(opt.targetId)) continue;
+      const opp = opt.parts.opportunity ?? 0;
+      if (opp < 0.35) continue;
+      const tookIt =
+        d.chosen?.targetId === opt.targetId &&
+        d.chosen.actionId === opt.actionId &&
+        (d.chosen.parts.opportunity ?? 0) >= opp * 0.85;
+      if (tookIt) continue;
+      const choseInstead = d.chosen
+        ? `${d.chosen.actionName}${d.chosen.targetName ? ` on ${d.chosen.targetName}` : ''}`
+        : 'something else';
+      if (!best || opp > best.opp) {
+        best = {
+          actorName: d.actorName,
+          actionName: opt.actionName,
+          targetName: opt.targetName,
+          opp,
+          choseInstead,
+        };
+      }
+    }
+  }
+
+  if (best) {
+    const actorId = decisions.find((d) => d.actorName === best!.actorName)?.actorId ?? '';
+    const who = mgr.byId(actorId);
+    const name = who ? fullName(who) : best.actorName;
+    return `${name} noticed your mark on ${best.targetName} — ${best.actionName} looked worth doing — but chose ${best.choseInstead} instead.`;
+  }
+
+  const watchers = decisions.filter((d) =>
+    d.considered.some((c) => c.targetId && markedIds.has(c.targetId) && (c.parts.opportunity ?? 0) > 0)
+  );
+  if (watchers.length) {
+    const d = watchers[0];
+    const markName = d.considered.find((c) => c.targetId && markedIds.has(c.targetId))?.targetName ?? 'your mark';
+    return `${d.actorName} weighed ${markName} and decided it was not worth acting on this cycle.`;
+  }
+
+  return null;
+}
+
+function quietLine(
+  god: GodState,
+  ctx: GodContext,
+  decisions: Decision[],
+  focusActorIds: string[]
+): string {
+  const decline = describeQuietDecline(ctx.mgr, god, decisions, focusActorIds);
+  if (decline) return decline;
   const pool = god.chaos >= 55 ? QUIET_HIGH : god.chaos >= 28 ? QUIET_MID : QUIET_LOW;
   const dom =
     ctx.mgr.roster
@@ -166,9 +241,19 @@ export function buildAftermath(args: {
   } else {
     links.push({
       label: 'WHAT HAPPENED',
-      text: quietLine(god, ctx),
+      text: quietLine(god, ctx, decisions, focusActorIds),
     });
   }
+
+  const explainBeat =
+    storyBeats.find((b) => b.why) ??
+    beats.find(
+      (b) =>
+        b.why &&
+        (focus.size === 0 || b.actors.some((id) => focus.has(id)) || relatedDecisions.some((d) => b.actors.includes(d.actorId)))
+    ) ??
+    (noticed ? beatFromDecision(ctx, noticed, finishedCycle ?? god.cycle) : null) ??
+    null;
 
   const next = god.situations[0];
   const nextProblem = next
@@ -184,11 +269,47 @@ export function buildAftermath(args: {
     nextProblem,
     uncertainty:
       'You write conditions. They choose. Outcomes are never guaranteed — only made more or less likely.',
+    explainBeat,
   };
 }
 
 function scoreOpportunity(d: Decision): number {
   return d.chosen?.parts.opportunity ?? 0;
+}
+
+function beatFromDecision(ctx: GodContext, d: Decision, cycle: number): Beat | null {
+  if (!d.chosen) return null;
+  const n = ctx.mgr.byId(d.actorId);
+  if (!n) return null;
+  const c = d.chosen;
+  const alts = d.considered
+    .filter((x) => x.total < c.total)
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 2)
+    .map((x) => ({ actionName: x.actionName, targetName: x.targetName, total: x.total }));
+  return {
+    id: `decision:${d.actorId}:${cycle}`,
+    cycle,
+    priority: 'notable',
+    headline: `${d.actorName} — ${c.actionName}${c.targetName ? ` on ${c.targetName}` : ''}`,
+    detail: [],
+    actors: [d.actorId, c.targetId].filter((id): id is string => !!id),
+    tone: 'neutral',
+    kind: 'sim',
+    why: {
+      actorId: d.actorId,
+      actorName: d.actorName,
+      personality: n.personality,
+      actionName: c.actionName,
+      targetName: c.targetName,
+      targetKind: c.targetKind,
+      total: c.total,
+      parts: c.parts,
+      marks: c.marks ?? [],
+      alternatives: alts,
+      rationed: d.rationed,
+    },
+  };
 }
 
 export interface CycleSpend {
@@ -217,4 +338,19 @@ export function describeActorState(ctx: GodContext, id: string): string {
   if (!n) return '—';
   const s = simOf(n);
   return `${fullName(n)} · ${n.alive ? 'alive' : 'dead'} · ambition ${Math.round(s.ambition)} · injury ${Math.round(s.injury)}`;
+}
+
+/** Cause/effect line for duel replay when aftermath is shown after the fight. */
+export function spectacleCauseCaption(report: AftermathReport, voice?: AftermathVoiceFn): string {
+  const link =
+    report.links.find((l) => l.label === 'CONDITION') ??
+    report.links.find((l) => l.label === 'WHAT HAPPENED') ??
+    report.links[0];
+  if (!link) return `${report.intention} Watch what follows.`;
+  const text = voice?.(report.cycle, link.label, link.text) ?? link.text;
+  const lower = text.replace(/^[A-Z]/, (c) => c.toLowerCase());
+  if (/^you spent influence/i.test(report.intention)) {
+    return `Because ${lower} — watch what the board did next.`;
+  }
+  return `Because ${lower} — this is what followed.`;
 }

@@ -120,9 +120,14 @@ const ADVANCES_ON: Partial<Record<StepId, GuideEvent>> = {
 
 export class Guide {
   step: StepId = 'select';
+  /** Set when the player opens WHY — required before auto-dismiss. */
+  whyOpened = false;
 
   load(saved: string): void {
     this.step = (STEP_ORDER as string[]).includes(saved) ? (saved as StepId) : 'select';
+    if (this.step === 'done' || STEP_ORDER.indexOf(this.step) > STEP_ORDER.indexOf('why')) {
+      this.whyOpened = true;
+    }
   }
 
   get active(): boolean {
@@ -144,6 +149,7 @@ export class Guide {
    */
   notify(ev: GuideEvent): boolean {
     if (!this.active) return false;
+    if (ev === 'whyOpened') this.whyOpened = true;
     const here = STEP_ORDER.indexOf(this.step);
     let matched = -1;
     for (let i = here; i < STEP_ORDER.length; i++) {
@@ -164,13 +170,20 @@ export class Guide {
 
   restart(): void {
     this.step = 'select';
+    this.whyOpened = false;
   }
 
-  /** Do not hold the rail hostage past the opening. */
+  /** Do not hold the rail hostage past the opening — but only after WHY landed. */
   maybeGiveUp(cycle: number): boolean {
     if (!this.active || cycle < 5) return false;
+    if (!this.whyOpened && STEP_ORDER.indexOf(this.step) <= STEP_ORDER.indexOf('why')) return false;
     this.finish();
     return true;
+  }
+
+  /** Board unlock waits on finishing the walkthrough, not a cycle count. */
+  get boardReady(): boolean {
+    return this.step === 'done';
   }
 }
 

@@ -324,6 +324,31 @@ function bestHopeLine(ctx: GodContext, power: number): string {
   return `${fullName(hope)} is the closest thing to an answer, and is ${gap}% short.`;
 }
 
+/** Runway copy for the crisis NOW card — growth, hope gap, deadline tension. */
+export interface CrisisRunway {
+  growthPerCycle: number;
+  hopeLine: string;
+  cyclesLeft: number;
+  hopeId: string | null;
+  bodyId: string | null;
+  championId: string | null;
+}
+
+export function crisisRunway(ctx: GodContext): CrisisRunway | null {
+  const crisis = ctx.god.crisis;
+  if (!crisis || crisis.resolved !== 'none') return null;
+  const mods = chaosMods(ctx.god.chaos);
+  const hope = bestHope(ctx);
+  return {
+    growthPerCycle: Math.round(crisis.growth * mods.crisisGrowth * 10) / 10,
+    hopeLine: bestHopeLine(ctx, crisis.power),
+    cyclesLeft: Math.max(0, crisis.deadline - ctx.god.cycle),
+    hopeId: hope?.id ?? null,
+    bodyId: crisis.bodyId,
+    championId: ctx.god.championId,
+  };
+}
+
 /** Warlords and up who would follow the crisis rather than fight it. */
 export function crisisFollowers(ctx: GodContext): Nemesis[] {
   const crisis = ctx.god.crisis;

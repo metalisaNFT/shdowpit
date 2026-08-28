@@ -16,9 +16,9 @@ import { getPersonality } from '../data/personalities';
 import { actForCycle, advanceAct, effectiveAct, getAct, actIndex, RUN_DEADLINE } from './Arc';
 import { addCondition } from './Conditions';
 import { GodContext } from './Context';
-import { birthCrisis, crisisLabel, crisisTick } from './Crisis';
+import { birthCrisis, crisisLabel, crisisRunway, crisisTick } from './Crisis';
 import { seedFactions, livingFactions } from './Factions';
-import { chaosTier, decayChaos, INFLUENCE, regenInfluence } from './Influence';
+import { chaosTier, decayChaos, INFLUENCE, regenInfluence, syncChaosTierAt } from './Influence';
 import {
   availableInterventions,
   performIntervention,
@@ -74,6 +74,8 @@ export function emptyGodState(seed: number, run: number, bonus = 0): GodState {
     influenceMax: INFLUENCE.max + bonus,
     chaos: 0,
     chaosPeak: 0,
+    chaosTierAt: 0,
+    heresyThresholdAnnounced: false,
     conditions: [],
     nextConditionId: 1,
     factions: [],
@@ -111,6 +113,10 @@ export function migrateGodState(raw: GodState): GodState {
   if (g.lastAftermath === undefined) g.lastAftermath = null;
   if (g.lastDescentReport === undefined) g.lastDescentReport = null;
   if (!g.legacyEchoes) g.legacyEchoes = [];
+  if (g.chaosTierAt === undefined) syncChaosTierAt(g);
+  if (g.heresyThresholdAnnounced === undefined) {
+    g.heresyThresholdAnnounced = g.chaos >= 45 || g.feed.some((b) => b.kind === 'chaos' && /THRESHOLD/.test(b.headline));
+  }
   if (typeof g.pendingDescent === 'string') {
     g.pendingDescent = {
       nemesisId: g.pendingDescent,
@@ -221,9 +227,15 @@ export class GodRun {
   }
 
   /** Player acknowledged the opening or made their first move. */
-  markOpeningProgress(unlockBoard = false): void {
+  markOpeningProgress(): void {
     this.god.openingDone = true;
-    if (unlockBoard || this.god.cycle >= 3) this.god.boardUnlocked = true;
+    this.persist();
+  }
+
+  /** Full board unlock — gated on guide completion, not cycle count. */
+  unlockBoard(): void {
+    if (this.god.boardUnlocked) return;
+    this.god.boardUnlocked = true;
     this.persist();
   }
 
@@ -298,7 +310,18 @@ export class GodRun {
     this.setPhase('observe');
     const act = advanceAct(this.god);
     if (act) {
-      ctx.emit('act', 'legendary', `${act.name}`, [act.blurb, `Cycle ${this.god.cycle}.`], [], 'gold');
+      ctx.emit(
+        'act',
+        'legendary',
+        `${act.name}`,
+        [
+          act.blurb,
+          `Tempo ×${act.tempo.toFixed(2)} · lethality ×${act.lethality.toFixed(2)} · pressure ×${act.pressure.toFixed(2)}`,
+          `Cycle ${this.god.cycle}.`,
+        ],
+        [],
+        'gold'
+      );
       ctx.chronicle('age_begins', act.name, [], true, 'gold');
     }
     this.maybeBirthCrisis(ctx);
@@ -381,7 +404,7 @@ export class GodRun {
     });
     this.pendingSpends = [];
     this.advancedQuiet = false;
-    this.markOpeningProgress(this.god.cycle >= 3);
+    this.markOpeningProgress();
 
     this.persist();
     return [...ctx.beats, ...next.beats];
@@ -688,6 +711,16 @@ export class GodRun {
 
   cyclesLeft(): number {
     return Math.max(0, (this.god.crisis?.deadline ?? RUN_DEADLINE) - this.god.cycle);
+  }
+
+  crisisRunway() {
+    return crisisRunway(this.context());
+  }
+
+  crisisHeadline(): string {
+    const c = this.god.crisis;
+    if (!c) return '';
+    return crisisLabel(this.context(), c);
   }
 
   persist(): void {
