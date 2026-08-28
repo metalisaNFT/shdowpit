@@ -262,10 +262,11 @@ export class VFX {
    *   execute        magenta-red eruption
    */
   impact(kind: ImpactKind, x: number, y: number, z: number, dirX = 0, dirZ = 0, power = 1): void {
+    const lite = this.reduced;
     switch (kind) {
       case 'flesh':
-        this.particles.burst(x, y, z, Math.round(9 * power), 0xff5a4a, 7, { size: 0.11, life: 0.4, dirX, dirZ });
-        this.flash(x, y, z, 0xff8a5a, 0.45 * power, 0.09);
+        if (!lite) this.particles.burst(x, y, z, Math.round(9 * power), 0xff5a4a, 7, { size: 0.11, life: 0.4, dirX, dirZ });
+        this.flash(x, y, z, 0xff8a5a, 0.45 * power * (lite ? 0.6 : 1), 0.09);
         break;
       case 'armor':
         this.particles.burst(x, y, z, 7, 0xbfc6d2, 6, { size: 0.08, life: 0.28, dirX, dirZ, gravity: -30 });

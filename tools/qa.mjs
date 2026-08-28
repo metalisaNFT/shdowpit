@@ -13,8 +13,8 @@
  *   node tools/qa.mjs
  */
 
-import { chromium } from 'playwright';
 import { fileURLToPath } from 'node:url';
+import { launchChromium } from './browser.mjs';
 import path from 'node:path';
 import fs from 'node:fs';
 
@@ -54,16 +54,7 @@ function percentile(arr, p) {
 async function main() {
   fs.mkdirSync(SHOTS, { recursive: true });
 
-  const browser = await chromium.launch({
-    executablePath: '/opt/pw-browsers/chromium',
-    args: [
-      '--use-gl=angle',
-      '--use-angle=swiftshader',
-      '--enable-unsafe-swiftshader',
-      '--disable-gpu-sandbox',
-      '--no-sandbox',
-    ],
-  });
+  const browser = await launchChromium();
   const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
   page.on('pageerror', (e) => errors.push('PAGEERROR: ' + e.message));
   page.on('console', (m) => {
@@ -78,7 +69,7 @@ async function main() {
   await page.evaluate(() => localStorage.clear());
   await page.reload({ waitUntil: 'load' });
   await page.waitForTimeout(2500);
-  await (await page.$('#title-screen button')).click();
+  await (await page.$('#title-descend')).click();
   await page.waitForTimeout(2500);
 
   const s0 = await state();
@@ -190,9 +181,9 @@ async function main() {
       await page.evaluate(() => window.SHDOWPIT.__godMode(false));
     }
     const st = await state();
-    if (st.mode === 'power') {
-      // A kill-streak boon offer paused the fight — take the first card,
-      // exactly as a player would, and keep going.
+    if (st.mode === 'power' || st.mode === 'choice') {
+      // A kill-streak boon offer, vendetta prompt or nemesis trophy paused
+      // the fight — take the first card, exactly as a player would.
       await page.keyboard.press('Digit1');
       await page.waitForTimeout(400);
       continue;
@@ -348,19 +339,35 @@ async function main() {
   /* --- 3. foot sliding: moving fast while the walk cycle is frozen --- */
   let slideFrames = 0;
   let slideWorst = 0;
+  let locoFrames = 0;
+  let actionSlide = 0;
   for (let i = 1; i < F.length; i++) {
     const a = F[i - 1];
     const b = F[i];
     const dt = Math.max(1e-4, b.t - a.t);
     if (dt > 0.25) continue;
     const phaseRate = Math.abs(b.walkPhase - a.walkPhase) / dt;
-    if (b.speed > 1.6 && phaseRate < 0.4) {
-      slideFrames++;
-      if (b.speed > slideWorst) slideWorst = b.speed;
+    const moving = b.speed > 1.6;
+    // A dodge, attack lunge or skill dash plays its OWN clip and moves by
+    // design — that is root motion, not foot slide. Real foot slide is the
+    // locomotion state failing to cycle while the character runs, so only
+    // free-movement frames count toward the defect.
+    const freeMove = b.action === 'idle';
+    if (moving && freeMove) {
+      locoFrames++;
+      if (phaseRate < 0.4) {
+        slideFrames++;
+        if (b.speed > slideWorst) slideWorst = b.speed;
+      }
+    } else if (moving && phaseRate < 0.4) {
+      actionSlide++;
     }
   }
-  const slidePct = (slideFrames / Math.max(1, F.length)) * 100;
-  note(`foot slide: ${slideFrames} frames (${slidePct.toFixed(1)}%), worst speed ${slideWorst.toFixed(1)} m/s`);
+  const slidePct = (slideFrames / Math.max(1, locoFrames)) * 100;
+  note(
+    `foot slide: ${slideFrames}/${locoFrames} free-movement frames (${slidePct.toFixed(1)}%), ` +
+      `worst ${slideWorst.toFixed(1)} m/s; ${actionSlide} action-clip frames excluded (root motion)`
+  );
   if (slidePct > 4) {
     finding(
       'MAJOR',
@@ -422,6 +429,16 @@ async function main() {
   const camMin = Math.min(...camDists);
   const camP01 = percentile(camDists, 0.01);
   note(`camera distance: min ${camMin.toFixed(2)}m, p1 ${camP01.toFixed(2)}m, p50 ${percentile(camDists, 0.5).toFixed(2)}m`);
+  // When the orbit has to come in tight the game dissolves the player rather
+  // than shoving the lens into the wall, so "close" is only a defect if the
+  // fade did NOT engage and the frame really is full of torso.
+  const closeFrames = F.filter((f) => f.camToPlayer < 2.6);
+  const fadedWhenClose = closeFrames.length
+    ? closeFrames.filter((f) => (f.playerFade ?? 1) < 0.85).length / closeFrames.length
+    : 1;
+  note(
+    `close-camera frames: ${closeFrames.length}, faded on ${(fadedWhenClose * 100).toFixed(0)}% of them`
+  );
   if (camMin < 1.2) {
     finding(
       'MAJOR',
@@ -429,8 +446,13 @@ async function main() {
       'camera pushes inside the player against walls',
       `min distance ${camMin.toFixed(2)}m — near plane is 0.1 so geometry clips through`
     );
-  } else if (camMin < 2.2) {
-    finding('MINOR', 'camera', 'camera gets uncomfortably close at walls', `${camMin.toFixed(2)}m`);
+  } else if (camMin < 2.2 && closeFrames.length > 3 && fadedWhenClose < 0.6) {
+    finding(
+      'MINOR',
+      'camera',
+      'camera gets close at walls without the player fading out',
+      `${camMin.toFixed(2)}m, faded on only ${(fadedWhenClose * 100).toFixed(0)}% of close frames`
+    );
   }
   // camera jitter: large frame-to-frame distance changes
   let camJumps = 0;

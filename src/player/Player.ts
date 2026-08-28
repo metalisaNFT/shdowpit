@@ -15,6 +15,7 @@
 import * as THREE from 'three';
 import type { Combatant, DamageInfo, DamageResult } from '../combat/Types';
 import { emptyResult } from '../combat/Types';
+import { Enemy } from '../enemy/Enemy';
 import { PlayerStats } from './PlayerStats';
 import { PlayerCombat, RANGED_THROW_TIME } from './PlayerCombat';
 import { PlayerController } from './PlayerController';
@@ -28,7 +29,7 @@ import { CharacterAnimator } from '../anim/Animator';
 import { CLIPS } from '../anim/ClipLibrary';
 import { PLAYER } from '../data/balance';
 
-const SKIN = 0xb9bcc2;
+const SKIN = 0xc9ccd4;
 const TRIM = 0x15171c;
 const ACCENT = SIGNAL.player;
 
@@ -64,6 +65,14 @@ export class Player implements Combatant {
   private rigYaw = 0;
   private hurtFlash = 0;
   private skinMat!: THREE.MeshLambertMaterial;
+  /** body materials that participate in the close-camera fade */
+  private bodyMats: THREE.Material[] = [];
+  private proximityFade = 1;
+
+  /** 1 = solid, 0 = fully dissolved by the close-camera fade. */
+  get fadeAmount(): number {
+    return this.proximityFade;
+  }
   private disposables: Array<THREE.BufferGeometry | THREE.Material> = [];
   private deathClip: 'DeathA' | 'DeathB' = 'DeathA';
   private lockPoint: THREE.Vector3 | null = null;
@@ -167,6 +176,33 @@ export class Player implements Combatant {
    * and chest glow attach on the bones' -Z side with NO compensation here,
    * and none is allowed anywhere else.
    */
+  /**
+   * Dissolve the character as the camera closes in.
+   *
+   * Against a wall the orbit has to come in tight, and a solid torso then
+   * fills the frame. Shoving the camera further out instead just puts it
+   * inside the wall. Fading the body is what third-person games actually do:
+   * you keep the view, you keep the position read from the ground shadow and
+   * the weapon trail, and you stop staring at the inside of a shoulder.
+   *
+   * @param distance camera-to-chest distance in metres
+   */
+  setProximityFade(distance: number, rdt: number): void {
+    const FADE_FULL = 1.9; // fully transparent at or below this
+    const FADE_NONE = 3.2; // fully solid at or above this
+    const want = Math.max(0, Math.min(1, (distance - FADE_FULL) / (FADE_NONE - FADE_FULL)));
+    // Ease so a camera brushing the threshold does not strobe the body.
+    const k = 1 - Math.pow(0.002, Math.max(0, rdt));
+    this.proximityFade += (want - this.proximityFade) * k;
+    const o = this.proximityFade;
+    for (const m of this.bodyMats) {
+      m.opacity = o;
+      // Only pay the sorting cost while actually see-through.
+      m.depthWrite = o > 0.97;
+    }
+    this.rig.root.visible = o > 0.02;
+  }
+
   private buildBody(): void {
     const box = new THREE.BoxGeometry(1, 1, 1);
     const cone = new THREE.ConeGeometry(0.5, 1, 4);
@@ -184,6 +220,32 @@ export class Player implements Combatant {
       depthWrite: false,
     });
     this.disposables.push(this.skinMat, trimMat, glowMat, this.trailMat);
+    // Faded when the camera has to come in close (see setProximityFade). All
+    // three are opted into transparency up front — flipping `transparent` at
+    // runtime forces a shader recompile mid-fight.
+    for (const m of [this.skinMat, trimMat, glowMat]) {
+      m.transparent = true;
+      m.opacity = 1;
+      m.depthWrite = true;
+    }
+
+    const contactGeo = new THREE.RingGeometry(0.38, 0.52, 28, 1);
+    const contactMat = new THREE.MeshBasicMaterial({
+      color: ACCENT,
+      transparent: true,
+      opacity: 0.4,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      toneMapped: false,
+      fog: false,
+    });
+    const contact = new THREE.Mesh(contactGeo, contactMat);
+    contact.rotation.x = -Math.PI / 2;
+    contact.position.y = 0.04;
+    contact.renderOrder = 1;
+    this.rig.root.add(contact);
+    this.disposables.push(contactGeo, contactMat);
+    this.bodyMats = [this.skinMat, trimMat, glowMat, contactMat];
 
     const B = this.rig.bones;
 
@@ -266,7 +328,7 @@ export class Player implements Combatant {
     const g = new THREE.Group();
     const box = new THREE.BoxGeometry(1, 1, 1);
     const steelMat = new THREE.MeshLambertMaterial({
-      color: def.id === 'sunblade' ? SIGNAL.critical : def.id === 'ashfang' ? SIGNAL.unblockable : WORLD.metal,
+      color: def.id === 'sunblade' || def.id === 'sunspear' ? SIGNAL.critical : def.id === 'ashfang' ? SIGNAL.unblockable : WORLD.metal,
       flatShading: true,
     });
     const gripMat = new THREE.MeshLambertMaterial({ color: WORLD.shadow, flatShading: true });
@@ -288,9 +350,9 @@ export class Player implements Combatant {
     grip.position.y = -0.11;
 
     g.add(blade, guard, grip);
-    if (def.id === 'sunblade' || def.id === 'ashfang' || def.id === 'longtooth') {
+    if (def.id === 'sunblade' || def.id === 'ashfang' || def.id === 'longtooth' || def.id === 'sunspear') {
       const glowMat = new THREE.MeshBasicMaterial({
-        color: def.id === 'sunblade' ? SIGNAL.critical : def.id === 'ashfang' ? SIGNAL.unblockable : SIGNAL.parryable,
+        color: def.id === 'sunblade' || def.id === 'sunspear' ? SIGNAL.critical : def.id === 'ashfang' ? SIGNAL.unblockable : SIGNAL.parryable,
         toneMapped: false,
         fog: false,
       });
@@ -341,6 +403,18 @@ export class Player implements Combatant {
 
     if (this.combat.invulnerable && !info.unblockable) {
       res.dodged = true;
+      return res;
+    }
+    if (this.combat.guardCharges > 0 && this.combat.guardTimer > 0) {
+      this.combat.guardCharges = 0;
+      this.combat.guardTimer = 0;
+      res.blocked = true;
+      this.hurtFlash = 0.4;
+      this.stats.addSurge(14);
+      const atk = info.attacker;
+      if (atk && !atk.isPlayer && 'combat' in atk) {
+        (atk as Enemy).combat.addPosture(22, 0);
+      }
       return res;
     }
     /* skill armor: still take the hit, but do not stagger — red melee still staggers */
@@ -415,7 +489,7 @@ export class Player implements Combatant {
   ): void {
     this.stats.tick(dt);
     this.combat.attackSpeedMul = this.stats.stat('attackSpeed');
-    this.combat.parryWindowMul = this.stats.stat('parryWindow');
+    this.combat.parryWindowMul = this.stats.stat('parryWindow') * (this.stats.powers.has('wide_parry') ? 1.18 : 1);
     this.combat.dodgeCooldownMul = this.stats.stat('dodgeCooldown');
     this.combat.update(dt, this.weapon, this.stats);
     this.lockPoint = lockPoint;
@@ -435,7 +509,8 @@ export class Player implements Combatant {
           this.facing = y;
         },
         this.facing,
-        this.stats.powers.has('blink')
+        this.stats.powers.has('blink'),
+        this.stats.powers.has('phase_step') && this.combat.action === 'dodge'
       );
     } else {
       this.controller.stop();
@@ -534,10 +609,10 @@ export class Player implements Combatant {
         const clip =
           id === 'shadow_step'
             ? 'DodgeF'
-            : id === 'void_grasp'
+            : id === 'void_grasp' || id === 'hunters_brand'
               ? 'AtkThrust'
-              : id === 'pit_eruption'
-                ? 'Atk2H_Slam'
+              : id === 'spectral_guard'
+                ? 'Parry'
                 : 'Atk2H_Slam';
         const state = 'ABILITY';
         anim.setAction(state, clip, { mode: 'scrub' });

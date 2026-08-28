@@ -213,7 +213,7 @@ export function proceduralPortrait(n: Nemesis): string {
   const cx = W / 2;
   const headTop = 120;
   const shoulderY = headTop + headH + 40;
-  const shoulderW = headW * (n.archetype === 'heavy' ? 2.15 : n.archetype === 'archer' ? 1.55 : 1.85);
+  const shoulderW = headW * (n.archetype === 'heavy' || n.archetype === 'commander' ? 2.15 : n.archetype === 'archer' || n.archetype === 'duelist' ? 1.55 : 1.85);
 
   const parts: string[] = [];
 

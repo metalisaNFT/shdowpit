@@ -12,6 +12,12 @@ export interface CopyLayers {
   detail: string;
 }
 
+function pickVariant(seed: string, variants: string[]): string {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) | 0;
+  return variants[Math.abs(h) % variants.length]!;
+}
+
 const HEAD: Partial<Record<WorldEventType, string>> = {
   player_death: 'THEY TOOK YOU',
   player_kill: 'YOU CUT THEM DOWN',
@@ -67,7 +73,11 @@ export function copyForEvent(ev: WorldEvent, names: Map<string, Nemesis>): CopyL
       break;
     case 'territory':
       headline = area ? `${area} CHANGED HANDS` : 'THE GROUND CHANGED';
-      line = b ? `${a} drove ${b} off the ground.` : `${a} seized the ground.`;
+      line = pickVariant(ev.id ?? `${ev.turn}:${ev.type}`, [
+        b ? `${a} drove ${b} off the ground.` : `${a} seized the ground.`,
+        b ? `${a} took ${area || 'the ground'} from ${b}.` : `${a} claimed new ground.`,
+        area ? `${area} answered to ${a} now.` : `${a} shifted the map.`,
+      ]);
       break;
     case 'betrayal':
       headline = 'THE OATH BROKE';
@@ -90,6 +100,15 @@ export function copyForEvent(ev: WorldEvent, names: Map<string, Nemesis>): CopyL
       line = `${a} is dead. The crown is loose.`;
       break;
     default:
+      if (ev.type === 'duel') {
+        line = pickVariant(ev.id ?? `${ev.turn}:${ev.type}`, [
+          line,
+          b ? `${a} and ${b} settled it in the open.` : `${a} fought and won.`,
+          b ? `${a} left ${b} on the ground.` : `${a} walked away standing.`,
+        ]);
+      } else if (ev.type === 'death') {
+        line = pickVariant(ev.id ?? `${ev.turn}:${ev.type}`, [line, `${a} did not get up.`, `${a} is gone.`]);
+      }
       break;
   }
 

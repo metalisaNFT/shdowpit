@@ -41,6 +41,7 @@ export class NemesisIntro {
     name.style.color = p.accent;
     const title = div('ititle', p.title);
     const rank = div('irank', p.rank);
+    if (p.headline) this.card.append(div('iheadline', p.headline));
     this.card.append(name, title, rank);
 
     const chip = div('ichip hidden', p.chip);

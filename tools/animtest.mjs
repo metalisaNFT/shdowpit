@@ -14,8 +14,8 @@
  *   CONTINUITY   no pose snaps while attacking (arm-angle deltas)
  */
 
-import { chromium } from 'playwright';
 import fs from 'node:fs';
+import { launchChromium } from './browser.mjs';
 
 const URL_BASE = process.env.PLAYTEST_URL ?? 'http://localhost:4173/?quality=low';
 const CLIPS = JSON.parse(fs.readFileSync(new URL('../src/anim/clips.json', import.meta.url))).clips;
@@ -34,10 +34,7 @@ function check(name, ok, detail = '') {
   }
 }
 
-const browser = await chromium.launch({
-  executablePath: '/opt/pw-browsers/chromium',
-  args: ['--use-gl=swiftshader'],
-});
+const browser = await launchChromium();
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 const pageErrors = [];
 page.on('pageerror', (e) => pageErrors.push(e.message));
@@ -58,19 +55,58 @@ const dump = async (tag) => {
   });
   console.log(`  [${tag}]`, JSON.stringify(d));
 };
-const dismissBoons = async () => {
-  for (let i = 0; i < 3; i++) {
-    const boon = await page.$('#boon-screen, .boon');
-    await page.keyboard.press('Digit1');
-    await sleep(250);
-    void boon;
+/**
+ * Wait until the player's action machine is idle again.
+ *
+ * Fixed sleeps between inputs are a race under software GL (~9fps): the
+ * previous heavy was still in its windup when the next test pressed dodge,
+ * `tryDodge` correctly refused, and the check read the heavy's clip. Wait on
+ * the game's own state instead of guessing a duration.
+ */
+const waitIdle = async (limitMs = 4000) => {
+  const t0 = Date.now();
+  while (Date.now() - t0 < limitMs) {
+    const s = await ev(() => ({ a: window.SHDOWPIT.player.combat.action, m: window.SHDOWPIT.mode }));
+    if (s.m === 'power' || s.m === 'choice') {
+      await page.keyboard.press('Digit1');
+      await sleep(300);
+      continue;
+    }
+    if (s.a === 'idle') return true;
+    await sleep(40);
+  }
+  return false;
+};
+
+/**
+ * Take the first card of any offer that is actually open.
+ *
+ * Digit1 is ALSO the Skill 1 hotkey. Pressing it blindly cast Shadow Step and
+ * left the player mid-ability — which is why the very next measurement saw
+ * state ABILITY / clip DodgeF and a gait cycle that "stopped advancing".
+ * Only press while an offer screen genuinely owns the input.
+ */
+const dismissBoons = async (windowMs = 1800) => {
+  // Offers do not all open synchronously — the nemesis trophy arrives on a
+  // ~700ms delay after the kill, so a single check right after smiting sees
+  // 'playing', returns, and the modal then freezes the loop underneath the
+  // next measurement. Watch for a while instead.
+  const t0 = Date.now();
+  while (Date.now() - t0 < windowMs) {
+    const mode = await ev(() => window.SHDOWPIT.mode);
+    if (mode === 'power' || mode === 'choice') {
+      await page.keyboard.press('Digit1');
+      await sleep(300);
+      continue;
+    }
+    await sleep(120);
   }
 };
 
 await page.goto(URL_BASE, { waitUntil: 'load' });
 await ev(() => localStorage.clear());
 await sleep(2400);
-await (await page.$('#title-screen button')).click();
+await (await page.$('#title-descend')).click();
 await sleep(1000);
 await ev(() => window.SHDOWPIT.__qaStart());
 await sleep(400);
@@ -103,12 +139,15 @@ await dump('preA2');
 await ev(() => window.SHDOWPIT.__debug().setTimeScale(0.25));
 await page.mouse.click(640, 360);
 let attackSample = null;
-for (let i = 0; i < 40; i++) {
+// Poll for the whole slowed swing. Under software GL a frame is ~110ms, so a
+// 40 × 16ms budget could expire before the active window even opened.
+for (let i = 0; i < 160; i++) {
   const s = await anim();
   if (s.player.hitboxActive) {
     attackSample = s;
     break;
   }
+  if (s.player.action === 'idle' && i > 8) break;
   await sleep(16);
 }
 check('A2 attack: hitbox window observed', !!attackSample);
@@ -125,10 +164,16 @@ await sleep(700);
 
 await dump('preA3');
 // A3 PROJECTILE FORWARD
+await waitIdle();
 const fired = await ev(() => window.SHDOWPIT.__qaFireNeedle());
-// the needle leaves the hand ~0.1s into the throw animation
-await sleep(300);
-const projs = await ev(() => window.SHDOWPIT.__qaProjectiles());
+// The needle leaves the hand ~0.1s into the throw, but a software-GL frame is
+// ~110ms — poll for it instead of sampling one arbitrary moment.
+let projs = [];
+for (let i = 0; i < 30; i++) {
+  projs = await ev(() => window.SHDOWPIT.__qaProjectiles());
+  if (projs.some((p) => p.kind === 'needle')) break;
+  await sleep(50);
+}
 const needle = projs.find((p) => p.kind === 'needle');
 check('A3 needle exists', fired === true && !!needle, `fired=${fired} kinds=${projs.map((p) => p.kind).join(',')}`);
 if (needle) {
@@ -180,27 +225,42 @@ console.log('\n== B. STATE MACHINE ==');
 
 await dump('preB1');
 // B1 heavy attack
+await waitIdle();
 await page.mouse.click(640, 360, { button: 'right' });
 await sleep(150);
 a = await anim();
 check('B1 heavy -> HEAVY_ATTACK/Atk2H_Slam', a.player.state === 'HEAVY_ATTACK' && a.player.clip === 'Atk2H_Slam', `${a.player.state}/${a.player.clip}`);
-await sleep(1300);
 
-// B2 dodge (direction-relative clip)
+/**
+ * Poll for an animation state rather than sleeping a fixed amount. One
+ * software-GL frame is ~110ms, so "press, wait 120ms, sample" could read the
+ * frame BEFORE the input was consumed and report IDLE.
+ */
+const awaitPlayerState = async (pred, limitMs = 1200) => {
+  const t0 = Date.now();
+  let last = await anim();
+  while (Date.now() - t0 < limitMs) {
+    if (pred(last.player)) return last;
+    await sleep(30);
+    last = await anim();
+  }
+  return last;
+};
+
+// B2 dodge (direction-relative clip) — only once the heavy has fully resolved
+await waitIdle();
 await page.keyboard.down('KeyA');
 await page.keyboard.press('Space');
-await sleep(120);
-a = await anim();
+a = await awaitPlayerState((p) => p.state === 'DODGE');
 await page.keyboard.up('KeyA');
 check('B2 dodge -> DODGE/Dodge*', a.player.state === 'DODGE' && a.player.clip.startsWith('Dodge'), `${a.player.state}/${a.player.clip}`);
-await sleep(600);
 
 // B3 parry
+await waitIdle();
 await page.keyboard.press('KeyQ');
-await sleep(100);
-a = await anim();
+a = await awaitPlayerState((p) => p.state === 'PARRY');
 check('B3 parry -> PARRY/Parry', a.player.state === 'PARRY' && a.player.clip === 'Parry', `${a.player.state}/${a.player.clip}`);
-await sleep(700);
+await waitIdle();
 
 await dump('preB4');
 // B4 enemy reaction states, driven directly
@@ -321,10 +381,16 @@ for (const scale of [1, 0.5, 0.25]) {
   const impact = meta?.impactT ?? -1;
   const pre = Math.min(0.03, impact * 0.3);
   const err = Math.abs(m.t0 - (impact - pre));
+  // The earliest the harness can observe the window opening is the frame it
+  // opens on, so the reading legitimately carries up to one frame of clip
+  // time. At 60fps that is 0.017s and the check is tight; under software GL
+  // (~9fps) a fixed 0.09s budget is smaller than a single frame.
+  const fps = Math.max(4, await ev(() => window.SHDOWPIT.__fps) || 60);
+  const budget = Math.max(0.09, (1 / fps) * scale + 0.02);
   check(
     `C @${scale}x clip time at hit-window open == strike anchor`,
-    err < 0.09,
-    `clip=${m.clip} t=${m.t0?.toFixed(3)} impact=${impact} err=${err.toFixed(3)}`
+    err < budget,
+    `clip=${m.clip} t=${m.t0?.toFixed(3)} impact=${impact} err=${err.toFixed(3)} budget=${budget.toFixed(3)}`
   );
 }
 

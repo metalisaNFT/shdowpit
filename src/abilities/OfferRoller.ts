@@ -98,6 +98,7 @@ export function rollUncappedStats(rng: RNG, ctx: OfferContext, count: number, ex
     const pick = pickWeighted(rng, left, (s) => {
       let w = s.weight;
       if (ctx.weaponId === 'spear' && (s.id === 'rangedDamage' || s.id === 'pierce')) w *= 1.2;
+      if (ctx.weaponId === 'hammer' && (s.id === 'postureDamage' || s.id === 'meleeDamage')) w *= 1.25;
       if (ctx.weaponId === 'greatsword' && (s.id === 'postureDamage' || s.id === 'meleeDamage')) w *= 1.25;
       if (ctx.weaponId === 'sword' && s.id === 'parryWindow') w *= 1.15;
       return w;

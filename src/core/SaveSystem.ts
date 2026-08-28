@@ -5,12 +5,18 @@
  */
 
 import type { Nemesis } from '../nemesis/Nemesis';
+import { coerceArchetype } from '../nemesis/Nemesis';
+import { ensureSignature } from '../data/signatures';
 import { isPlayerFacingEvent, type WorldEvent } from '../world/WorldEvent';
 import { defaultAISettings, emptyAIContent, type AISettings } from '../ai/AITypes';
 import { migrateRunState, type RunState } from '../run/RunState';
 import type { TerritoryMod } from '../world/TerritoryRules';
+import { migrateProgress } from '../progress/Progression';
+import { emptyProgress, type PlayerProgress } from '../progress/Types';
+import { defaultTutorial, migrateTutorial, type TutorialState } from './Tutorial';
+import type { GodState, LegendRecord } from '../god/GodTypes';
 
-export const SAVE_VERSION = 4;
+export const SAVE_VERSION = 7;
 const KEY = 'shdowpit.world.v1';
 
 /** Counters used by the enemy adaptation system. */
@@ -56,6 +62,10 @@ export interface PlayerMeta {
   unlockedSkills: string[];
   /** last equipped pair [skill1, skill2] */
   skillLoadout: [string, string];
+  /** equipped ultimate id */
+  ultimateLoadout: string;
+  /** skill tree, inventory, loadout, cinders */
+  progress: PlayerProgress;
 }
 
 export type Quality = 'high' | 'medium' | 'low';
@@ -72,6 +82,10 @@ export interface Settings {
   softLockOn: boolean;
   reducedMotion: boolean;
   reducedFlash: boolean;
+  /** HUD layout scale (0.85–1.15) */
+  hudScale: number;
+  showPurpose: boolean;
+  tutorial: TutorialState;
 
   /**
    * AI preferences ONLY. There is deliberately no API key field here, and
@@ -93,6 +107,9 @@ export function defaultSettings(): Settings {
     softLockOn: true,
     reducedMotion: false,
     reducedFlash: false,
+    hudScale: 1,
+    showPurpose: true,
+    tutorial: defaultTutorial(),
     ai: defaultAISettings(),
   };
 }
@@ -128,6 +145,29 @@ export interface SaveData {
   /** mid-run snapshot; null between runs */
   run: RunState | null;
   territoryMods: Record<string, TerritoryMod>;
+
+  /* ---- THE LONG GAME (god layer, save version 7) ---- */
+  /** mid-run god-layer snapshot; null between runs */
+  god: GodState | null;
+  /** characters that outlived their run */
+  legends: LegendRecord[];
+  /** roguelite unlock ids */
+  godUnlocks: string[];
+  /** aggregate across god-layer runs, for unlock predicates */
+  godHistory: GodHistory;
+}
+
+export interface GodHistory {
+  runs: number;
+  triumphs: number;
+  collapses: number;
+  legendsMade: number;
+  bestChaos: number;
+  crisisKinds: string[];
+}
+
+export function defaultGodHistory(): GodHistory {
+  return { runs: 0, triumphs: 0, collapses: 0, legendsMade: 0, bestChaos: 0, crisisKinds: [] };
 }
 
 export function defaultPlayerMeta(): PlayerMeta {
@@ -149,6 +189,8 @@ export function defaultPlayerMeta(): PlayerMeta {
     telemetryOptIn: false,
     unlockedSkills: ['shadow_step', 'ground_rupture'],
     skillLoadout: ['shadow_step', 'ground_rupture'],
+    ultimateLoadout: 'pit_eruption',
+    progress: emptyProgress(),
   };
 }
 
@@ -261,11 +303,24 @@ export class SaveSystem {
       'shadow_step',
       'ground_rupture',
     ];
+    data.playerMeta.ultimateLoadout = data.playerMeta.ultimateLoadout ?? 'pit_eruption';
+    data.settings.showPurpose = data.settings.showPurpose ?? true;
+    data.settings.tutorial = migrateTutorial(data.settings.tutorial);
+    data.playerMeta.progress = migrateProgress(data.playerMeta.progress);
     data.territoryMods = data.territoryMods ?? {};
     data.run = data.run ? migrateRunState(data.run, data.worldSeed) : null;
     data.settings.reducedMotion = data.settings.reducedMotion ?? false;
+    data.settings.hudScale = data.settings.hudScale ?? 1;
     data.settings.reducedFlash = data.settings.reducedFlash ?? false;
     data.storyView = data.storyView ?? { panX: 0, panY: 0, zoom: 1 };
+    // Save 7 — the god layer. Older worlds simply have no history in the Book
+    // yet, which is the correct answer rather than an error.
+    data.god = data.god ?? null;
+    data.legends = Array.isArray(data.legends) ? data.legends : [];
+    data.godUnlocks = Array.isArray(data.godUnlocks) ? data.godUnlocks : [];
+    data.godHistory = { ...defaultGodHistory(), ...(data.godHistory ?? {}) };
+    data.godHistory.crisisKinds = Array.isArray(data.godHistory.crisisKinds) ? data.godHistory.crisisKinds : [];
+    if (data.god) data.god.decisions = [];
     migrateEventLog(data);
 
     // Defence in depth. A key should never be able to reach this object, but if
@@ -296,6 +351,9 @@ export class SaveSystem {
       n.abandonedTerritoryTurn ??= null;
       n.stolenFromThem ??= [];
       n.fakeDeathPenalty ??= 0;
+      n.archetype = coerceArchetype(n.archetype);
+      n.signatureKnown = n.signatureKnown ?? false;
+      ensureSignature(n);
     }
     return data;
   }

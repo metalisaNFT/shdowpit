@@ -6,7 +6,7 @@ import { button, clear, div, el, show } from './Dom';
 import type { Settings } from '../core/SaveSystem';
 import { AISettingsPanel, type AISettingsHooks } from './AISettingsPanel';
 import type { SkillId } from '../data/skills';
-import { getSkill } from '../data/skills';
+import { TUTORIAL_COPY, TUTORIAL_DETAIL, TUTORIAL_ORDER } from '../core/Tutorial';
 
 export interface PauseHandlers {
   onResume: () => void;
@@ -17,18 +17,33 @@ export interface PauseHandlers {
   ai: AISettingsHooks;
   /** current run stats for the RUN STATS page; absent outside a run */
   runStats?: () => Array<{ name: string; text: string; count: number }>;
+  currencies?: { remnants: number; essence: number };
+  onBuild?: () => void;
   skills?: {
     unlocked: string[];
     loadout: [string, string];
+    ultimate: string;
+    ultimates: Array<{ id: string; name: string; desc: string }>;
     descriptions: Array<{ id: string; name: string; desc: string }>;
     onEquip: (slot: 0 | 1, id: SkillId) => void;
+    onEquipUltimate: (id: SkillId) => void;
   };
+  onSkipTutorials?: () => void;
+  onReplayTutorials?: () => void;
+  telemetryOptIn?: boolean;
+  onTelemetryOptInChanged?: (v: boolean) => void;
 }
+
+export type PauseOpenOpts = {
+  /** Title-menu settings: same AI/hooks panel, no run actions. */
+  asSettings?: boolean;
+};
 
 export class PauseScreen {
   readonly root = div('screen hidden');
   private body = div('body');
   private actions = div('actions');
+  private heading = document.createElement('h1');
   private settings: Settings | null = null;
   private handlers: PauseHandlers | null = null;
   private aiPanel = new AISettingsPanel();
@@ -36,21 +51,23 @@ export class PauseScreen {
 
   constructor() {
     this.root.id = 'pause-screen';
-    const h1 = document.createElement('h1');
-    h1.textContent = 'PAUSED';
-    h1.style.fontSize = '34px';
-    this.root.append(h1, this.body, this.actions);
+    this.heading.textContent = 'PAUSED';
+    this.heading.style.fontSize = '34px';
+    this.root.append(this.heading, this.body, this.actions);
   }
 
   get visible(): boolean {
     return !this.root.classList.contains('hidden');
   }
 
-  open(settings: Settings, handlers: PauseHandlers, canExtract: boolean): void {
+  open(settings: Settings, handlers: PauseHandlers, canExtract: boolean, opts?: PauseOpenOpts): void {
     this.settings = settings;
     this.handlers = handlers;
+    const asSettings = !!opts?.asSettings;
+    this.heading.textContent = asSettings ? 'SETTINGS' : 'PAUSED';
     clear(this.body);
     clear(this.actions);
+    const reopen = () => this.open(settings, handlers, canExtract, opts);
 
     const panel = div('detail');
     panel.style.minWidth = '460px';
@@ -91,42 +108,86 @@ export class PauseScreen {
       this.toggle('REDUCED FLASH', settings.reducedFlash, (v) => {
         settings.reducedFlash = v;
         handlers.onSettingsChanged(settings);
-      })
+      }),
+      this.slider('HUD SCALE', settings.hudScale ?? 1, 0.85, 1.15, (v) => {
+        settings.hudScale = v;
+        handlers.onSettingsChanged(settings);
+      }),
+      this.toggle('PURPOSE PANEL', settings.showPurpose !== false, (v) => {
+        settings.showPurpose = v;
+        handlers.onSettingsChanged(settings);
+      }),
+      ...(handlers.onTelemetryOptInChanged
+        ? [
+            this.toggle('TELEMETRY RECORDING', handlers.telemetryOptIn ?? false, (v) => {
+              handlers.onTelemetryOptInChanged?.(v);
+            }),
+          ]
+        : [])
     );
     this.body.append(panel);
 
-    const controls = div('detail');
-    controls.append(el('h3', undefined, 'CONTROLS'));
-    for (const [k, v] of [
-      ['LMB', 'LIGHT'],
-      ['RMB', 'HEAVY'],
-      ['SPACE', 'DODGE'],
-      ['Q', 'PARRY'],
-      ['R / MMB', 'VOID NEEDLE'],
-      ['1 / C', 'SKILL 1'],
-      ['2 / V', 'SKILL 2'],
-      ['3 / G', 'PIT ERUPTION'],
-      ['E', 'EXECUTE'],
-      ['F', 'LOCK-ON'],
-    ] as Array<[string, string]>) {
-      const row = div('stat-row');
-      row.append(div('sname', k), div('sval', v));
-      controls.append(row);
+    if (!asSettings) {
+      const controls = div('detail');
+      controls.append(el('h3', undefined, 'CONTROLS'));
+      for (const [k, v] of [
+        ['LMB', 'LIGHT'],
+        ['RMB', 'HEAVY'],
+        ['SPACE', 'DODGE'],
+        ['Q', 'PARRY'],
+        ['R / MMB', 'VOID NEEDLE'],
+        ['1 / C', 'SKILL 1'],
+        ['2 / V', 'SKILL 2'],
+        ['3 / G', 'ULTIMATE'],
+        ['E', 'EXECUTE'],
+        ['F', 'LOCK-ON'],
+      ] as Array<[string, string]>) {
+        const row = div('stat-row');
+        row.append(div('sname', k), div('sval', v));
+        controls.append(row);
+      }
+      this.body.append(controls);
     }
-    this.body.append(controls);
+
+    if (handlers.onSkipTutorials || handlers.onReplayTutorials) {
+      const help = div('detail');
+      help.append(el('h3', undefined, 'TEACHING'));
+      if (handlers.onSkipTutorials) help.append(button('SKIP TUTORIALS', () => handlers.onSkipTutorials?.()));
+      if (handlers.onReplayTutorials) help.append(button('REPLAY TUTORIALS', () => handlers.onReplayTutorials?.()));
+      help.append(div('sval', 'Skip covers both combat and THE LONG GAME. Combat shows one instruction. The board teaches the loop, then WHY.'));
+      for (const id of TUTORIAL_ORDER) {
+        const copy = TUTORIAL_COPY[id];
+        const row = div('teach-row');
+        row.append(div('sname', copy.title), div('sval', `${copy.glyphs}  —  ${TUTORIAL_DETAIL[id]}`));
+        help.append(row);
+      }
+      this.body.append(help);
+    }
 
     if (handlers.skills) {
       const sk = handlers.skills;
       const kit = div('detail');
       kit.append(el('h3', undefined, 'SKILL LOADOUT'));
-      kit.append(div('sval', `${getSkill('pit_eruption').name} — ${getSkill('pit_eruption').desc}`));
+      kit.append(el('h3', undefined, 'ULTIMATE'));
+      for (const d of sk.ultimates ?? []) {
+        const on = sk.ultimate === d.id;
+        const b = button(`${on ? '● ' : '○ '}${d.name}`, () => {
+          sk.onEquipUltimate(d.id as SkillId);
+          reopen();
+        });
+        b.style.width = '100%';
+        b.style.margin = '4px 0';
+        kit.append(b);
+        kit.append(div('sval', d.desc));
+      }
+      kit.append(el('h3', undefined, 'ACTIVE SKILLS'));
       for (const slot of [0, 1] as const) {
         kit.append(el('h3', undefined, slot === 0 ? 'SKILL 1' : 'SKILL 2'));
         for (const d of sk.descriptions) {
           const on = sk.loadout[slot] === d.id;
           const b = button(`${on ? '● ' : '○ '}${d.name}`, () => {
             sk.onEquip(slot, d.id as SkillId);
-            this.open(settings, handlers, canExtract);
+            reopen();
           });
           b.style.width = '100%';
           b.style.margin = '4px 0';
@@ -142,6 +203,14 @@ export class PauseScreen {
       const statsPanel = div('detail');
       statsPanel.style.minWidth = '300px';
       statsPanel.append(el('h3', undefined, 'RUN STATS'));
+      if (handlers.currencies) {
+        statsPanel.append(
+          div(
+            'sval',
+            `REMNANTS  ${handlers.currencies.remnants}  (this run)    ESSENCE  ${handlers.currencies.essence}  (kept)`
+          )
+        );
+      }
       const grid = div('run-stats');
       for (const s of handlers.runStats()) {
         const row = div('stat-row' + (s.count > 0 ? ' boosted' : ''));
@@ -163,13 +232,18 @@ export class PauseScreen {
       else window.clearInterval(this.aiTicker);
     }, 250);
 
-    this.actions.append(button('RESUME  [ESC]', handlers.onResume));
-    if (canExtract) {
-      const b = button('ABANDON RUN — BANK ESSENCE, WORLD STILL', handlers.onExtract);
-      b.classList.add('danger');
-      this.actions.append(b);
+    if (asSettings) {
+      this.actions.append(button('CLOSE  [ESC]', handlers.onResume));
+    } else {
+      this.actions.append(button('RESUME  [ESC]', handlers.onResume));
+      if (handlers.onBuild) this.actions.append(button('BUILD / LOADOUT', handlers.onBuild));
+      if (canExtract) {
+        const b = button('ABANDON RUN — BANK ESSENCE, WORLD STILL', handlers.onExtract);
+        b.classList.add('danger');
+        this.actions.append(b);
+      }
+      this.actions.append(button('QUIT TO TITLE', handlers.onQuit));
     }
-    this.actions.append(button('QUIT TO TITLE', handlers.onQuit));
     show(this.root, true);
   }
 

@@ -16,7 +16,7 @@
  */
 
 import type { Nemesis } from '../nemesis/Nemesis';
-import type { MythEventKind, NemesisFacts } from './AITypes';
+import type { GodFacts, MythEventKind, NemesisFacts, StoryFacts } from './AITypes';
 import { SCAR_NAMES, MEMORY_TEXT } from '../nemesis/NemesisMemory';
 import { getPersonality } from '../data/personalities';
 import { traitName } from '../data/traits';
@@ -318,4 +318,233 @@ export function portraitPrompt(f: NemesisFacts): string {
     ART_DIRECTION.join(', ') +
     '.'
   );
+}
+
+/* ============================================================
+   long-game prompts — interpret facts, never invent them
+   ============================================================ */
+
+function godFactBlock(f: GodFacts): string {
+  const lines: string[] = [];
+  lines.push(`RUN: ${f.run}  CYCLE: ${f.cycle}  ACT: ${f.act}  CHAOS: ${Math.round(f.chaos)}`);
+  if (f.headline) lines.push(`HEADLINE: ${f.headline}`);
+  if (f.beatKind) lines.push(`EVENT KIND: ${f.beatKind} (${f.priority ?? ''})`);
+  if (f.detail?.length) lines.push(`DETAIL:\n  ${f.detail.slice(0, 6).join('\n  ')}`);
+  if (f.crisisTitle) {
+    lines.push(`CRISIS: ${f.crisisTitle} (${f.crisisKind ?? ''})`);
+    if (f.crisisDescription) lines.push(`CRISIS RECORD: ${f.crisisDescription}`);
+  }
+  if (f.ending) lines.push(`ENDING: ${f.ending}`);
+  if (f.highlights?.length) lines.push(`HIGHLIGHTS:\n  ${f.highlights.join('\n  ')}`);
+  if (f.legendName) {
+    lines.push(`LEGEND: ${f.legendName}${f.legendTitle ? ' ' + f.legendTitle : ''}`);
+    if (f.legendCause) lines.push(`CAUSE: ${f.legendCause}`);
+    if (f.legendEpitaph) lines.push(`EXISTING EPITAPH: ${f.legendEpitaph}`);
+    if (f.legendDeeds?.length) lines.push(`DEEDS:\n  ${f.legendDeeds.slice(0, 6).join('\n  ')}`);
+  }
+  lines.push('ALLOWED NAMES: ' + (f.names.join(', ') || '(none)'));
+  for (const a of f.actors) {
+    lines.push(
+      `ACTOR ${a.name}${a.title ? ' ' + a.title : ''}: rank ${a.rank}, ${a.alive ? 'alive' : 'dead'}, ` +
+        `${a.personality}, goal ${a.goal}, returns ${a.returns}, kills ${a.kills}, ` +
+        `player-kills ${a.killedPlayer}` +
+        (a.scars.length ? `, scars ${a.scars.join('/')}` : '') +
+        (a.stolen.length ? `, carrying ${a.stolen.join('/')}` : '') +
+        (a.heretic ? ', heretic' : '') +
+        (a.crisisBorn ? ', is the crisis' : '')
+    );
+    if (a.deeds.length) lines.push(`  DEEDS: ${a.deeds.slice(-4).join('; ')}`);
+  }
+  return lines.join('\n');
+}
+
+export function dossierPrompt(f: GodFacts): { system: string; user: string } {
+  return {
+    system: `${VOICE}\n${HARD_RULE}\nYou write inspection copy for a god watching a simulation.`,
+    user:
+      `Write a character inspection dossier.\n\n` +
+      `RULES:\n` +
+      `- 2 sentences, third person, maximum 240 characters total.\n` +
+      `- Every clause must match FACTS. Do not invent a motive, injury, rank, kill, or return.\n` +
+      `- You may characterise what is listed (goal, deeds, scars, standing). You may not add to it.\n` +
+      `- No heading. Output only the dossier.\n\n` +
+      `FACTS\n${godFactBlock(f)}`,
+  };
+}
+
+export function beatVoicePrompt(f: GodFacts): { system: string; user: string } {
+  return {
+    system: `${VOICE}\n${HARD_RULE}\nYou write a single caption under a fact that already happened.`,
+    user:
+      `Voice this event in one sentence.\n\n` +
+      `RULES:\n` +
+      `- Output ONLY one sentence, maximum 120 characters.\n` +
+      `- It must describe the HEADLINE using only FACTS. Do not rename anyone.\n` +
+      `- Do not introduce a new outcome, killer, or location.\n` +
+      `- No quotation marks, no heading.\n\n` +
+      `FACTS\n${godFactBlock(f)}`,
+  };
+}
+
+export function crisisVoicePrompt(f: GodFacts): { system: string; user: string } {
+  return {
+    system: `${VOICE}\n${HARD_RULE}\nYou restate a crisis the simulation already named.`,
+    user:
+      `Restate the crisis in two short sentences.\n\n` +
+      `RULES:\n` +
+      `- Maximum 200 characters.\n` +
+      `- Use the crisis title and the body named in FACTS. Do not invent a new threat.\n` +
+      `- No heading.\n\n` +
+      `FACTS\n${godFactBlock(f)}`,
+  };
+}
+
+export function recapPrompt(f: GodFacts): { system: string; user: string } {
+  return {
+    system: `${VOICE}\n${HARD_RULE}\nYou write a one-line run subtitle from the record.`,
+    user:
+      `Write one subtitle for this ended run.\n\n` +
+      `RULES:\n` +
+      `- Output ONLY one sentence, maximum 90 characters.\n` +
+      `- It must agree with ENDING and HIGHLIGHTS. Do not invent a slayer, crisis, or survivor.\n` +
+      `- No heading.\n\n` +
+      `FACTS\n${godFactBlock(f)}`,
+  };
+}
+
+export function legendPrompt(f: GodFacts): { system: string; user: string } {
+  return {
+    system: `${VOICE}\n${HARD_RULE}\nYou write epitaphs from a finished record.`,
+    user:
+      `Write an epitaph for this legend.\n\n` +
+      `RULES:\n` +
+      `- Output ONLY one sentence, maximum 140 characters.\n` +
+      `- Ground it in CAUSE, DEEDS, and EXISTING EPITAPH. Do not add a death, title, or deed.\n` +
+      `- No heading.\n\n` +
+      `FACTS\n${godFactBlock(f)}`,
+  };
+}
+
+/* ============================================================
+   story polish prompts — pit-run reading surfaces
+   ============================================================ */
+
+function storyFactBlock(f: StoryFacts): string {
+  const lines: string[] = [];
+  lines.push(`SLOT: ${f.kind}`);
+  if (f.headline) lines.push(`HEADLINE: ${f.headline}`);
+  if (f.line) lines.push(`LINE: ${f.line}`);
+  if (f.detail) lines.push(`DETAIL: ${f.detail}`);
+  if (f.act) lines.push(`ACT: ${f.act}`);
+  if (f.eventType) lines.push(`EVENT TYPE: ${f.eventType}`);
+  if (f.witnessed !== undefined) lines.push(`WITNESSED: ${f.witnessed ? 'yes' : 'no'}`);
+  if (f.known !== undefined) lines.push(`KNOWN: ${f.known ? 'yes' : 'rumor'}`);
+  if (f.arcTitle) lines.push(`ARC: ${f.arcTitle} (${f.arcKind ?? ''})`);
+  if (f.arcState) lines.push(`STATE: ${f.arcState}`);
+  if (f.arcNext) lines.push(`NEXT: ${f.arcNext}`);
+  if (f.encounterKind) lines.push(`ENCOUNTER: ${f.encounterKind}`);
+  if (f.relationshipChip) lines.push(`RELATIONSHIP: ${f.relationshipChip}`);
+  if (f.nemesisName) lines.push(`SUBJECT: ${f.nemesisName}`);
+  if (f.linkLabel) lines.push(`LINK: ${f.linkLabel}`);
+  if (f.linkText) lines.push(`SOURCE TEXT: ${f.linkText}`);
+  if (f.cycle !== undefined) lines.push(`CYCLE: ${f.cycle}`);
+  if (f.intention) lines.push(`INTENTION: ${f.intention}`);
+  lines.push('ALLOWED NAMES: ' + (f.names.join(', ') || '(none)'));
+  return lines.join('\n');
+}
+
+export function recapBeatPrompt(f: StoryFacts): { system: string; user: string } {
+  return {
+    system: `${VOICE}\n${HARD_RULE}\nYou rewrite death-report beats. Same facts, better read.`,
+    user:
+      `Rewrite the recap line into one vivid sentence.\n\n` +
+      `RULES:\n` +
+      `- Output ONLY one sentence, maximum 140 characters.\n` +
+      `- Keep every actor and outcome from LINE and HEADLINE. Do not add events.\n` +
+      `- Second person when the player was involved.\n` +
+      `- No heading, no quotation marks.\n\n` +
+      `FACTS\n${storyFactBlock(f)}`,
+  };
+}
+
+export function timelinePrompt(f: StoryFacts): { system: string; user: string } {
+  return {
+    system: `${VOICE}\n${HARD_RULE}\nYou write archival chronicle lines.`,
+    user:
+      `Rewrite this timeline entry as one archival sentence.\n\n` +
+      `RULES:\n` +
+      `- Output ONLY one sentence, maximum 140 characters.\n` +
+      `- Slightly more distant tone than combat barks.\n` +
+      `- Do not add actors, places, or outcomes not in FACTS.\n` +
+      `- No heading.\n\n` +
+      `FACTS\n${storyFactBlock(f)}`,
+  };
+}
+
+export function journeyPrompt(f: StoryFacts): { system: string; user: string } {
+  return {
+    system: `${VOICE}\n${HARD_RULE}\nYou polish a single beat in a character journey log.`,
+    user:
+      `Rewrite this journey beat for ${f.nemesisName ?? 'the subject'}.\n\n` +
+      `RULES:\n` +
+      `- Output ONLY one sentence, maximum 120 characters.\n` +
+      `- Same facts as LINE. Do not invent meetings or motives.\n` +
+      `- No heading.\n\n` +
+      `FACTS\n${storyFactBlock(f)}`,
+  };
+}
+
+export function arcPrompt(f: StoryFacts): { system: string; user: string } {
+  return {
+    system: `${VOICE}\n${HARD_RULE}\nYou voice unresolved story threads.`,
+    user:
+      `Rewrite STATE and NEXT into two short sentences for this thread.\n\n` +
+      `RULES:\n` +
+      `- Line 1: current state. Line 2: what could happen next.\n` +
+      `- Maximum 200 characters total.\n` +
+      `- Use only names and facts listed. Do not invent opportunities.\n` +
+      `- No heading.\n\n` +
+      `FACTS\n${storyFactBlock(f)}`,
+  };
+}
+
+export function encounterPrompt(f: StoryFacts): { system: string; user: string } {
+  return {
+    system: `${VOICE}\n${HARD_RULE}\nYou write encounter card headlines.`,
+    user:
+      `Rewrite the encounter headline.\n\n` +
+      `RULES:\n` +
+      `- Output ONLY the headline, maximum 80 characters, ALL CAPS optional.\n` +
+      `- Ground it in ENCOUNTER and RELATIONSHIP facts.\n` +
+      `- Do not invent a new reason they are here.\n` +
+      `- No quotation marks.\n\n` +
+      `FACTS\n${storyFactBlock(f)}`,
+  };
+}
+
+export function aftermathLinkPrompt(f: StoryFacts): { system: string; user: string } {
+  return {
+    system: `${VOICE}\n${HARD_RULE}\nYou voice a consequence chain link for a god watching a simulation.`,
+    user:
+      `Rewrite this consequence link as one clear sentence.\n\n` +
+      `RULES:\n` +
+      `- Output ONLY one sentence, maximum 160 characters.\n` +
+      `- Preserve the meaning of SOURCE TEXT. Do not claim the player forced an outcome.\n` +
+      `- Do not invent actors or results.\n` +
+      `- No heading.\n\n` +
+      `FACTS\n${storyFactBlock(f)}`,
+  };
+}
+
+export function situationPrompt(f: StoryFacts): { system: string; user: string } {
+  return {
+    system: `${VOICE}\n${HARD_RULE}\nYou voice a situation on the god board.`,
+    user:
+      `Rewrite the situation headline and detail into one tense sentence.\n\n` +
+      `RULES:\n` +
+      `- Output ONLY one sentence, maximum 140 characters.\n` +
+      `- Same stakes as HEADLINE and DETAIL. No new threats.\n` +
+      `- No heading.\n\n` +
+      `FACTS\n${storyFactBlock(f)}`,
+  };
 }

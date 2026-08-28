@@ -8,6 +8,10 @@ import type { Nemesis } from './Nemesis';
 import { fullName, hasMemory } from './Nemesis';
 import type { PowerSet } from '../data/abilities';
 import type { TerritoryMod } from '../world/TerritoryRules';
+import { computeMods } from '../data/traits';
+import type { TraitId } from './Nemesis';
+import type { DamageInfo } from '../combat/Types';
+import type { PlayerHabits } from '../core/SaveSystem';
 
 export type VendettaPatternId =
   | 'break_posture_twice'
@@ -76,9 +80,48 @@ export interface VendettaTickCtx {
   heat: number;
   heatMax: number;
   weaponId: string;
+  stolenWeaponId: string | null;
   usedWeakness: boolean;
   usedAdaptedHabit: boolean;
   loyalistSeparated: boolean;
+}
+
+/** Which player habit satisfies a nemesis adaptation vendetta. */
+const ADAPTATION_HABIT: Partial<Record<TraitId, keyof PlayerHabits>> = {
+  dodge_read: 'dodge',
+  delayed_strike: 'parry',
+  parry_breaker: 'parry',
+  combo_breaker: 'light',
+  rear_guard: 'backstab',
+  fire_hardened: 'fire',
+  execution_ward: 'execute',
+  shield_arm: 'ranged',
+  closer: 'dodge',
+};
+
+export function adaptationHabitFor(adaptation: string | null): keyof PlayerHabits | null {
+  if (!adaptation) return null;
+  return ADAPTATION_HABIT[adaptation as TraitId] ?? null;
+}
+
+/** True when the damage type leveraged a known weakness multiplier. */
+export function hitExploitsWeakness(weaknesses: readonly TraitId[], info: DamageInfo): boolean {
+  if (!weaknesses.length || info.source === 'execute' || info.source === 'environment') return false;
+  const mods = computeMods(weaknesses);
+  switch (info.source) {
+    case 'heavy':
+      return mods.vsHeavy > 1.08;
+    case 'light':
+      return mods.vsLight > 1.08;
+    case 'fire':
+      return mods.vsFire > 1.08;
+    case 'ranged':
+      return mods.vsRanged > 1.08;
+    default:
+      break;
+  }
+  if (info.fromBehind && mods.vsBack > 1.08) return true;
+  return false;
 }
 
 const PATTERN_ORDER: VendettaPatternId[] = [
@@ -128,12 +171,14 @@ export function factsFromNemesis(
   };
 }
 
-function eligible(id: VendettaPatternId, f: VendettaFacts, _powers: PowerSet): boolean {
+function eligible(id: VendettaPatternId, f: VendettaFacts, powers: PowerSet): boolean {
   switch (id) {
     case 'defeat_recovered_weapon':
       return !!f.stolenWeaponId;
     case 'force_flee':
       return f.canFlee;
+    case 'no_heal':
+      return !powers.has('leech') && !powers.has('vulture');
     case 'defeat_in_master_land':
       return f.hasMaster && !!f.masterTerritory;
     case 'execute_with_ally':
@@ -272,10 +317,10 @@ export function applyVendettaProgress(v: VendettaInstance, ctx: VendettaTickCtx)
       } else if (ctx.targetDead) next.failed = true;
       return next;
     case 'defeat_recovered_weapon':
-      if (ctx.targetDead && ctx.weaponId) {
+      if (ctx.targetDead && ctx.stolenWeaponId && ctx.weaponId === ctx.stolenWeaponId) {
         next.complete = true;
         next.progress = 1;
-      }
+      } else if (ctx.targetDead) next.failed = true;
       return next;
     case 'defeat_in_master_land':
       if (ctx.targetDead && ctx.inMasterTerritory) {

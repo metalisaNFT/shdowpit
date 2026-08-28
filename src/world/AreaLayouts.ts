@@ -393,6 +393,7 @@ function layoutTower(a: AreaDef, rng: RNG): AreaLayout {
   d.shrine(polar(a, 0.8, 28));
   d.shrine(polar(a, 3.9, 30));
   d.cache(polar(a, 2.2, 40));
+  d.shrine(polar(a, 5.0, 36));
   d.light(a.cx, 18, a.cz);
   d.light(a.cx + 20, 6, a.cz - 8);
   return d.done();

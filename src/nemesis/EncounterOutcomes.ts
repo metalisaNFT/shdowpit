@@ -6,6 +6,7 @@
 import type { Nemesis, PersonalityType, Rank } from './Nemesis';
 import { rankIndex } from './Nemesis';
 import { getPersonality } from '../data/personalities';
+import { hasMemory } from './Nemesis';
 
 export type OutcomeId =
   | 'execute'
@@ -16,7 +17,8 @@ export type OutcomeId =
   | 'informant'
   | 'betrayal'
   | 'humiliate'
-  | 'message';
+  | 'message'
+  | 'branding';
 
 export interface OutcomeOption {
   id: OutcomeId;
@@ -29,6 +31,7 @@ export interface OutcomeOption {
 export function outcomeOptions(n: Nemesis, ctx: { allyPresent: boolean; heat: number }): OutcomeOption[] {
   const p = n.personality;
   const rank = n.rank;
+  const escapedBefore = hasMemory(n, 'I_ESCAPED_PLAYER');
   const all: OutcomeOption[] = [
     {
       id: 'execute',
@@ -39,7 +42,9 @@ export function outcomeOptions(n: Nemesis, ctx: { allyPresent: boolean; heat: nu
     {
       id: 'spare',
       title: 'SPARE',
-      desc: 'Leverage later. They will remember. They may hunt you.',
+      desc: escapedBefore
+        ? 'They got away once. They will not forget a second mercy.'
+        : 'Leverage later. They will remember. They may hunt you.',
       accepted: true,
     },
     {
@@ -66,33 +71,47 @@ export function outcomeOptions(n: Nemesis, ctx: { allyPresent: boolean; heat: nu
     {
       id: 'informant',
       title: 'MAKE THEM TALK',
-      desc: 'An informant. Intel and Heat relief — if they live.',
-      accepted: willAccept(p, rank, 'informant'),
+      desc: ctx.heat >= 70 ? 'Heat is too high — they would sell anyone to survive.' : 'An informant. Intel and Heat relief — if they live.',
+      accepted: ctx.heat < 70 && willAccept(p, rank, 'informant'),
       refuseText: 'They will not talk.',
     },
     {
       id: 'betrayal',
       title: 'DEMAND BETRAYAL',
       desc: 'Turn them on their master or rival. Needs a real bond.',
-      accepted: !!(n.master || n.allies.length) && willAccept(p, rank, 'betrayal'),
+      accepted:
+        (ctx.allyPresent || !!(n.master || n.allies.length)) &&
+        willAccept(p, rank, 'betrayal'),
       refuseText: p === 'loyalist' ? 'A loyalist does not betray.' : 'No one to betray.',
     },
     {
       id: 'humiliate',
-      title: 'BRAND THEM',
+      title: 'HUMILIATE',
       desc: 'Revenge spikes. Possible demotion. They will not forget.',
+      accepted: true,
+    },
+    {
+      id: 'branding',
+      title: 'BRAND THEM',
+      desc: 'Leave a visible mark without killing. Revenge rises.',
       accepted: true,
     },
     {
       id: 'message',
       title: 'A MESSAGE',
-      desc: 'Release them with a word for their master.',
-      accepted: !!n.master,
+      desc: ctx.heat >= 50 ? 'Release them — the heat will carry your word.' : 'Release them with a word for their master.',
+      accepted: !!n.master || (ctx.heat >= 50 && !!n.allies.length),
       refuseText: 'They serve no one.',
     },
   ];
-  void ctx;
-  return all.filter((o) => o.accepted || o.id === 'execute' || o.id === 'spare' || o.id === 'humiliate');
+  return all.filter(
+    (o) =>
+      o.accepted ||
+      o.id === 'execute' ||
+      o.id === 'spare' ||
+      o.id === 'humiliate' ||
+      o.id === 'branding'
+  );
 }
 
 function willAccept(p: PersonalityType, rank: Rank, kind: OutcomeId): boolean {

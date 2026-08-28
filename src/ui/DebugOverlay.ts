@@ -46,6 +46,35 @@ export interface DebugAIState {
   requests: string[];
 }
 
+/**
+ * THE LONG GAME's developer readout.
+ *
+ * The brief is right that an emergent system is close to untestable without
+ * this: the interesting failure is never "it crashed", it is "everyone chose
+ * to hide for nine cycles and nobody can see why". So the panel shows the
+ * actual utility scores that produced each decision, not a summary of them.
+ */
+export interface GodDebugDecision {
+  actor: string;
+  chosen: string;
+  /** "ATTACK -> VORG  12.4  (per 3.2 rel 5.0 mem 1.1 need -0.4 dgr 2.0 opp 0 amb 1.5 noise 0.6)" */
+  considered: string[];
+}
+
+export interface GodDebugState {
+  run: number;
+  cycle: number;
+  act: string;
+  phase: string;
+  influence: string;
+  chaos: string;
+  living: number;
+  factions: string[];
+  crisis: string;
+  conditions: string[];
+  decisions: GodDebugDecision[];
+}
+
 export interface DebugCombatRow {
   uid: number;
   label: string;
@@ -103,6 +132,8 @@ export interface DebugHooks {
   lastEncounter(): Record<string, unknown> | null;
   playEncounter(kind: string): void;
   stageNemesisLoop(id: string): void;
+  /** Force the generative comic combat 4-panel vertical slice. */
+  forceComicSlice(): Record<string, unknown>;
   worldSummary(): string;
   liveState(): DebugLiveState;
   aiState(): DebugAIState;
@@ -117,7 +148,19 @@ export interface DebugHooks {
   forceUltimate(): void;
   unlockAllSkills(): void;
   equipSkill(slot: 0 | 1, id: string): void;
+  equipUltimate(id: string): void;
   kitDump(): Record<string, unknown>;
+  progressAction(cmd: string, arg?: string): string;
+
+  /* ---- THE LONG GAME. Absent (or null) when no god run is live. ---- */
+  godState?(): GodDebugState | null;
+  /** accelerated simulation — 1 / 5 / 20 / 100 cycles, resolved synchronously */
+  godAdvance?(cycles: number): void;
+  godAddInfluence?(amount: number): void;
+  godAddChaos?(amount: number): void;
+  godForceCrisis?(): string;
+  godEndRun?(): void;
+  godStart?(): void;
 }
 
 export class DebugOverlay {
@@ -131,6 +174,8 @@ export class DebugOverlay {
   private select = el('select');
   private inspectPre = el('pre');
   private memPre = el('pre');
+  private godPre = el('pre');
+  private godDecPre = el('pre');
   private hooks: DebugHooks | null = null;
   private invuln = false;
   private infSurge = false;
@@ -169,6 +214,30 @@ export class DebugOverlay {
     this.renderAI();
     this.renderCombat();
     this.renderAnim();
+    this.renderGod();
+  }
+
+  private renderGod(): void {
+    const g = this.hooks?.godState?.() ?? null;
+    if (!g) {
+      this.godPre.textContent = 'no run in progress';
+      this.godDecPre.textContent = '';
+      return;
+    }
+    this.godPre.textContent = [
+      `run ${g.run}  cycle ${g.cycle}  ${g.act}  [${g.phase}]`,
+      `influence ${g.influence}   chaos ${g.chaos}`,
+      `living ${g.living}`,
+      `crisis   ${g.crisis}`,
+      `houses   ${g.factions.join(' | ') || '—'}`,
+      `marks    ${g.conditions.length ? g.conditions.join(', ') : 'none'}`,
+    ].join('\n');
+    const lines: string[] = [];
+    for (const d of g.decisions.slice(0, 10)) {
+      lines.push(`${d.actor}  ->  ${d.chosen}`);
+      for (const c of d.considered) lines.push('    ' + c);
+    }
+    this.godDecPre.textContent = lines.join('\n') || 'nothing decided yet';
   }
 
   /**
@@ -286,6 +355,29 @@ export class DebugOverlay {
     this.renderAI();
     this.panel.append(button('CLEAR AI CACHE', () => { h.clearAICache(); this.build(); }, ''));
 
+    if (h.godState) {
+      this.panel.append(el('h4', undefined, 'THE LONG GAME'));
+      this.panel.append(this.godPre);
+      const live = !!h.godState();
+      if (!live && h.godStart) this.panel.append(button('START A RUN', () => { h.godStart!(); this.build(); }, ''));
+      if (live) {
+        // Accelerated simulation. The whole reason the duel resolver is
+        // headless is so a hundred cycles cost milliseconds — which is the
+        // only way to find out whether interesting stories actually emerge.
+        for (const n of [1, 5, 20, 100]) {
+          this.panel.append(button(`SIM ×${n}`, () => { h.godAdvance?.(n); this.build(); }, ''));
+        }
+        this.panel.append(button('+10 INFLUENCE', () => { h.godAddInfluence?.(10); this.build(); }, ''));
+        this.panel.append(button('+25 CHAOS', () => { h.godAddChaos?.(25); this.build(); }, ''));
+        this.panel.append(button('-25 CHAOS', () => { h.godAddChaos?.(-25); this.build(); }, ''));
+        this.panel.append(button('FORCE CRISIS', () => { h.godForceCrisis?.(); this.build(); }, ''));
+        this.panel.append(button('END RUN', () => { h.godEndRun?.(); this.build(); }, ''));
+        this.panel.append(el('h4', undefined, 'CONSIDERED ACTIONS (LAST CYCLE)'));
+        this.panel.append(this.godDecPre);
+      }
+      this.renderGod();
+    }
+
     const summary = el('pre');
     summary.textContent = h.worldSummary();
     this.panel.append(el('h4', undefined, 'WORLD'), summary);
@@ -318,6 +410,40 @@ export class DebugOverlay {
     this.panel.append(button('FILL SURGE', () => h.fillSurge(), ''));
     this.panel.append(button('FORCE PIT ERUPTION', () => h.forceUltimate(), ''));
     this.panel.append(button('KIT DUMP (CONSOLE)', () => console.info('[kit]', h.kitDump()), ''));
+
+    this.panel.append(el('h4', undefined, 'PROGRESSION'));
+    const progPre = el('pre');
+    const refreshProg = () => {
+      progPre.textContent = h.progressAction('dump');
+    };
+    refreshProg();
+    this.panel.append(progPre);
+    const progRow = div('prog-row');
+    for (const [label, cmd] of [
+      ['GIVE HAMMER', 'hammer'],
+      ['GIVE SPEAR', 'spear'],
+      ['GIVE SUN SPEAR', 'sunspear'],
+      ['GIVE RANDOM WEAPON', 'randWeapon'],
+      ['GIVE RANDOM ARMOR', 'randArmor'],
+      ['GIVE RELIC ANVIL', 'anvil'],
+      ['GIVE TOXIC LENS', 'lens'],
+      ['ADD 20 CINDERS', 'cinders'],
+      ['UNLOCK RIPOSTE', 'unlock:riposte'],
+      ['RESET TREE', 'respec'],
+      ['MAX MASTERY', 'mastery'],
+      ['BUILD A HAMMER', 'buildA'],
+      ['BUILD B SPEAR', 'buildB'],
+      ['BUILD C SWORD', 'buildC'],
+      ['SPAWN VARK', 'vark'],
+      ['FORCE STEAL', 'forceSteal'],
+      ['FORCE TROPHY', 'trophy'],
+      ['RUN LOOT', 'runLoot'],
+      ['PROC LOG', 'procs'],
+      ['ACTIVE EFFECTS', 'effects'],
+    ] as Array<[string, string]>) {
+      progRow.append(button(label, () => { progPre.textContent = h.progressAction(cmd); }, ''));
+    }
+    this.panel.append(progRow);
 
     /* ---- combat QA ---- */
     this.panel.append(el('h4', undefined, 'COMBAT QA'));
@@ -446,6 +572,7 @@ export class DebugOverlay {
     this.panel.append(button('LIBERATE AREA', () => h.depthAction('liberate'), ''));
     this.panel.append(button('BLOCK FAKE DEATH', () => h.depthAction('fakedeath'), ''));
     this.panel.append(button('FORCE SURRENDER', () => h.depthAction('surrender'), ''));
+    this.panel.append(button('TOWER SLICE', () => h.depthAction('verticalSlice'), ''));
     this.panel.append(button('REGENERATE AI CONTENT', () => h.regenerateAI(this.select.value), ''));
     this.panel.append(el('h4', undefined, 'STORY'));
     this.panel.append(button('OPEN WEB', () => h.storyAction('openWeb'), ''));
@@ -484,6 +611,11 @@ export class DebugOverlay {
     }
     this.panel.append(kindSel);
     this.panel.append(button('PLAY ENCOUNTER', () => h.playEncounter(kindSel.value), ''));
+    this.panel.append(button('COMIC SLICE (4 PANELS)', () => {
+      const r = h.forceComicSlice();
+      console.info('[comic]', r);
+      this.build();
+    }, ''));
 
     this.panel.append(el('h4', undefined, 'NEMESIS STATE'));
     this.panel.append(this.inspectPre);

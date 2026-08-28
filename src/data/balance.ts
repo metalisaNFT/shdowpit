@@ -17,17 +17,25 @@
 export const PLAYER = {
   baseHp: 100,
 
-  /* movement */
-  walkSpeed: 7.2,
-  sprintMultiplier: 1.42,
-  acceleration: 46,
-  deceleration: 34,
+  /* movement — tuned for immediate response (see PlayerController) */
+  walkSpeed: 7.4,
+  sprintMultiplier: 1.57,
+  acceleration: 78,
+  deceleration: 16,
 
   /* dodge */
   dodgeDuration: 0.36,
   /** i-frames start slightly after the press so a panic dodge is not free */
   dodgeIFrameStart: 0.03,
-  dodgeIFrameEnd: 0.28,
+  /**
+   * The tail after this is deliberately vulnerable — it is what makes dodge
+   * spam punishable and keeps parry worth learning. It was 0.28, leaving an
+   * 0.08s exposed window while the roll clip was still visibly covering the
+   * player: too short to read as recovery, long enough to feel cheated by.
+   * 0.30 keeps the punish window (0.06s) without the "the roll clearly went
+   * through that" cases at the margin.
+   */
+  dodgeIFrameEnd: 0.3,
   dodgeCooldown: 0.3,
   dodgeDistance: 7.4,
   /**
@@ -76,7 +84,7 @@ export const POSTURE = {
   /** base pool before rank and archetype scaling */
   base: 100,
   rankMultiplier: [0.7, 0.9, 1.15, 1.4, 1.75],
-  archetypeMultiplier: { fighter: 1, heavy: 1.6, archer: 0.65 } as Record<string, number>,
+  archetypeMultiplier: { fighter: 1, heavy: 1.6, archer: 0.65, duelist: 0.85, commander: 1.15 } as Record<string, number>,
 
   /** how fast posture recovers while the enemy is not being hit */
   regenPerSecond: 9,
@@ -107,8 +115,8 @@ export const ENEMY = {
   damageMultiplier: 1,
   rankDamage: [0.85, 1, 1.15, 1.3, 1.5],
   rankHp: [0.85, 1, 1.18, 1.34, 1.55],
-  archetypeHp: { fighter: 1, heavy: 1.85, archer: 0.72 } as Record<string, number>,
-  archetypeSpeed: { fighter: 4.9, heavy: 3.9, archer: 5.3 } as Record<string, number>,
+  archetypeHp: { fighter: 1, heavy: 1.85, archer: 0.72, duelist: 0.88, commander: 1.22 } as Record<string, number>,
+  archetypeSpeed: { fighter: 4.9, heavy: 3.9, archer: 5.3, duelist: 5.6, commander: 4.4 } as Record<string, number>,
 
   /** seconds between an enemy finishing a swing and being willing to start another */
   recoveryMin: 0.6,
@@ -138,6 +146,20 @@ export const ENEMY = {
   hesitateTime: [0.35, 0.9],
   /** captains+ may cancel a windup into a feint */
   feintChance: 0.14,
+  duelistFeintChance: 0.42,
+  commanderIsolateDamage: 0.72,
+  commanderOrderRadius: 14,
+  /** seconds the order buff lasts on allies when a commander pulses */
+  commanderOrderBuff: 4.2,
+  commanderSummonOnce: true,
+  snareDuration: 3.2,
+  snareSlow: 0.55,
+  guardWindow: 0.55,
+  brandDuration: 8,
+  livingWeaponDuration: 6,
+  lastDefianceHpFrac: 0.42,
+  lastDefianceIFrames: 0.32,
+  lastDefianceHeal: 8,
 } as const;
 
 /* ============================================================
@@ -294,6 +316,27 @@ export const DIRECTOR = {
    scaling
    ============================================================ */
 
+/**
+ * Body scale. Enemy.ts derives every live fighter from these, and the god
+ * layer's headless duel resolver derives its fighters from the same numbers,
+ * so an offscreen duel and an onscreen one are the same creature.
+ */
+export const BODY = {
+  hpBase: 42,
+  hpPerLevel: 12,
+  /** by rank index: grunt, elite, captain, warlord, overlord */
+  rankHp: [0.85, 1.0, 1.18, 1.34, 1.55] as readonly number[],
+  archHp: { fighter: 1, heavy: 1.85, archer: 0.72, duelist: 0.88, commander: 1.22 } as Record<string, number>,
+  archSpeed: { fighter: 4.9, heavy: 3.9, archer: 5.3, duelist: 5.6, commander: 4.4 } as Record<string, number>,
+  archSpeedDefault: 4.8,
+  damagePerLevel: 0.035,
+  /** carrying looted steel */
+  stolenDamage: 1.14,
+  stolenReach: 0.35,
+  stolenWeaponDamage: 2,
+  robbedDamage: 0.86,
+} as const;
+
 export const SCALING = {
   /** per world age */
   enemyHpPerAge: 0.06,
@@ -311,12 +354,17 @@ export const SCALING = {
 export const HEAT = {
   max: 100,
   loudCombatPerSecond: 2.4,
+  /** seconds of sustained combat before loud heat begins */
+  loudCombatDelay: 2,
   namedKill: 14,
   shrine: 8,
   dwellPerSecond: 0.35,
+  /** seconds in one area before dwell heat begins */
+  dwellDelay: 25,
   relicCarry: 0.12,
   humiliate: 18,
   killAlly: 12,
+  /** @deprecated use EXTRACT.heatOnStart — kept for save compat reads only */
   extractStart: 22,
   areaChange: -10,
   sabotage: -16,
@@ -415,6 +463,10 @@ export const ULTIMATE = {
   slowMo: 0.32,
   slowMoScale: 0.38,
   namedStagger: 0.35,
+  livingWeaponDamageMul: 1.18,
+  livingWeaponPostureMul: 1.22,
+  judgmentPosture: 52,
+  judgmentNamedCapMul: 1.15,
 } as const;
 
 /** Clamp helper used by the scaling functions. */

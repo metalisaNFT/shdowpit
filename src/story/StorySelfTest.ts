@@ -4,7 +4,7 @@
 
 import type { Nemesis } from '../nemesis/Nemesis';
 import type { SaveData } from '../core/SaveSystem';
-import { defaultPlayerMeta, defaultSettings, migrateEventLog, SAVE_VERSION } from '../core/SaveSystem';
+import { defaultPlayerMeta, defaultSettings, migrateEventLog, SAVE_VERSION , defaultGodHistory } from '../core/SaveSystem';
 import { makeEvent } from '../world/WorldEvent';
 import { buildStoryGraph } from './StoryGraph';
 import { layoutStoryNodes } from './StoryLayout';
@@ -72,6 +72,10 @@ function save(n: Nemesis[], events: SaveData['eventLog'] = []): SaveData {
     worldSeed: 42,
     worldTurn: 8,
     worldAge: 1,
+    god: null,
+    legends: [],
+    godUnlocks: [],
+    godHistory: defaultGodHistory(),
     ageModifiers: [],
     ageName: 'THE WASTES',
     nemeses: n,
@@ -206,7 +210,22 @@ export function runStorySelfTest(): { passed: number; failed: number; results: T
   check(results, 'skipped-animation correctness', recapPlainText(recap).length > 10, 'text exists without timers');
   check(results, 'AI-disabled fallback', copyForEvent(events[0], new Map([['n1', a]])).headline.length > 0, '');
 
+  const duelEv = makeEvent(9, 1, 'duel', 'A fought B.', ['n1', 'n2'], false);
+  duelEv.id = 'duel-variant-test';
+  const duelCopyA = copyForEvent(duelEv, new Map([['n1', a], ['n2', b]]));
+  duelEv.id = 'duel-variant-test-2';
+  const duelCopyB = copyForEvent(duelEv, new Map([['n1', a], ['n2', b]]));
+  check(results, 'copy variants stable', duelCopyA.line.length > 0 && duelCopyA.line === duelCopyB.line, duelCopyA.line);
+
+  const cage = nem({ id: 'n9', name: 'Caged', memory: [{ type: 'I_WAS_CAGED_BY', turn: 5, subject: 'n1' }], master: 'n1' });
+  const cageArcs = recogniseArcs(save([a, cage]));
+  check(results, 'imprisonment arc', cageArcs.some((x) => x.kind === 'imprisonment'), '');
+
   const old = {
+    god: null,
+    legends: [],
+    godUnlocks: [],
+    godHistory: defaultGodHistory(),
     saveVersion: 1,
     worldSeed: 1,
     worldTurn: 2,

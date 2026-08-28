@@ -42,6 +42,8 @@ export interface WorldEventPayload {
   itemName?: string;
   itemKind?: string;
   weaponId?: string;
+  instanceId?: string;
+  recoveredFrom?: string;
   cause?: string;
   scarId?: string;
   vendettaState?: 'started' | 'complete' | 'failed';

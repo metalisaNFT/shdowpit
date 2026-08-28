@@ -60,7 +60,9 @@ export class GameLoop {
 
       if (this.hitStopRemaining > 0) {
         this.hitStopRemaining -= rdt;
-        scale = 0.02; // not fully zero: keeps particles from looking frozen
+        // Keep a little time moving so hit-stop reads as impact, not a freeze
+        // that makes buffered inputs feel dropped.
+        scale = 0.14;
       } else if (this.slowMoRemaining > 0) {
         this.slowMoRemaining -= rdt;
         scale *= this.slowMoScale;
@@ -81,8 +83,10 @@ export class GameLoop {
   }
 
   /** Freeze the world briefly. The single most important juice primitive. */
+  hitStopScale = 1;
+
   hitStop(seconds: number): void {
-    this.hitStopRemaining = Math.max(this.hitStopRemaining, seconds);
+    this.hitStopRemaining = Math.min(0.2, Math.max(this.hitStopRemaining, seconds * this.hitStopScale));
   }
 
   slowMo(seconds: number, scale = 0.3): void {

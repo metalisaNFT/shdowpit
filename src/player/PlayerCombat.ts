@@ -113,6 +113,16 @@ export class PlayerCombat {
   /** set while the current attack is a dash strike */
   dashStrike = false;
 
+  /** SPECTRAL GUARD: absorb one hit while the window is live */
+  guardCharges = 0;
+  guardTimer = 0;
+  brandUid = -1;
+  brandTimer = 0;
+  livingWeaponT = 0;
+  defianceArmorT = 0;
+  dodgeCharges = 1;
+  lastAttackKind: AttackKind | null = null;
+
   /* ---- ACTIVE SKILLS ---- */
   skillId: string | null = null;
   pendingSkillHit = false;
@@ -152,6 +162,8 @@ export class PlayerCombat {
     this.rangedReleased = true;
     this.sinceDodgeEnd = 99;
     this.dashStrike = false;
+    this.dodgeCharges = 1;
+    this.lastAttackKind = null;
     this.skillId = null;
     this.pendingSkillHit = false;
     this.skillArmor = 0;
@@ -159,6 +171,12 @@ export class PlayerCombat {
     this.skillMoveZ = 0;
     this.skillPassThrough = false;
     this.stepMarks.clear();
+    this.guardCharges = 0;
+    this.guardTimer = 0;
+    this.brandUid = -1;
+    this.brandTimer = 0;
+    this.livingWeaponT = 0;
+    this.defianceArmorT = 0;
   }
 
   get busy(): boolean {
@@ -221,10 +239,16 @@ export class PlayerCombat {
       stats.powers.has('dash_strike') &&
       (this.action === 'dodge' || this.sinceDodgeEnd < DASH_STRIKE_WINDOW);
 
+    if (stats.powers.has('relentless') && this.lastAttackKind && this.lastAttackKind !== kind) {
+      this.hasteTime = Math.max(this.hasteTime, 1.8);
+    }
+    this.lastAttackKind = kind;
+
     this.action = 'attack';
     this.attackKind = kind;
     this.phase = 'windup';
     this.t = 0;
+    this.swingId++;
     this.comboTimer = 0;
     this.invulnerable = false;
     void weapon;
@@ -244,10 +268,12 @@ export class PlayerCombat {
     return true;
   }
 
-  tryDodge(dirX: number, dirZ: number): boolean {
+  tryDodge(dirX: number, dirZ: number, stats?: PlayerStats): boolean {
     if (this.action === 'dead' || this.action === 'execute' || this.action === 'stagger') return false;
     if (this.action === 'skill' || this.action === 'ultimate') return false;
-    if (this.dodgeCooldown > 0) return false;
+    const max = stats?.powers.has('double_dodge') ? 2 : 1;
+    if (this.dodgeCharges <= 0 && this.dodgeCooldown > 0) return false;
+    if (this.dodgeCharges <= 0) return false;
     if (this.action === 'attack' && this.phase === 'windup') return false;
     if (this.action === 'dodge') return false;
     this.action = 'dodge';
@@ -255,8 +281,13 @@ export class PlayerCombat {
     this.t = 0;
     this.dodgeX = dirX;
     this.dodgeZ = dirZ;
-    this.dodgeCooldown = Math.max(DODGE_RULES.cooldownFloor, DODGE_TIME + DODGE_COOLDOWN * this.dodgeCooldownMul);
+    this.dodgeCharges = Math.max(0, this.dodgeCharges - 1);
+    this.dodgeCooldown =
+      this.dodgeCharges > 0
+        ? 0.12
+        : Math.max(DODGE_RULES.cooldownFloor, DODGE_TIME + DODGE_COOLDOWN * this.dodgeCooldownMul);
     this.comboTimer = 0;
+    void max;
     return true;
   }
 
@@ -368,6 +399,15 @@ export class PlayerCombat {
     this.pendingSkillHit = false;
     if (this.hasteTime > 0) this.hasteTime -= dt;
     if (this.skillArmor > 0) this.skillArmor -= dt;
+    if (this.guardTimer > 0) this.guardTimer -= dt;
+    else this.guardCharges = 0;
+    if (this.brandTimer > 0) this.brandTimer -= dt;
+    else this.brandUid = -1;
+    if (this.livingWeaponT > 0) this.livingWeaponT -= dt;
+    if (this.defianceArmorT > 0) {
+      this.defianceArmorT -= dt;
+      if (this.defianceArmorT <= 0) this.invulnerable = this.invulnerable && this.action === 'dodge';
+    }
     if (this.riposteWindow <= 0) this.counterArmed = false;
 
     for (const [uid, t] of this.stepMarks) {
@@ -377,6 +417,10 @@ export class PlayerCombat {
     }
 
     if (this.dodgeCooldown > 0) this.dodgeCooldown -= dt;
+    else {
+      const max = stats.powers.has('double_dodge') ? 2 : 1;
+      if (this.dodgeCharges < max) this.dodgeCharges = max;
+    }
     if (this.parryCooldown > 0) this.parryCooldown -= dt;
     if (this.riposteWindow > 0) this.riposteWindow -= dt;
     if (this.comboTimer > 0) this.comboTimer -= dt;
@@ -465,7 +509,6 @@ export class PlayerCombat {
     if (this.phase === 'windup' && this.t >= t.windup) {
       this.phase = 'active';
       this.t -= t.windup;
-      this.swingId++;
       this.pendingHit = this.buildHit(weapon, stats);
     } else if (this.phase === 'active' && this.t >= t.active) {
       this.phase = 'recover';

@@ -20,6 +20,18 @@ const GENERATING_LINES: Record<AIRequestKind, string[]> = {
   taunt: ['REMEMBERING THE DEAD...', 'THE WORLD IS REMEMBERING...'],
   chronicle: ['THE CHRONICLE IS BEING WRITTEN...', 'WRITING THE HISTORY...'],
   portrait: ['PAINTING THE ENEMY...', 'CREATING NEMESIS PORTRAIT...', 'RECONSTRUCTING THE SURVIVOR...'],
+  dossier: ['READING THEM...', 'THE RECORD IS BEING WORDED...'],
+  beat: ['CAPTIONING THE CYCLE...', 'THE FEED IS BEING WORDED...'],
+  crisis: ['NAMING THE CRISIS...', 'THE THREAT IS BEING WORDED...'],
+  recap: ['CLOSING THE RECORD...', 'THE RUN IS BEING WORDED...'],
+  legend: ['WRITING THEM INTO THE BOOK...', 'AN EPITAPH IS BEING WORDED...'],
+  aftermath: ['WORDING THE CONSEQUENCE...', 'THE CHAIN IS BEING READ...'],
+  situation: ['READING THE BOARD...', 'THE STAKES ARE BEING WORDED...'],
+  recap_beat: ['POLISHING THE RECAP...', 'THE RECORD IS BEING READ...'],
+  timeline: ['WRITING THE TIMELINE...', 'THE CHRONICLE SHIFTS...'],
+  journey: ['POLISHING A LIFE...', 'THE JOURNEY IS BEING READ...'],
+  arc: ['THREADING THE STORY...', 'AN OPEN THREAD IS BEING WORDED...'],
+  encounter: ['SETTING THE SCENE...', 'THE MEETING IS BEING WORDED...'],
 };
 
 const KIND_LABEL: Record<AIRequestKind, string> = {
@@ -27,6 +39,18 @@ const KIND_LABEL: Record<AIRequestKind, string> = {
   taunt: 'DIALOGUE',
   chronicle: 'CHRONICLE',
   portrait: 'PORTRAIT',
+  dossier: 'DOSSIER',
+  beat: 'VOICE',
+  crisis: 'CRISIS',
+  recap: 'RECAP',
+  legend: 'LEGEND',
+  aftermath: 'AFTERMATH',
+  situation: 'STAKES',
+  recap_beat: 'RECAP',
+  timeline: 'TIME',
+  journey: 'JOURNEY',
+  arc: 'THREAD',
+  encounter: 'MEETING',
 };
 
 const SUBTITLE: Record<AIRequestKind, string> = {
@@ -34,6 +58,18 @@ const SUBTITLE: Record<AIRequestKind, string> = {
   taunt: 'Recalling what they remember',
   chronicle: 'Writing their history',
   portrait: 'Generating Nemesis portrait',
+  dossier: 'Wording the inspection',
+  beat: 'Captioning a consequence',
+  crisis: 'Wording the crisis',
+  recap: 'Closing the run',
+  legend: 'Writing an epitaph',
+  aftermath: 'Voicing the consequence chain',
+  situation: 'Voicing the stakes',
+  recap_beat: 'Polishing a recap beat',
+  timeline: 'Polishing the timeline',
+  journey: 'Polishing a journey beat',
+  arc: 'Voicing an open thread',
+  encounter: 'Polishing the encounter',
 };
 
 export type IndicatorState = 'off' | 'idle' | 'busy' | 'error';

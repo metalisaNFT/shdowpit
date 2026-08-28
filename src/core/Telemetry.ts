@@ -48,6 +48,8 @@ export interface FrameSample {
   camY: number;
   /** distance from camera to player — reveals wall push-in */
   camToPlayer: number;
+  /** 1 = body solid, 0 = fully dissolved by the close-camera fade */
+  playerFade: number;
 
   /* world */
   enemiesAlive: number;

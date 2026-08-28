@@ -477,11 +477,102 @@ function resolveDuel(
   }
 
   // What happens to the loser?
-  const survivalRoll = rng.next() * getPersonality(loser.personality).survival;
+  events.push(...resolveLoserFallout(mgr, rng, winner, loser, kind, margin));
+
+  recomputeRevenge(loser);
+  recomputePower(loser);
+  return events;
+}
+
+function resolveLoserFallout(
+  mgr: NemesisManager,
+  rng: RNG,
+  winner: Nemesis,
+  loser: Nemesis,
+  kind: 'duel' | 'challenge' | 'betrayal',
+  margin: number
+): WorldEvent[] {
+  const events: WorldEvent[] = [];
+  const pw = getPersonality(winner.personality);
+  const pl = getPersonality(loser.personality);
   const lethal = margin > 0.4 || kind === 'betrayal';
-  if (lethal && survivalRoll < 0.55) {
-    events.push(...killOff(mgr, rng, loser, winner));
-  } else if (rng.chance(0.5)) {
+  const survivalRoll = rng.next() * pl.survival;
+
+  let kill = 0.22 + margin * 0.35;
+  if (kind === 'betrayal') kill += 0.2;
+  if (pw.aggression > 1.3) kill += 0.1;
+  if (pl.survival > 1.2) kill -= 0.12;
+
+  if (lethal && survivalRoll < 0.55 && rng.chance(kill)) {
+    return killOff(mgr, rng, loser, winner);
+  }
+
+  if (loser.stolen.length && (pw.steal > 1.1 || rng.chance(0.28))) {
+    const item = loser.stolen.pop()!;
+    winner.stolen.push(item);
+    recomputePower(winner);
+    recomputePower(loser);
+    remember(winner, 'I_ROBBED_THEM', mgr.turn, loser.id);
+    remember(loser, 'I_WAS_ROBBED_BY', mgr.turn, winner.id);
+    events.push(
+      mgr.log(
+        makeEvent(
+          mgr.turn,
+          mgr.age,
+          'weapon_theft',
+          `${fullName(winner)} stripped ${item.name} from ${fullName(loser)}.`,
+          [winner.id, loser.id],
+          rankIndex(winner.rank) >= 2 || rankIndex(loser.rank) >= 2,
+          'gold'
+        )
+      )
+    );
+    return events;
+  }
+
+  if (winner.personality === 'showoff' || rng.chance(0.22)) {
+    remember(winner, 'I_HUMILIATED_NEMESIS', mgr.turn, loser.id);
+    remember(loser, 'I_WAS_HUMILIATED_BY', mgr.turn, winner.id);
+    loser.humiliations = (loser.humiliations ?? 0) + 1;
+    events.push(
+      mgr.log(
+        makeEvent(
+          mgr.turn,
+          mgr.age,
+          'injury',
+          `${fullName(winner)} left ${fullName(loser)} alive to remember it.`,
+          [winner.id, loser.id],
+          false,
+          'bad'
+        )
+      )
+    );
+    if (rng.chance(0.35) && rankIndex(loser.rank) > 0) events.push(mgr.demote(loser));
+    return events;
+  }
+
+  if (loser.master === winner.id || (winner.allies.includes(loser.id) && rng.chance(0.3))) {
+    setMaster(loser, winner);
+    remember(loser, 'I_SWORE_TO', mgr.turn, winner.id);
+    events.push(
+      mgr.log(
+        makeEvent(
+          mgr.turn,
+          mgr.age,
+          'alliance',
+          `${fullName(loser)} bent the knee to ${fullName(winner)}.`,
+          [loser.id, winner.id],
+          false,
+          'neutral'
+        )
+      )
+    );
+    return events;
+  }
+
+  remember(winner, 'I_SPARED_NEMESIS', mgr.turn, loser.id);
+  remember(loser, 'I_WAS_SPARED_BY', mgr.turn, winner.id);
+  if (rng.chance(0.5)) {
     const scar = rng.pick(SCARS);
     const label = applyScar(loser, scar, mgr.turn, fullName(winner));
     if (label) {
@@ -496,9 +587,6 @@ function resolveDuel(
   } else if (rng.chance(0.35) && rankIndex(loser.rank) > 0) {
     events.push(mgr.demote(loser));
   }
-
-  recomputeRevenge(loser);
-  recomputePower(loser);
   return events;
 }
 

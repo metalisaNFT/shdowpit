@@ -115,14 +115,19 @@ export function buildEnemyRig(n: Nemesis): EnemyRig {
 
   const heavy = n.archetype === 'heavy';
   const archer = n.archetype === 'archer';
+  const duelist = n.archetype === 'duelist';
+  const commander = n.archetype === 'commander';
 
   const scale =
-    ENEMY_BASE_SCALE * (heavy ? 1.24 : archer ? 0.92 : 1.0) * r.range(0.92, 1.1) * (1 + ri * 0.055);
+    ENEMY_BASE_SCALE *
+    (heavy ? 1.24 : archer ? 0.92 : duelist ? 0.94 : commander ? 1.12 : 1.0) *
+    r.range(0.92, 1.1) *
+    (1 + ri * 0.055);
 
   // visual chunkiness (meshes only — bones never change)
-  const torsoW = (heavy ? 0.56 : archer ? 0.34 : 0.44) * r.range(0.9, 1.15);
-  const torsoD = (heavy ? 0.4 : 0.26) * r.range(0.9, 1.1);
-  const limbW = (heavy ? 0.19 : 0.13) * r.range(0.9, 1.15);
+  const torsoW = (heavy ? 0.56 : archer ? 0.34 : duelist ? 0.36 : commander ? 0.5 : 0.44) * r.range(0.9, 1.15);
+  const torsoD = (heavy ? 0.4 : duelist ? 0.22 : commander ? 0.32 : 0.26) * r.range(0.9, 1.1);
+  const limbW = (heavy ? 0.19 : duelist ? 0.11 : commander ? 0.16 : 0.13) * r.range(0.9, 1.15);
 
   const pal = paletteFor(n.appearanceSeed);
   const bodyColor = pal.body;
@@ -297,16 +302,15 @@ export function buildEnemyRig(n: Nemesis): EnemyRig {
   }
 
   /* ---- cape ---- */
-  if (r.chance(0.28) || ri >= 3) {
+  if (r.chance(0.28) || ri >= 3 || commander) {
     const capeMat = new THREE.MeshLambertMaterial({
-      color: ri >= 3 ? accent : WORLD.shadow,
+      color: commander || ri >= 3 ? accent : WORLD.shadow,
       flatShading: true,
       side: THREE.DoubleSide,
       transparent: true,
-      opacity: 0.9,
+      opacity: commander ? 0.95 : 0.9,
     });
-    // Capes hang on the BACK, which is +Z.
-    const cape = mesh(G.plane, capeMat, torsoW * 2.4, 0.85, 1);
+    const cape = mesh(G.plane, capeMat, torsoW * (commander ? 3.1 : 2.4), commander ? 1.15 : 0.85, 1);
     cape.position.set(0, -0.28, torsoD * 0.7);
     cape.rotation.x = -0.12;
     B.Chest.add(cape);
@@ -445,9 +449,12 @@ function buildWeapon(
 
   // Stolen player relics look different — that is the whole point.
   if (n.stolen.length > 0) {
-    const relic = mesh(G.box, glow(SIGNAL.critical), 0.05, len * 0.9, 0.05);
-    relic.position.y = len * 0.45;
+    const relic = mesh(G.box, glow(SIGNAL.critical), 0.12, len * 1.05, 0.12);
+    relic.position.y = len * 0.5;
     g.add(relic);
+    const flag = mesh(G.plane, glow(SIGNAL.critical), w * 4.2, w * 2.2, 1);
+    flag.position.set(w * 2.2, len * 0.72, 0);
+    g.add(flag);
   }
 
   tipAnchor.position.set(0, len, 0);

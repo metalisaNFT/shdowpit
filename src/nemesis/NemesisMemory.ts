@@ -24,7 +24,46 @@ const RELATIONSHIP_WEIGHT: Partial<Record<MemoryType, number>> = {
   I_STOLE_PLAYER_WEAPON: 11,
   I_RETURNED_FROM_DEATH: 15,
   PLAYER_USED_FIRE: 4,
+  // The god layer. `playerRelationship` is how they feel about YOU, and in the
+  // long game you are not a swordsman — you are the thing that keeps
+  // interfering. Gifts buy loyalty; curses buy hatred; being raised from the
+  // dead buys something more complicated than either.
+  GOD_BLESSED_ME: -14,
+  GOD_GIFTED_ME: -18,
+  GOD_SAVED_ME: -26,
+  GOD_RAISED_ME: -30,
+  GOD_CURSED_ME: 24,
+  GOD_MARKED_ME: 20,
+  GOD_EXPOSED_ME: 16,
+  GOD_TURNED_MINE_AGAINST_ME: 22,
 };
+
+/**
+ * Memories between two NPCs must not move how they feel about the player.
+ * `remember` is still the only writer of the list; this is the same call with
+ * the relationship term suppressed.
+ */
+const NPC_ONLY = new Set<MemoryType>([
+  'I_KILLED_NEMESIS',
+  'I_SPARED_NEMESIS',
+  'I_WAS_SPARED_BY',
+  'I_HUMILIATED_NEMESIS',
+  'I_WAS_HUMILIATED_BY',
+  'I_FLED_FROM',
+  'I_BEAT_A_STRONGER_FOE',
+  'I_LOST_TO_A_WEAKER_FOE',
+  'I_TOOK_TERRITORY_FROM',
+  'I_LOST_TERRITORY_TO',
+  'I_ROBBED_THEM',
+  'I_WAS_ROBBED_BY',
+  'I_SAVED_AN_ALLY',
+  'I_ABANDONED_AN_ALLY',
+  'MY_MASTER_FELL',
+]);
+
+export function isNpcMemory(type: MemoryType): boolean {
+  return NPC_ONLY.has(type);
+}
 
 export function remember(n: Nemesis, type: MemoryType, turn: number, subject?: string): MemoryEvent {
   const ev: MemoryEvent = { type, turn };
@@ -32,7 +71,7 @@ export function remember(n: Nemesis, type: MemoryType, turn: number, subject?: s
   n.memory.push(ev);
   if (n.memory.length > MAX_MEMORY) n.memory.splice(0, n.memory.length - MAX_MEMORY);
 
-  const w = RELATIONSHIP_WEIGHT[type];
+  const w = NPC_ONLY.has(type) ? 0 : RELATIONSHIP_WEIGHT[type];
   if (w) n.playerRelationship = clamp(n.playerRelationship + w, -100, 200);
 
   recomputeRevenge(n);
@@ -128,6 +167,31 @@ export const MEMORY_TEXT: Record<MemoryType, string> = {
   I_WAS_BETRAYED: 'They were betrayed',
   I_RETURNED_FROM_DEATH: 'They came back',
   PLAYER_EXECUTED_ME: 'You executed them',
+  I_KILLED_NEMESIS: 'They killed someone',
+  I_SPARED_NEMESIS: 'They let someone live',
+  I_WAS_SPARED_BY: 'Someone let them live',
+  I_HUMILIATED_NEMESIS: 'They humiliated someone',
+  I_WAS_HUMILIATED_BY: 'They were humiliated',
+  I_FLED_FROM: 'They ran',
+  I_BEAT_A_STRONGER_FOE: 'They beat someone stronger',
+  I_LOST_TO_A_WEAKER_FOE: 'They lost to someone weaker',
+  I_TOOK_TERRITORY_FROM: 'They took ground',
+  I_LOST_TERRITORY_TO: 'They lost ground',
+  I_ROBBED_THEM: 'They robbed someone',
+  I_WAS_ROBBED_BY: 'They were robbed',
+  I_SAVED_AN_ALLY: 'They saved an ally',
+  I_ABANDONED_AN_ALLY: 'They abandoned an ally',
+  MY_MASTER_FELL: 'Their master fell',
+  GOD_BLESSED_ME: 'You blessed them',
+  GOD_CURSED_ME: 'You cursed them',
+  GOD_SAVED_ME: 'You pulled them out of death',
+  GOD_GIFTED_ME: 'You put steel in their hands',
+  GOD_RAISED_ME: 'You raised them from the dead',
+  GOD_MARKED_ME: 'You put a price on them',
+  GOD_EXPOSED_ME: 'You showed the world where they were',
+  GOD_TURNED_MINE_AGAINST_ME: 'You turned their own against them',
+  I_WAS_CAGED_BY: 'They were caged',
+  I_SWORE_TO: 'They swore to someone',
 };
 
 function clamp(v: number, lo: number, hi: number): number {

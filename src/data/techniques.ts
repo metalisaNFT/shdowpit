@@ -92,7 +92,7 @@ export const TECHNIQUES: TechniqueDef[] = [
 export const TECHNIQUE_MAP = new Map<TechniqueId, TechniqueDef>(TECHNIQUES.map((t) => [t.id, t]));
 
 export function techniquesForWeapon(weaponId: string): TechniqueDef[] {
-  const base = weaponId === 'sunblade' ? 'sword' : weaponId === 'ashfang' ? 'greatsword' : weaponId === 'longtooth' ? 'spear' : weaponId;
+  const base = weaponId === 'sunblade' ? 'sword' : weaponId === 'ashfang' || weaponId === 'hammer' ? 'greatsword' : weaponId === 'longtooth' || weaponId === 'sunspear' ? 'spear' : weaponId;
   return TECHNIQUES.filter((t) => t.weaponId === weaponId || t.weaponId === base);
 }
 

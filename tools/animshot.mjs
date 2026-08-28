@@ -1,11 +1,11 @@
 /** Visual smoke: screenshot key animation moments. node tools/animshot.mjs */
-import { chromium } from 'playwright';
 import fs from 'node:fs';
+import { launchChromium } from './browser.mjs';
 
 const URL_BASE = process.env.PLAYTEST_URL ?? 'http://localhost:4173/?quality=low';
 fs.mkdirSync('animshot', { recursive: true });
 
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium', args: ['--use-gl=swiftshader'] });
+const browser = await launchChromium();
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 page.on('pageerror', (e) => console.log('PAGEERROR:', e.message));
 page.on('console', (m) => {
@@ -14,7 +14,7 @@ page.on('console', (m) => {
 await page.goto(URL_BASE, { waitUntil: 'load' });
 await page.evaluate(() => localStorage.clear());
 await page.waitForTimeout(2500);
-await (await page.$('#title-screen button')).click();
+await (await page.$('#title-descend')).click();
 await page.waitForTimeout(1200);
 await page.evaluate(() => window.SHDOWPIT.__qaStart());
 await page.waitForTimeout(600);

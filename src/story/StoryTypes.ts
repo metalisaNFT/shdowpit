@@ -82,7 +82,10 @@ export type StoryArcKind =
   | 'broken_alliance'
   | 'succession'
   | 'repeated_escape'
-  | 'hunter_prey';
+  | 'hunter_prey'
+  | 'imprisonment'
+  | 'ransom'
+  | 'recruitment';
 
 export interface TimelineItem {
   id: string;
@@ -153,7 +156,8 @@ export function defaultStoryFilters(): StoryFilters {
 export const STORY_BUDGET = {
   visibleNodes: 22,
   visibleEdges: 36,
-  recapBeats: 10,
+  recapBeats: 4,
+  recapBeatsLong: 8,
   timelineCards: 80,
   layoutMs: 8,
 };

@@ -2,7 +2,7 @@
  * "WHILE YOU WERE DEAD" / run recap.
  *
  * Simulation has already finished before this screen opens. Presentation
- * never writes world state. Skip still shows every selected beat.
+ * never writes world state. Skip jumps to Continue.
  */
 
 import { button, clear, div, show, esc } from './Dom';
@@ -33,6 +33,7 @@ export interface ReportOptions {
   onContinue: () => void;
   extras?: Array<{ label: string; onClick: () => void }>;
   spotlight?: ReportSpotlight;
+  recapLineFor?: (b: RecapBeat) => string;
 }
 
 export class DeathReport {
@@ -100,51 +101,47 @@ export class DeathReport {
           if (!opts.reducedMotion) card.style.animationDelay = `${i * 0.12}s`;
           else card.style.animation = 'none';
           card.append(div('recap-h', b.headline));
-          card.append(div('recap-l', b.line));
+          card.append(div('recap-l', opts.recapLineFor ? opts.recapLineFor(b) : b.line));
           if (b.detail) card.append(div('recap-d', b.detail));
           this.bodyEl.append(card);
         });
       }
+    } else {
+      const highlight = new Set((opts.highlight ?? []).map((h) => h.toUpperCase()));
+      const lines = opts.events.length
+        ? opts.events.slice(0, 4)
+        : [
+            {
+              turn: 0,
+              age: 0,
+              type: 'death' as const,
+              text: 'NOTHING HAPPENED. THE WORLD DID NOT NOTICE.',
+              actors: [] as string[],
+              important: false,
+              tone: 'neutral' as const,
+            },
+          ];
+      this.bodyEl.append(div('tier-label', 'THE WORLD'));
+      lines.forEach((ev, i) => {
+        const line = div('report-line');
+        if (opts.reducedMotion) {
+          line.style.animation = 'none';
+          line.style.opacity = '1';
+        } else {
+          line.style.animationDelay = `${Math.min(i, 12) * 0.08}s`;
+        }
+        let text = esc(ev.text);
+        for (const h of highlight) {
+          if (!h) continue;
+          text = text.replace(new RegExp(`\\b${escapeRegExp(h)}\\b`, 'g'), `<span class="who">${h}</span>`);
+        }
+        const toneClass = ev.tone === 'bad' ? 'bad' : ev.tone === 'good' ? 'ok' : ev.tone === 'gold' ? 'who' : '';
+        const seen = ev.witnessed ? 'SAW' : 'WHILE GONE';
+        const turnTag = `<span class="turn">T${ev.turn} ${seen}</span>`;
+        line.innerHTML = toneClass ? `${turnTag}<span class="${toneClass}">${text}</span>` : `${turnTag}${text}`;
+        this.bodyEl.append(line);
+      });
     }
-
-    const highlight = new Set((opts.highlight ?? []).map((h) => h.toUpperCase()));
-    const lines = opts.events.length
-      ? opts.events
-      : [
-          {
-            turn: 0,
-            age: 0,
-            type: 'death' as const,
-            text: 'NOTHING HAPPENED. THE WORLD DID NOT NOTICE.',
-            actors: [] as string[],
-            important: false,
-            tone: 'neutral' as const,
-          },
-        ];
-
-    const logHead = div('tier-label', recap.length ? 'FULL RECORD' : 'THE WORLD');
-    this.bodyEl.append(logHead);
-
-    lines.forEach((ev, i) => {
-      const line = div('report-line');
-      if (opts.reducedMotion) {
-        line.style.animation = 'none';
-        line.style.opacity = '1';
-      } else {
-        line.style.animationDelay = `${Math.min(i, 12) * 0.08}s`;
-      }
-      let text = esc(ev.text);
-      for (const h of highlight) {
-        if (!h) continue;
-        text = text.replace(new RegExp(`\\b${escapeRegExp(h)}\\b`, 'g'), `<span class="who">${h}</span>`);
-      }
-      const toneClass = ev.tone === 'bad' ? 'bad' : ev.tone === 'good' ? 'ok' : ev.tone === 'gold' ? 'who' : '';
-      const seen = ev.witnessed ? 'SAW' : 'WHILE GONE';
-      const turnTag = `<span class="turn">T${ev.turn} ${seen}</span>`;
-      line.innerHTML = toneClass ? `${turnTag}<span class="${toneClass}">${text}</span>` : `${turnTag}${text}`;
-      if (ev.important) line.style.fontSize = '16px';
-      this.bodyEl.append(line);
-    });
 
     const finish = () => {
       this.cancelTimers();
@@ -155,7 +152,7 @@ export class DeathReport {
     };
 
     this.actionsEl.append(button('SKIP', finish));
-    const revealAt = opts.reducedMotion ? 0 : Math.min(2200, lines.length * 70 + 400);
+    const revealAt = opts.reducedMotion ? 0 : Math.min(2800, (opts.recap?.length ?? 4) * 700 + 400);
     this.timers.push(window.setTimeout(finish, revealAt));
 
     show(this.root, true);

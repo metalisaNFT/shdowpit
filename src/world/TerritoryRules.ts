@@ -18,6 +18,7 @@ export type TerritoryRuleId =
   | 'armored_gate'
   | 'ambitious_tithe'
   | 'show_duels'
+  | 'command_posts'
   | 'void_quiet';
 
 export interface TerritoryRule {
@@ -96,9 +97,16 @@ const RULES: Record<TerritoryRuleId, Omit<TerritoryRule, 'id'>> = {
     desc: 'No special law. Patrols are ordinary.',
     counterplay: 'None needed.',
   },
+  command_posts: {
+    title: 'THE WATCH',
+    desc: 'Patrols keep formation around their commander. Isolated, the commander is weaker.',
+    counterplay: 'Split the ring. Interrupt the order. Do not fight the whole post at once.',
+  },
 };
 
 function ruleFromHolder(n: Nemesis): TerritoryRuleId {
+  if (n.archetype === 'commander') return 'command_posts';
+  if (n.archetype === 'duelist') return 'show_duels';
   if (n.archetype === 'archer') return 'elevated_archers';
   if (n.archetype === 'heavy') return 'armored_gate';
   if (n.personality === 'coward') return 'alarms_escapes';

@@ -47,6 +47,16 @@ function actFor(ev: WorldEvent, i: number, n: number): RecapBeat['act'] {
 
 export function composeWorldTurnRecap(data: SaveData, events: WorldEvent[], killerId?: string): RecapBeat[] {
   const roster = new Map(data.nemeses.map((n) => [n.id, n]));
+  const long = events.some(
+    (e) =>
+      e.type === 'overlord_slain' ||
+      e.type === 'succession' ||
+      e.type === 'age_begins' ||
+      (e.type === 'resurrection' && e.important) ||
+      (e.type === 'betrayal' && e.important) ||
+      (e.type === 'weapon_theft' && e.payload?.itemKind === 'relic')
+  );
+  const cap = long ? STORY_BUDGET.recapBeatsLong : STORY_BUDGET.recapBeats;
   const scored = events
     .filter((e) => e.type !== 'heat')
     .map((e) => ({ e, s: scoreEvent(e, data.worldTurn, roster) }))
@@ -61,7 +71,7 @@ export function composeWorldTurnRecap(data: SaveData, events: WorldEvent[], kill
       if (!pred(x)) continue;
       used.add(id);
       picked.push(x);
-      if (picked.length >= STORY_BUDGET.recapBeats) break;
+      if (picked.length >= cap) break;
     }
   };
 
@@ -70,11 +80,11 @@ export function composeWorldTurnRecap(data: SaveData, events: WorldEvent[], kill
   take((x) => x.e.type === 'weapon_theft' || x.e.type === 'resurrection');
   take((x) => x.e.type === 'territory' || (x.e.type === 'promotion' && x.s.total >= 30));
   take((x) => x.s.total >= 28);
-  take(() => picked.length < 5);
+  take(() => picked.length < Math.min(4, cap));
 
   picked.sort((a, b) => a.e.turn - b.e.turn || a.s.total - b.s.total);
 
-  const beats = picked.slice(0, STORY_BUDGET.recapBeats).map((x, i, arr) => {
+  const beats = picked.slice(0, cap).map((x, i, arr) => {
     const copy = copyForEvent(x.e, roster);
     return {
       act: actFor(x.e, i, arr.length),
@@ -88,7 +98,7 @@ export function composeWorldTurnRecap(data: SaveData, events: WorldEvent[], kill
     } satisfies RecapBeat;
   });
 
-  const arcs = recogniseArcs(data).filter((a) => a.unresolved).slice(0, 2);
+  const arcs = recogniseArcs(data).filter((a) => a.unresolved).slice(0, 1);
   for (const a of arcs) {
     beats.push({
       act: 'consequence',
@@ -101,7 +111,7 @@ export function composeWorldTurnRecap(data: SaveData, events: WorldEvent[], kill
       vfx: a.kind === 'stolen_weapon' ? 'theft' : a.kind === 'revenge' ? 'revenge' : 'none',
     });
   }
-  return beats.slice(0, STORY_BUDGET.recapBeats + 2);
+  return beats.slice(0, cap + 1);
 }
 
 export function composeRunRecap(data: SaveData, opts: { extracted?: boolean; killerId?: string }): RecapBeat[] {
@@ -133,7 +143,7 @@ export function composeRunRecap(data: SaveData, opts: { extracted?: boolean; kil
   });
   const order: RecapBeat['act'][] = ['opening', 'rising', 'turn', 'end', 'consequence'];
   beats.sort((a, b) => order.indexOf(a.act) - order.indexOf(b.act) || b.importance - a.importance);
-  return beats.slice(0, 12);
+  return beats.slice(0, 5);
 }
 
 export function recapPlainText(beats: RecapBeat[]): string {

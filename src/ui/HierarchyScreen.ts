@@ -14,6 +14,7 @@ import { getPersonality } from '../data/personalities';
 import { SCAR_NAMES } from '../nemesis/NemesisMemory';
 import { relationshipLabel, historyBeat } from '../nemesis/EncounterCopy';
 import { AREA_NAMES } from '../data/names';
+import { signatureDef } from '../data/signatures';
 import type { AIContentService } from '../ai/AIContentService';
 import { ALL_PLAYER_WEAPONS } from '../data/weapons';
 import { TECHNIQUES } from '../data/techniques';
@@ -21,6 +22,14 @@ import { getSkill, type SkillId } from '../data/skills';
 import { buildStoryModel, territoryStories } from '../story/StoryModel';
 import { buildTimeline } from '../story/StoryTimeline';
 import { characterBeats } from '../story/StoryBeats';
+import {
+  arcVoiceFor,
+  journeyLineFor,
+  observeArcs,
+  observeJourney,
+  observeTimeline,
+  timelineDetailFor,
+} from '../story/StoryAI';
 import { defaultStoryFilters, PLAYER_ID, type StoryFilters, type StoryMode } from '../story/StoryTypes';
 import { StoryWebView, edgeExplain } from '../story/StoryWeb';
 
@@ -287,10 +296,14 @@ export class HierarchyScreen {
     const box = div('tier');
     box.append(div('tier-label', fullName(n).toUpperCase()));
     const beats = characterBeats(n, mgr.data);
+    if (this.ai) observeJourney(this.ai, n, beats.map((b) => b.text));
     const log = div('book-log');
     log.innerHTML = beats
       .slice(-12)
-      .map((b) => `<span class="turn">T${b.turn}</span> ${esc(b.text)}`)
+      .map((b, i) => {
+        const text = this.ai ? journeyLineFor(this.ai, n, b.text, i) : b.text;
+        return `<span class="turn">T${b.turn}</span> ${esc(text)}`;
+      })
       .join('<br>');
     box.append(log);
     return box;
@@ -325,6 +338,7 @@ export class HierarchyScreen {
       areaId: this.filters.territory ?? undefined,
     };
     const items = buildTimeline(mgr.data, q);
+    if (this.ai) observeTimeline(this.ai, mgr, items);
     this.bodyEl.append(div('log-line', 'WITNESSED LINES ARE YOURS. THE REST WAS LEARNED AFTER.'));
     this.appendTimeline(items.slice(-100));
   }
@@ -341,7 +355,8 @@ export class HierarchyScreen {
       line.style.opacity = '1';
       line.style.animation = 'none';
       const tag = it.witnessed ? 'SAW' : it.known ? 'LEARNED' : 'RUMOR';
-      line.innerHTML = `<span class="turn">T${it.turn} ${tag}</span><b>${esc(it.headline)}</b> — ${esc(it.detail)}`;
+      const detail = this.ai ? timelineDetailFor(this.ai, it) : it.detail;
+      line.innerHTML = `<span class="turn">T${it.turn} ${tag}</span><b>${esc(it.headline)}</b> — ${esc(detail)}`;
       line.addEventListener('click', () => {
         if (it.actors[0]) {
           this.selected = it.actors[0];
@@ -359,6 +374,7 @@ export class HierarchyScreen {
   private renderThreads(mgr: NemesisManager): void {
     const model = buildStoryModel(mgr.data, this.filters);
     const arcs = model.arcs.filter((a) => (this.filters.unresolvedOnly ? a.unresolved : true));
+    if (this.ai) observeArcs(this.ai, mgr, arcs);
     if (!arcs.length) {
       this.bodyEl.append(div('log-line', 'NO THREADS YET.'));
       return;
@@ -368,7 +384,8 @@ export class HierarchyScreen {
       card.append(div('cname', a.title));
       card.append(div('ctitle', a.unresolved ? 'UNRESOLVED' : 'CLOSED'));
       const meta = div('cmeta');
-      meta.innerHTML = `${esc(a.state)}<br><span class="grudge">${esc(a.next)}</span>`;
+      const voice = this.ai ? arcVoiceFor(this.ai, a) : { state: a.state, next: a.next };
+      meta.innerHTML = `${esc(voice.state)}<br><span class="grudge">${esc(voice.next)}</span>`;
       card.append(meta);
       card.addEventListener('click', () => {
         this.selected = a.characters.find((id) => id !== PLAYER_ID) ?? null;
@@ -525,7 +542,10 @@ export class HierarchyScreen {
     wrap.append(rail);
 
     const n = mgr.byId(this.bookId);
-    if (n) wrap.append(this.bookCard(mgr, n));
+    if (n) {
+      if (this.ai) this.ai.ensureFor(n);
+      wrap.append(this.bookCard(mgr, n));
+    }
     this.bodyEl.append(wrap);
   }
 
@@ -594,6 +614,16 @@ export class HierarchyScreen {
     body.append(stats);
 
     const rows: string[] = [];
+    if (n.signatureKnown && n.signatureId) {
+      const sig = signatureDef(n.signatureId);
+      rows.push(
+        sig
+          ? `SIGNATURE: ${sig.name} — ${sig.telegraph} / ${sig.counterplay}`
+          : `SIGNATURE: ${n.signatureId.replace(/_/g, ' ').toUpperCase()}`
+      );
+    } else if (n.persistent) {
+      rows.push('SIGNATURE: UNKNOWN');
+    }
     if (n.strengths.length) rows.push(`TRAITS: ${n.strengths.map(traitName).join(', ')}`);
     if (n.weaknesses.length) {
       rows.push(`<span class="grudge">KNOWN WEAKNESSES: ${n.weaknesses.map(traitName).join(', ')}</span>`);
@@ -627,12 +657,18 @@ export class HierarchyScreen {
 
     if (n.memory.length) {
       body.append(div('book-h', 'RECORD'));
+      const memSlice = n.memory.slice(-16);
+      const recordBeats = memSlice.map((m) => {
+        const sub = m.subject ? mgr.byId(m.subject) : null;
+        return historyBeat(n, m, sub?.name);
+      });
+      if (ai) observeJourney(ai, n, recordBeats, { limit: 16 });
       const log = div('book-log');
-      log.innerHTML = n.memory
-        .slice(-16)
-        .map((m) => {
-          const sub = m.subject ? mgr.byId(m.subject) : null;
-          return `<span class="turn">T${m.turn}</span> ${esc(historyBeat(n, m, sub?.name))}`;
+      log.innerHTML = recordBeats
+        .map((beat, i) => {
+          const m = memSlice[i]!;
+          const text = ai ? journeyLineFor(ai, n, beat, i) : beat;
+          return `<span class="turn">T${m.turn}</span> ${esc(text)}`;
         })
         .join('<br>');
       body.append(log);

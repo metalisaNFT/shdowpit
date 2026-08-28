@@ -27,10 +27,11 @@ export class PowerSelect {
     return !this.root.classList.contains('hidden');
   }
 
-  present(options: PowerDef[], subtitle: string, onPick: (p: PowerDef) => void, extra?: { reactions?: string; onReroll?: () => void; rerolls?: number }): void {
+  present(options: PowerDef[], subtitle: string, onPick: (p: PowerDef) => void, extra?: { reactions?: string; onReroll?: () => void; rerolls?: number; layer?: string }): void {
     this.handler = onPick;
     this.current = options;
-    this.subEl.textContent = extra?.reactions ? `${subtitle}\n${extra.reactions}` : subtitle;
+    const layer = extra?.layer ? `${extra.layer} · ` : '';
+    this.subEl.textContent = extra?.reactions ? `${layer}${subtitle}\n${extra.reactions}` : `${layer}${subtitle}`;
     clear(this.grid);
     options.forEach((p, i) => {
       const c = div('power-card');

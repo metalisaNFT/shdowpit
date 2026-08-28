@@ -17,12 +17,14 @@
 
 import { rankIndex, type Nemesis, type Rank } from '../nemesis/Nemesis';
 import {
+  GOD_AI_KINDS,
   MYTH_PRIORITY,
   defaultAISettings,
   emptyAIContent,
   type AIImageProvider,
   type AIMode,
   type AIRequest,
+  type AIRequestKind,
   type AISettings,
   type AITextProvider,
   type MythEventKind,
@@ -40,6 +42,7 @@ import {
   portraitPrompt,
   tauntPrompt,
 } from './AIPromptBuilder';
+import { HarnessTextProvider, type AIHarnessConfig } from './AIHarness';
 import {
   fallbackChronicle,
   fallbackTaunts,
@@ -83,6 +86,15 @@ export class AIContentService {
   private hasGeneratedThisSession = false;
   /** Set when FULL is chosen with no connection, so the UI can prompt once. */
   needsSetupPrompt = false;
+
+  /**
+   * Generation scope. Bumped when a long-game run is begun, abandoned,
+   * reset, or replaced so in-flight results cannot land on the wrong world.
+   */
+  private scope = 1;
+  /** Presentation overlays (dossiers, beat voices, recaps). Never sim state. */
+  private overlays = new Map<string, string>();
+  private harness: AITextProvider | null = null;
 
   constructor() {
     this.text = new BackendTextProvider(this.backend);
@@ -147,7 +159,9 @@ export class AIContentService {
   }
 
   private provider(): AITextProvider {
-    return this.settings.mode === 'off' ? this.nullText : this.text;
+    if (this.settings.mode === 'off') return this.nullText;
+    if (this.harness) return this.harness;
+    return this.text;
   }
 
   private imageProvider(): AIImageProvider {
@@ -326,6 +340,7 @@ export class AIContentService {
     const facts = buildFacts(n, this.world, this.world.nameOf, trigger);
     const { system, user } = identityPrompt(facts);
 
+    const scope = this.scope;
     this.queue.enqueue({
       kind: 'identity',
       nemesisId: n.id,
@@ -335,6 +350,8 @@ export class AIContentService {
       run: async () => {
         const res = await this.provider().generate(system, user, { maxTokens: 24 });
         if (!res.ok) throw new Error(res.error);
+        if (scope !== this.scope) return;
+        if (this.key(n, 'identity') !== key) return;
         const title = this.validateTitle(res.text, n);
         if (!title) throw new Error('rejected');
         this.textCache.set(key, title, user);
@@ -367,6 +384,7 @@ export class AIContentService {
     const facts = buildFacts(n, this.world, this.world.nameOf, trigger);
     const { system, user } = tauntPrompt(facts);
 
+    const scope = this.scope;
     this.queue.enqueue({
       kind: 'taunt',
       nemesisId: n.id,
@@ -376,6 +394,8 @@ export class AIContentService {
       run: async () => {
         const res = await this.provider().generate(system, user, { maxTokens: 120 });
         if (!res.ok) throw new Error(res.error);
+        if (scope !== this.scope) return;
+        if (this.key(n, 'taunt') !== key) return;
         const lines = this.validateTaunts(res.text, n);
         if (!lines.length) throw new Error('rejected');
         this.textCache.set(key, lines.join('\n'), user);
@@ -408,6 +428,7 @@ export class AIContentService {
     const facts = buildFacts(n, this.world, this.world.nameOf, trigger);
     const { system, user } = chroniclePrompt(facts);
 
+    const scope = this.scope;
     this.queue.enqueue({
       kind: 'chronicle',
       nemesisId: n.id,
@@ -417,6 +438,8 @@ export class AIContentService {
       run: async () => {
         const res = await this.provider().generate(system, user, { maxTokens: 220 });
         if (!res.ok) throw new Error(res.error);
+        if (scope !== this.scope) return;
+        if (this.key(n, 'chronicle') !== key) return;
         const summary = this.validateChronicle(res.text, n);
         if (!summary) throw new Error('rejected');
         this.textCache.set(key, summary, user);
@@ -450,6 +473,7 @@ export class AIContentService {
       const facts = buildFacts(n, this.world, this.world.nameOf, trigger);
       const prompt = portraitPrompt(facts);
 
+      const scope = this.scope;
       this.queue.enqueue({
         kind: 'portrait',
         nemesisId: n.id,
@@ -459,6 +483,8 @@ export class AIContentService {
         run: async () => {
           const res = await this.imageProvider().generate(prompt);
           if (!res.ok || !res.dataUrl) throw new Error(res.error || 'no image');
+          if (scope !== this.scope) return;
+          if (this.key(n, 'portrait') !== key) return;
           await this.portraits.set(key, res.dataUrl);
           this.adoptPortrait(n, key, prompt, this.titleFor(n), false);
           this.noteFirst();
@@ -490,6 +516,97 @@ export class AIContentService {
     if (this.hasGeneratedThisSession) return;
     this.hasGeneratedThisSession = true;
     this.events.onFirstGeneration?.();
+  }
+
+  /* ============================================================
+     long-game expression — same queue, same cache, never sim state
+     ============================================================ */
+
+  get generationScope(): number {
+    return this.scope;
+  }
+
+  /**
+   * Call when a long-game run begins, is abandoned, or is replaced.
+   * Pending god-layer jobs are dropped; in-flight results are discarded on
+   * arrival because their captured scope no longer matches.
+   */
+  invalidateGodWork(): void {
+    this.scope++;
+    this.queue.dropPending((t) => GOD_AI_KINDS.has(t.kind));
+  }
+
+  /** Wipe every pending request (save reset / world wipe). */
+  invalidateAllWork(): void {
+    this.scope++;
+    this.queue.dropPending();
+    this.overlays.clear();
+  }
+
+  /** Test-only: swap the text provider. Pass null to restore the real one. */
+  installHarness(cfg: AIHarnessConfig | null): void {
+    this.harness = cfg ? new HarnessTextProvider(cfg) : null;
+    this.events.onStatusChange?.();
+  }
+
+  peekOverlay(key: string): string | null {
+    return this.overlays.get(key) ?? this.textCache.get(key);
+  }
+
+  overlayCount(): number {
+    return this.overlays.size;
+  }
+
+  /**
+   * Fire-and-forget text for a long-game presentation slot. Always returns
+   * immediately. Cached hits are adopted without a request. Callers must
+   * supply a validator that returns '' to reject.
+   */
+  expressText(opts: {
+    kind: AIRequestKind;
+    subjectId: string;
+    label: string;
+    cacheKey: string;
+    priority: number;
+    system: string;
+    user: string;
+    maxTokens: number;
+    validate: (raw: string) => string;
+  }): void {
+    if (!this.canText('chronicles')) return;
+    if (this.overlays.has(opts.cacheKey)) return;
+
+    const cached = this.textCache.get(opts.cacheKey);
+    if (cached) {
+      this.overlays.set(opts.cacheKey, cached);
+      this.queue.noteCacheHit(opts.kind, opts.subjectId, opts.label, opts.cacheKey);
+      this.events.onContentReady?.(opts.subjectId, opts.kind);
+      return;
+    }
+    if (this.queue.has(opts.cacheKey)) return;
+    if (opts.priority < 70 && this.queue.queuedCount >= 8) return;
+
+    const scope = this.scope;
+    const key = opts.cacheKey;
+    this.queue.enqueue({
+      kind: opts.kind,
+      nemesisId: opts.subjectId,
+      label: opts.label,
+      priority: opts.priority,
+      cacheKey: key,
+      run: async () => {
+        const res = await this.provider().generate(opts.system, opts.user, { maxTokens: opts.maxTokens });
+        if (!res.ok) throw new Error(res.error);
+        if (scope !== this.scope) return;
+        const text = opts.validate(res.text);
+        if (!text) throw new Error('rejected');
+        this.textCache.set(key, text, opts.user);
+        this.overlays.set(key, text);
+        this.noteFirst();
+        this.events.onContentReady?.(opts.subjectId, opts.kind);
+        this.events.onDirty?.();
+      },
+    });
   }
 
   /* ============================================================
@@ -591,24 +708,30 @@ export class AIContentService {
     backendReachable: boolean;
   } {
     const s = this.backend.status;
+    const harnessOn = Boolean(this.harness);
     return {
-      provider: s.provider,
-      connected: s.connected,
-      verified: s.verified,
+      provider: harnessOn ? this.harness!.name : s.provider,
+      connected: harnessOn ? this.harness!.isAvailable() : s.connected,
+      verified: harnessOn ? this.harness!.isAvailable() : s.verified,
       mode: this.settings.mode,
       queued: this.queue.queuedCount,
       active: this.queue.activeCount,
       cachedText: this.textCache.size,
       cachedPortraits: this.portraits.count,
       last: this.queue.last,
-      error: s.error,
-      backendReachable: this.backend.reachable,
+      error: harnessOn ? '' : s.error,
+      backendReachable: harnessOn ? true : this.backend.reachable,
     };
   }
 
   /** Indicator colour state. */
   indicator(): 'off' | 'idle' | 'busy' | 'error' {
     if (this.settings.mode === 'off') return 'off';
+    if (this.harness) {
+      if (!this.harness.isAvailable()) return 'error';
+      if (this.queue.busy) return 'busy';
+      return 'idle';
+    }
     const s = this.backend.status;
     if (!s.connected) return 'error';
     if (this.queue.busy) return 'busy';
@@ -618,6 +741,7 @@ export class AIContentService {
 
   clearCaches(): void {
     this.textCache.clear();
+    this.overlays.clear();
     void this.portraits.clear();
     this.events.onStatusChange?.();
   }

@@ -6,7 +6,7 @@
 import { PowerSet, type PowerId } from '../data/abilities';
 import type { PlayerHabits } from '../core/SaveSystem';
 import { PLAYER, RANGED, HEAL_ECON } from '../data/balance';
-import { RUN_STATS, RUN_STAT_MAP, statValue, formatStat, type RunStatId, type RunStatDef } from '../data/stats';
+import { RUN_STATS, RUN_STAT_MAP, statValue, formatStat, STAT_TIPS, type RunStatId, type RunStatDef } from '../data/stats';
 import type { RunState } from '../run/RunState';
 
 export const BASE_MAX_HP = 100;
@@ -46,7 +46,29 @@ export class PlayerStats {
   stat(id: RunStatId): number {
     const def = RUN_STAT_MAP.get(id);
     if (!def) return 1;
-    return statValue(def, this.statBoons.get(id) ?? 0);
+    let v = statValue(def, this.statBoons.get(id) ?? 0) + (this.gearAdd.get(id) ?? 0);
+    if (def.max !== undefined) {
+      if (def.step >= 0) v = Math.min(def.max, v);
+      else v = Math.max(0.35, v);
+    }
+    return v;
+  }
+
+  private gearAdd = new Map<RunStatId, number>();
+
+  addGearStat(id: RunStatId, add: number): void {
+    this.gearAdd.set(id, (this.gearAdd.get(id) ?? 0) + add);
+    if (id === 'maxHp') {
+      this.maxHp = this.baseMaxHp + this.stat('maxHp');
+    }
+  }
+
+  clearGear(): void {
+    this.gearAdd.clear();
+    this.armorIncomingMul = 1;
+    this.brokenMask = false;
+    this.ashenEye = false;
+    this.varkMask = false;
   }
 
   statCount(id: RunStatId): number {
@@ -76,11 +98,11 @@ export class PlayerStats {
   }
 
   /** Everything the stats page shows. */
-  statList(): Array<{ def: RunStatDef; value: number; count: number; text: string }> {
+  statList(): Array<{ def: RunStatDef; value: number; count: number; text: string; tip: string }> {
     return RUN_STATS.map((def) => {
       const count = this.statBoons.get(def.id) ?? 0;
-      const value = statValue(def, count);
-      return { def, value, count, text: formatStat(def, value) };
+      const value = this.stat(def.id);
+      return { def, value, count, text: formatStat(def, value), tip: STAT_TIPS[def.id] ?? def.desc };
     });
   }
 
@@ -130,6 +152,12 @@ export class PlayerStats {
   /** currently equipped weapon id */
   weaponId = 'sword';
 
+  /** compiled from skill tree + gear (incoming damage mul) */
+  armorIncomingMul = 1;
+  brokenMask = false;
+  ashenEye = false;
+  varkMask = false;
+
   /** run scoring */
   runKills = 0;
   runNamedKills = 0;
@@ -164,6 +192,11 @@ export class PlayerStats {
     this.speedBuff = 0;
     this.speedBuffTime = 0;
     this.weaponId = weaponId;
+    this.gearAdd.clear();
+    this.armorIncomingMul = 1;
+    this.brokenMask = false;
+    this.ashenEye = false;
+    this.varkMask = false;
     this.runKills = 0;
     this.runNamedKills = 0;
     this.essence = 0;
@@ -195,8 +228,9 @@ export class PlayerStats {
 
   /** Incoming damage multiplier. */
   defenceMultiplier(): number {
-    let m = 1;
+    let m = 1 * this.armorIncomingMul;
     if (this.powers.has('glass')) m *= 1.3;
+    if (this.powers.has('last_stand') && this.maxHp > 0 && this.hp / this.maxHp <= 0.3) m *= 0.55;
     for (const t of this.stolenTraits) {
       if (t === 'iron_hide') m *= 0.92;
       if (t === 'thick_plate') m *= 0.95;

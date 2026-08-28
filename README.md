@@ -2,11 +2,24 @@
 
 A minimalist 3D nemesis roguelite. Three.js + TypeScript + Vite, no other runtime dependencies.
 
-You fight your way through one compact region held by a hierarchy of named enemies. The enemies are
-persistent: they have names, faces, grudges, scars and opinions about you, and they keep existing
-whether you are alive or not. When you die the world takes a turn without you — duels are fought,
-captains are promoted, allies are betrayed, and some of the people you killed decide they were not
-finished. Then you come back and find out what changed.
+There are two ways to play the same world.
+
+**THE LONG GAME** is the main one, and you are not in it. You are the thing arranging it. A
+region of named characters wants things — to climb, to be safe, to answer somebody for
+something — and every cycle they each weigh everything they could do and do the thing that
+scores highest. You never move any of them. You spend Influence on conditions: a price on a
+head, a rumour in an ear, steel in a hand, a blessing, a wound closed. Then time passes and
+you find out what people did with what you left lying around. Every intervention raises Chaos,
+and a world you have handled too much stops being one you can predict.
+
+**DESCEND ALONE** is the third-person game: you fight your way through the same region yourself.
+It is also available from inside the long game, as the most expensive intervention there is —
+you put yourself in the world for one confrontation, and the cycles keep turning without you.
+
+Either way the enemies are persistent: they have names, faces, grudges, scars and opinions about
+you, and they keep existing whether you are alive or not. When you die the world takes a turn
+without you — duels are fought, captains are promoted, allies are betrayed, and some of the
+people you killed decide they were not finished. Then you come back and find out what changed.
 
 Nothing here is derived from any existing game's characters, names, art, text, or code. The names,
 titles, personalities, traits, dialogue, areas and systems are all original to this project.
@@ -28,11 +41,22 @@ npm run build      # typecheck + production bundle into dist/
 npm run preview    # serve the production build on :4173 (includes /api/ai)
 npm run serve      # same thing from a plain node server, no vite
 
-npm test               # 44-check headless playtest
-npm run test:depth     # save v2 / Heat / Remnants / sim hooks
-npm run test:backend   # 29-check AI backend security suite
-npm run test:ai        # 75-check AI + nemesis continuity suite
-npm run test:ai-success # 31-check AI success path (needs preview:mock)
+# Browser suites need a preview server and Chromium:
+#   npm run build && npx vite preview --port 4173
+# Chromium resolution: PLAYWRIGHT_CHROMIUM, then Playwright's install,
+# then platform fallbacks. If none: npx playwright install chromium
+
+npm test               # headless playtest (tools/playtest.mjs)
+npm run test:god       # THE LONG GAME vertical slice (75 checks)
+npm run test:emergence # do stories actually emerge? (accelerated runs)
+npm run test:depth     # save migrate / Heat / Remnants / sim hooks
+npm run test:story     # story graph, recap, Web
+npm run test:combat    # combat QA tests 1–5
+npm run test:anim      # animation arena
+npm run test:slice     # Tower Commander vertical slice
+npm run test:backend   # AI backend security suite
+npm run test:ai        # AI + nemesis continuity suite
+npm run test:ai-success # AI success path (needs preview:mock)
 ```
 
 Desktop browsers, keyboard + mouse. The game asks for pointer lock when a run starts; press `Esc`
@@ -70,7 +94,42 @@ early during recovery or a stagger still comes out.
 
 ---
 
-## The loop
+## The long game
+
+1. **OBSERVE.** The board shows the handful of things about to matter — a grudge that has been
+   held long enough to act on, a house one bad cycle from coming apart, somebody climbing faster
+   than they should be able to. Not the simulation; the parts of it that are load-bearing.
+2. **INTERFERE.** Spend Influence. Twelve interventions, and every one of them writes a
+   *condition* rather than a result: `BLESS`, `CURSE`, `PUT STEEL IN THEIR HAND`, `WHISPER`,
+   `PRICE THEIR HEAD`, `REVEAL`, `PROVOKE`, `MEND`, `RAISE`, `CALAMITY`, `DESCEND`, and two more
+   you unlock. A bounty makes killing somebody worth doing; it does not make anyone go, and it
+   certainly does not make them win.
+3. **SIMULATE.** Every living character scores every option it has out of the same eight
+   components — personality, relationships, memory, needs, danger, opportunity, ambition, and a
+   noise term that widens with Chaos — and does the one that wins. Fights resolve blow by blow
+   using the real weapon, attack and trait tables.
+4. **CONSEQUENCES.** The feed turns it into sentences, at four priority levels so a cycle that
+   produced twelve things does not shout twelve times.
+5. **ESCALATE.** Four acts. By the last one something in the world has grown past it — a warlord,
+   a legend nobody can kill, a thing out of the ground, a war that cannot end, or somebody who has
+   worked out that they are being handled. You cannot touch it. You have to arrange for someone
+   who can.
+6. **RUN END.** Up to three characters go into the **Book of Legends** with their deeds, their
+   scars, what killed them and what they thought of you — and each leaves one thing behind in the
+   next world: a relic, a descendant, a rumour, an inherited grudge, or a title somebody else is
+   now wearing. Unlocks are new verbs and new starting worlds, never bigger numbers.
+
+**Learning it.** The first run walks you through one cycle in six steps, each waiting on something
+you actually do rather than on a timer, and it ends by pointing out that your intervention may not
+have worked. After that, one short lesson at most per cycle, the first time a thing becomes real —
+what chaos costs, why a grudge gets louder, what it means when somebody you were propping up loses
+anyway. And permanently, on every consequence in the feed: **WHY**, which opens the actual reasoning
+the character used, including which of your own marks were sitting on the table. `THE PRIMER` on the
+title screen is the same rules on one page. `SKIP TUTORIALS` in the pause menu switches all of it off.
+
+`docs/GOD_LAYER.md` is the map of `src/god/`.
+
+## The descent loop
 
 1. A run starts in **THE PIT** with your base weapon and no powers.
 2. You explore six connected areas, kill things, and take powers from shrines and from captains you
@@ -153,6 +212,10 @@ Twenty run-scoped powers, all mechanical rather than percentage bumps — `BLINK
 
 ```
 src/
+  god/       THE LONG GAME — GodRun (the cycle), Autonomy + Utility + Actions (the simulation),
+             Duel + Combatant (headless combat off the real tables), Interventions + Conditions
+             (the player's only reach into it), Influence, Factions, Arc, Crisis, Situations,
+             Feed, Legends, Unlocks
   core/      Game.ts (wiring + UI state machine), GameLoop, Input, SaveSystem, EventBus, Events, RNG
   world/     Arena (geometry + collision), World (run director), WorldSimulation, WorldEvent
   nemesis/   Nemesis (model), NemesisManager (roster + hierarchy), Generator, Appearance,
@@ -163,7 +226,7 @@ src/
   camera/    ThirdPersonCamera
   abilities/ AbilityManager
   ui/        HUD, HierarchyScreen, DeathReport, NemesisIntro, TitleScreen, PowerSelect,
-             PauseScreen, DebugOverlay, Dom
+             PauseScreen, DebugOverlay, GodScreen, LegendsScreen, Dom
   audio/     AudioManager (fully synthesised, no assets)
   fx/        Particles
   data/      traits, abilities, personalities, names, dialogue, weapons, areas, ages
@@ -205,8 +268,7 @@ npx vite preview --port 4173 &
 node tools/playtest.mjs
 ```
 
-It boots the real build in headless Chromium, drives actual keyboard and mouse input, and asserts 40
-things: movement, each combat action, damage, the power offer, the hierarchy and chronicle screens,
+It boots the real build in headless Chromium (see `tools/browser.mjs` for path resolution), drives actual keyboard and mouse input, and asserts the major loop: movement, each combat action, damage, the power offer, the hierarchy and chronicle screens,
 the full death → world turn → report → next run flow, the Overlord → succession → new Age flow,
 save persistence across reload, and a 120-turn simulation stress run (no errors, roster stays
 populated, promotions happen, the crown changes hands, some enemies return, betrayals occur). It
@@ -227,7 +289,14 @@ Three more suites cover the AI layer:
   chronicles, portraits, caching and portrait evolution are tested without a key or a bill. Run the
   server with `npm run preview:mock` first.
 
-Together: 179 checks.
+`tools/godtest.mjs` walks the long game's vertical slice and its teaching layer end to end — a run starts, the board
+surfaces situations, an intervention charges both resources and provably changes no outcome, time
+advances, characters decide for themselves, fights happen, people die and come back, memory turns
+into intent, a crisis emerges from the simulation, the run ends, somebody reaches the Book, and the
+next run inherits it. `tools/emergence.mjs` runs many accelerated runs and reports how often each of
+the eight target story patterns occurred.
+
+Together: 179 + 99 checks, plus the emergence probe.
 
 ---
 
@@ -310,7 +379,19 @@ Nothing outside `src/ai/` names a vendor.
 
 Named enemies can offer a **Vendetta** — one optional personal objective with a previewed reward. **Heat** is the readable pursuit meter; thresholds telegraph hunters and lockdowns, never spawning on top of you. **Remnants** are a run-only drop (not Essence): heal (vulnerable), reroll offers, pay extraction, or block a fake death. Territories impose **one law** from the current holder; liberation is temporary and the law follows the new holder after simulation. After a named victory you pick **one** reward derived from their real traits. Mercy, tribute, humiliation and betrayal are available when a named foe is broken and the fight is safe enough. Weapons are sidegrades with unlockable **techniques**. Power **families** and up to three **reactions** change verbs, not just numbers.
 
-AI remains optional and presentation-only. Saves are version **2**; v1 worlds migrate with defaults.
+AI remains optional and presentation-only. Saves are version **7**; older worlds migrate with defaults.
+
+### Tower Commander vertical slice (human playtest)
+
+1. `npm run build && npx vite preview --port 4173`, then play or `npm run test:slice`.
+2. New world → first minutes should teach move/strike from a prompt (pause **SKIP TUTORIALS** / **REPLAY TUTORIALS**). **NOW** panel lists Vendetta, holder law, stolen steel — not every system.
+3. F1 **TOWER SLICE** (or `__sim('verticalSlice')`): a named Commander holds THE TOWER, a loyalist guards them, your spear is stolen, a Vendetta is live, Heat is up. Beacon and banners follow the holder. **THE RING** labels the spire.
+4. Fight: Duelist feints; Commander **order pulse** / weaker when isolated; summoned grunts do not farm Essence. Skills `1`/`2`, ultimate `3`/`G` (`spectral_guard`, `hunters_brand`, `shadow_snare`, `living_weapon`, `last_defiance`, `pit_eruption`).
+5. Outcome / **NEMESIS TROPHY** then **RUN POWER**. Death recap is four beats plus a hook; Skip jumps to Continue. Full chronicle is Hierarchy TIME.
+
+### Wave C leftovers (not this pass)
+
+Gamepad adapter, HUD scale / colorblind / assist options, pruning redundant PowerId grants, extracting Tutorial/Reward/Recap controllers from `Game.ts`, lazy-loading AI/Web/F1 extras, remaining five territories via `docs/TERRITORY_PASS.md`.
 
 ### Extension points
 
@@ -337,9 +418,10 @@ It cannot display the API key, because the key is not in the browser.
 
 ## Save data
 
-One versioned JSON blob in `localStorage` under `shdowpit.world.v1` (`saveVersion` 2). It holds the
+One versioned JSON blob in `localStorage` under `shdowpit.world.v1` (`saveVersion` 7). It holds the
 roster, appearance seeds, memory, relationships, hierarchy, territories, liberation mods, event log, world turn and
-Age, player meta (Essence, Vigour cap 30, techniques, Vendetta history), optional mid-run snapshot, and settings. Unknown or
+Age, player meta (Essence, Vigour cap 30, techniques, Vendetta history), optional mid-run snapshot, the
+suspended long-game run, the Book of Legends, the god-layer unlocks, and settings. Unknown or
 missing fields are filled by `SaveSystem.migrate()` rather than crashing, and a corrupt save is
 archived aside instead of silently destroyed.
 
@@ -347,8 +429,9 @@ archived aside instead of silently destroyed.
 
 ## Where to take it next
 
+Wave C from the Tower slice plan: gamepad, accessibility, progression prune, architecture extract from `Game.ts`, bundle split, other territories.
+
 - Gamepad input: `Input` already routes everything through named actions, so this is one adapter.
-- More weapons and archetypes — the data tables are the only thing that needs to grow.
-- Enemy-vs-enemy encounters are in (rivals attack each other on sight, loyalists guard masters);
-  they could carry more staging.
+- More weapons — the data tables are the only thing that needs to grow.
+- Remaining areas follow `docs/TERRITORY_PASS.md`.
 - Body-part damage or a stance system would deepen combat without touching the nemesis layer.

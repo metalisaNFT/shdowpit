@@ -22,9 +22,14 @@ export interface HudWorldInfo {
   heat?: number;
   heatLabel?: string;
   remnants?: number;
+  essence?: number;
   vendetta?: string;
   territory?: string;
   holderName?: string;
+  purpose?: string[];
+  showPurpose?: boolean;
+  inCombat?: boolean;
+  tutorial?: { title: string; body: string; glyphs: string } | null;
   landmarks?: Array<{ x: number; z: number }>;
   areaColors?: Record<string, string>;
 }
@@ -39,6 +44,8 @@ export class HUD {
 
   private areaLabel = el('div', 'hud-tl');
   private worldLabel = el('div', 'hud-tr');
+  private purpose = el('div', 'hud-purpose');
+  private tutorialBox = el('div', 'hud-tutorial hidden');
 
   private plate = div('panel hidden');
   private plateName = div('tname');
@@ -67,6 +74,7 @@ export class HUD {
 
   private banner = div('hidden');
   private bannerTimer = 0;
+  private nextEl = div('overlay-next hidden');
 
   private minimap = el('canvas');
   private mmCtx: CanvasRenderingContext2D | null;
@@ -109,7 +117,7 @@ export class HUD {
     this.root.append(br);
 
     /* corners */
-    this.root.append(this.areaLabel, this.worldLabel);
+    this.root.append(this.areaLabel, this.worldLabel, this.purpose, this.tutorialBox, this.nextEl);
 
     /* target plate */
     this.plate.id = 'target-plate';
@@ -154,6 +162,10 @@ export class HUD {
     show(this.minimap, v);
   }
 
+  setScale(scale: number): void {
+    this.root.style.setProperty('--hud-local-scale', String(scale));
+  }
+
   /* ============================================================
      per-frame
      ============================================================ */
@@ -181,7 +193,7 @@ export class HUD {
     this.lastHp = frac;
 
     const sf = player.stats.surgeFrac;
-    show(this.surgeWrap, true);
+    show(this.surgeWrap, sf > 0.001 || player.stats.surgeMax <= 0);
     this.surgeFill.style.transform = `scaleX(${sf})`;
     this.surgeWrap.classList.toggle('full', sf >= 0.995);
     if (sf >= 0.995 && !this.lastSurgeFull) this.surgeWrap.classList.add('ready-flash');
@@ -204,15 +216,30 @@ export class HUD {
     }
 
     this.areaLabel.innerHTML = `${world.areaName}<br><span style="opacity:.6">${world.ageName}</span>`;
-    this.worldLabel.innerHTML =
-      `AGE <b>${world.age}</b> &nbsp; TURN <b>${world.turn}</b><br>` +
-      `OVERLORD <b>${world.overlordName || '—'}</b><br>` +
-      `KILLS <b>${player.stats.runKills}</b>` +
-      (world.heat !== undefined ? `<br>HEAT <b>${Math.round(world.heat)}</b> ${world.heatLabel ?? ''}` : '') +
-      (world.remnants !== undefined ? `<br>REMNANTS <b>${world.remnants}</b>` : '') +
-      (world.vendetta ? `<br>${world.vendetta}` : '') +
-      (world.holderName ? `<br>HELD BY <b>${world.holderName}</b>` : '') +
-      (world.territory ? `<br>${world.territory}` : '');
+    if (world.inCombat) {
+      this.worldLabel.innerHTML = world.heat !== undefined ? `HEAT <b>${Math.round(world.heat)}</b> ${world.heatLabel ?? ''}` : '';
+    } else {
+      this.worldLabel.innerHTML =
+        (world.heat !== undefined ? `HEAT <b>${Math.round(world.heat)}</b> ${world.heatLabel ?? ''}<br>` : '') +
+        (world.remnants !== undefined ? `REMNANTS <b>${world.remnants}</b> <span style="opacity:.55">run</span><br>` : '') +
+        (world.essence !== undefined ? `ESSENCE <b>${world.essence}</b> <span style="opacity:.55">keep</span>` : '');
+    }
+    const lines = world.showPurpose === false ? [] : world.purpose ?? [];
+    if (lines.length) {
+      this.purpose.innerHTML = `<div class="hud-label">NOW</div>${lines.map((l) => `<div>${l}</div>`).join('')}`;
+      this.purpose.classList.remove('hidden');
+    } else {
+      this.purpose.classList.add('hidden');
+    }
+    if (world.tutorial) {
+      this.tutorialBox.classList.remove('hidden');
+      const body = world.tutorial.body
+        ? `<div class="ttitle">${world.tutorial.body}</div>`
+        : '';
+      this.tutorialBox.innerHTML = `<div class="tname">${world.tutorial.title}</div>${body}<div class="tmeta">${world.tutorial.glyphs}</div>`;
+    } else {
+      this.tutorialBox.classList.add('hidden');
+    }
 
     this.updateTargetPlate(target);
 
@@ -243,8 +270,13 @@ export class HUD {
       this.plateTitle.textContent = n.title;
       const rel = relationshipLabel(n);
       const bits: string[] = [rankName(n.rank), `LVL ${n.level}`];
-      if (rel) bits.push(rel);
+      const steel = n.stolen.find((s) => s.kind === 'weapon');
+      if (steel) bits.push(`HAS YOUR ${steel.name}`);
+      else if (rel) bits.push(rel);
       else if (n.killsAgainstPlayer > 0) bits.push(`KILLED YOU ${n.killsAgainstPlayer}`);
+      if (n.signatureKnown && n.signatureId && n.signatureId !== 'none') {
+        bits.push(n.signatureId.replace(/_/g, ' ').toUpperCase());
+      }
       this.plateMeta.textContent = bits.join('  ·  ');
       this.plateName.style.color = accentColorFor(n);
     } else {
@@ -287,7 +319,19 @@ export class HUD {
       (elSlot.querySelector('.skill-bind') as HTMLElement).textContent = s.bind;
       (elSlot.querySelector('.skill-name') as HTMLElement).textContent = s.name;
       (elSlot.querySelector('.skill-icon') as HTMLElement).textContent =
-        s.slot === 'ultimate' ? '◆' : s.id === 'shadow_step' ? '⇢' : s.id === 'void_grasp' ? '☍' : '▽';
+        s.slot === 'ultimate'
+          ? '◆'
+          : s.id === 'shadow_step'
+            ? '⇢'
+            : s.id === 'void_grasp'
+              ? '☍'
+              : s.id === 'spectral_guard'
+                ? '▣'
+                : s.id === 'hunters_brand'
+                  ? '◉'
+                  : s.id === 'shadow_snare'
+                    ? '◌'
+                    : '▽';
     }
   }
 
@@ -299,14 +343,62 @@ export class HUD {
     }
   }
 
+  private lastToastKey = '';
+  private lastToastAt = 0;
+  private toastsEnabled = true;
+
+  setToastsEnabled(on: boolean): void {
+    this.toastsEnabled = on;
+  }
+
   toast(text: string, tone: 'neutral' | 'hot' | 'gold' | 'good' = 'neutral', ttl = 3.4): void {
-    const t = div(`toast ${tone === 'neutral' ? '' : tone}`.trim(), text.toUpperCase());
+    if (!this.toastsEnabled) return;
+    const key = text.toUpperCase().trim();
+    const now = performance.now();
+    // Dedupe identical / near-identical lines firing in the same beat.
+    if (key === this.lastToastKey && now - this.lastToastAt < 1000) return;
+    const prefix = key.slice(0, 28);
+    if (prefix.length >= 12 && prefix === this.lastToastKey.slice(0, 28) && now - this.lastToastAt < 700) return;
+    this.lastToastKey = key;
+    this.lastToastAt = now;
+
+    const t = div(`toast ${tone === 'neutral' ? '' : tone}`.trim(), key);
     this.toasts.append(t);
     window.setTimeout(() => {
       t.classList.add('fade-out');
       window.setTimeout(() => t.remove(), 520);
     }, ttl * 1000);
-    while (this.toasts.childElementCount > 6) this.toasts.firstElementChild?.remove();
+    while (this.toasts.childElementCount > 4) this.toasts.firstElementChild?.remove();
+  }
+
+  /**
+   * A named arrival owns the bottom-centre column. Toasts and the interact
+   * prompt live there too, so while a card is up they lift clear of it
+   * instead of printing through the nemesis's name. Nothing is dropped — the
+   * kill feed keeps running, just higher.
+   */
+  setStoryMode(on: boolean): void {
+    this.root.classList.toggle('story-centre', on);
+  }
+
+  setCombatFocus(on: boolean): void {
+    this.root.classList.toggle('combat-focus', on);
+  }
+
+  /** Dim "NEXT · …" while another overlay owns the frame. */
+  setNextOverlay(label: string | null): void {
+    if (!label) {
+      this.nextEl.textContent = '';
+      this.nextEl.classList.add('hidden');
+      return;
+    }
+    this.nextEl.textContent = `NEXT · ${label}`;
+    this.nextEl.classList.remove('hidden');
+  }
+
+  /** True while the area banner owns the centre of the screen. */
+  get bannerActive(): boolean {
+    return this.bannerTimer > 0;
   }
 
   setPrompt(text: string | null): void {

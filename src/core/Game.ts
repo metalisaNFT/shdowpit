@@ -16,21 +16,34 @@ import { World, type ArrivalContext } from '../world/World';
 import { makeEvent } from '../world/WorldEvent';
 import type { WorldEvent } from '../world/WorldEvent';
 import { composeRunRecap, composeWorldTurnRecap } from '../story/StoryRecap';
+import {
+  encounterHeadlineFor,
+  observeEncounter,
+  observeRecapBeats,
+  recapBeatLineFor,
+} from '../story/StoryAI';
 import { runStorySelfTest, formatStorySelfTest } from '../story/StorySelfTest';
+import { runWiringSelfTest, formatWiringSelfTest } from './WiringSelfTest';
 import { inspectArc, inspectEdge, inspectNode, inspectRecap } from '../story/StoryInspector';
 import { buildStoryModel } from '../story/StoryModel';
 import { simulateTurn, simulateSuccession } from '../world/WorldSimulation';
 import { heatLabel, addHeat } from '../world/Heat';
+import { applyVerticalSlice } from '../world/VerticalSlice';
+import { TutorialController, markTutorial, tutorialDone, type TutorialId } from './Tutorial';
 
 import { NemesisManager } from '../nemesis/NemesisManager';
 import { fullName, rankIndex, type Archetype, type Nemesis, type Rank, type WeaponType } from '../nemesis/Nemesis';
 import { recomputePower } from '../nemesis/NemesisGenerator';
-import { applyScar, remember } from '../nemesis/NemesisMemory';
+import { applyScar, remember, SCAR_NAMES } from '../nemesis/NemesisMemory';
 import { breakBond, makeRivals } from '../nemesis/NemesisRelationships';
 import { NemesisEncounterDirector, aidCallout, betrayalCallout, duelCallout } from '../nemesis/NemesisEncounterDirector';
 import { classifyEncounter, type EncounterKind } from '../nemesis/EncounterKind';
-import { encounterLine } from '../nemesis/EncounterCopy';
+import { encounterLine, relationshipLabel } from '../nemesis/EncounterCopy';
 import { rankName } from '../nemesis/NemesisManager';
+import { accentColorFor } from '../nemesis/NemesisAppearance';
+import { signatureDef, signatureEventMatches } from '../data/signatures';
+import { CONDITION_LABEL } from '../god/Conditions';
+import { liberationRewardFor, type TerritoryPresentation } from '../world/TerritoryRules';
 
 import { Player } from '../player/Player';
 import { Enemy } from '../enemy/Enemy';
@@ -44,6 +57,7 @@ import { crossedFootstep, buildAttackTimeline } from '../anim/AnimEvents';
 import { AudioManager } from '../audio/AudioManager';
 
 import { HUD } from '../ui/HUD';
+import { decideOverlays } from '../ui/OverlayGate';
 import { TitleScreen } from '../ui/TitleScreen';
 import { HierarchyScreen } from '../ui/HierarchyScreen';
 import { DeathReport } from '../ui/DeathReport';
@@ -51,31 +65,101 @@ import { NemesisIntro } from '../ui/NemesisIntro';
 import { ChoiceOverlay } from '../ui/ChoiceOverlay';
 import { PowerSelect } from '../ui/PowerSelect';
 import { PauseScreen } from '../ui/PauseScreen';
-import { DebugOverlay, type DebugHooks } from '../ui/DebugOverlay';
+import { DebugOverlay, type DebugHooks, type GodDebugState } from '../ui/DebugOverlay';
 import { AIStatus } from '../ui/AIStatus';
+import { BuildScreen } from '../ui/BuildScreen';
+import { ComicViewer } from '../ui/ComicViewer';
+import { ComicService } from '../comic/ComicService';
+import type { ComicQualityProfileId } from '../comic/Types';
+
+import { GodRun } from '../god/GodRun';
+import { addChaos, chaosTier } from '../god/Influence';
+import { livingFactions } from '../god/Factions';
+import {
+  beatKey,
+  beatVoiceFor,
+  crisisVoiceFor,
+  dossierFor,
+  dossierKey,
+  legendKey,
+  legendVoiceFor,
+  mechanicalSnapshot,
+  observeEnding,
+  observeGodBeats,
+  observeInspect,
+  observeAftermath,
+  observeSituations,
+  aftermathLinkFor,
+  situationVoiceFor,
+  recapKey,
+  recapLineFor,
+} from '../god/GodAI';
+import { GodScreen } from '../ui/GodScreen';
+import { PrimerScreen } from '../ui/GodTutorial';
+import { Guide, STEP_COUNT, STEP_ORDER, pickLesson, type GuideEvent, type Lesson } from '../god/Teaching';
+import { LegendsScreen, RunEndScreen } from '../ui/LegendsScreen';
+import { BEAT_RANK, simOf, type Beat, type RunOutcome } from '../god/GodTypes';
 
 import { AIContentService } from '../ai/AIContentService';
 import type { MythEventKind } from '../ai/AITypes';
 
 import { type PowerDef, type PowerId } from '../data/abilities';
 import { getArea } from '../data/areas';
+import { chooseTitle } from '../data/names';
 import { rollPowerOffers, rollUncappedStats } from '../abilities/OfferRoller';
 import { activeReactions, potentialReactions } from '../abilities/Reactions';
 import { AbilityRuntime, type FailReason } from '../abilities/AbilityRuntime';
-import { DEFAULT_LOADOUT, getSkill, isUnlockableSkill, profileFor, STARTING_SKILLS, type SkillId } from '../data/skills';
-import { factsFromNemesis, rollVendetta, applyVendettaProgress, vendettaHud } from '../nemesis/Vendetta';
+import { DEFAULT_LOADOUT, getSkill, isUltimateSkill, isUnlockableSkill, profileFor, STARTING_SKILLS, weaponFamily, type SkillId } from '../data/skills';
+import { factsFromNemesis, rollVendetta, applyVendettaProgress, vendettaHud, applyVendettaRewardKind, adaptationHabitFor, type VendettaInstance } from '../nemesis/Vendetta';
 import { nemesisRewardChoices } from '../nemesis/NemesisRewards';
 import { outcomeOptions, type OutcomeId } from '../nemesis/EncounterOutcomes';
-import { liberationRewardFor } from '../world/TerritoryRules';
 import { HEAT, HEAL_ECON, REMNANT, EXTRACT, OUTCOME } from '../data/balance';
 import { RELIC_WEAPONS } from '../data/weapons';
 import { getPersonality } from '../data/personalities';
 import { traitName } from '../data/traits';
 import { RUN_STATS, formatStat, statValue, type RunStatId } from '../data/stats';
 import { ATTACK_MAP } from '../data/attacks';
+import type { DamageInfo } from '../combat/Types';
+import { canProc } from '../combat/ProcRules';
 import { DebugDraw } from '../fx/DebugDraw';
+import {
+  addMastery,
+  applyBuildToStats,
+  ensureStarterGear,
+  equipItem,
+  grantCinders,
+  mint,
+  runLootChoices,
+  syncLegacyWeapons,
+  unlockNode,
+  respecTree,
+} from '../progress/Progression';
+import type { ItemDef } from '../data/equipment';
+import { SKILL_NODE_MAP } from '../data/skillTree';
 
-type Mode = 'title' | 'playing' | 'paused' | 'hierarchy' | 'report' | 'power' | 'dying' | 'choice';
+type Mode =
+  | 'title'
+  | 'playing'
+  | 'paused'
+  | 'hierarchy'
+  | 'report'
+  | 'power'
+  | 'dying'
+  | 'choice'
+  | 'build'
+  /** THE LONG GAME: the god layer's board */
+  | 'god'
+  | 'legends'
+  | 'godend';
+
+/** Seconds of unbroken calm before the optional vendetta prompt may open. */
+const VENDETTA_CALM_REQUIRED = 1.4;
+/** Seconds of play owed to the player after any offer closes. */
+const OFFER_QUIET_AFTER = 3;
+/** Named-kill rewards get this window before a comic page may open. */
+const COMIC_HOLD_AFTER_NAMED = 1.4;
+/** Drop a queued encounter recap if the player has already moved on. */
+const COMIC_EXPIRE = 8;
 
 const RELIC_ORDER = ['sunblade', 'ashfang', 'longtooth'];
 
@@ -97,6 +181,7 @@ export class Game {
   private player = new Player();
   private combat!: CombatSystem;
   private abilities = new AbilityRuntime();
+  private tutorial = new TutorialController();
   private rng = new RNG(randomSeed());
   /**
    * Presentation only. Nothing this object returns is ever written into a
@@ -118,12 +203,47 @@ export class Game {
     pause: PauseScreen;
     debug: DebugOverlay;
     aiStatus: AIStatus;
+    build: BuildScreen;
+    god: GodScreen;
+    primer: PrimerScreen;
+    legends: LegendsScreen;
+    godEnd: RunEndScreen;
+    comic: ComicViewer;
   };
 
   private mode: Mode = 'title';
+
+  /* ---- THE LONG GAME ---- */
+  private godRun: GodRun | null = null;
+  /** set while the player has DESCENDED into a third-person run from the board */
+  private descent: {
+    nemesisId: string;
+    cycle: number;
+    brief: import('../god/GodTypes').DescentBrief;
+    snapshot: {
+      alive: boolean;
+      power: number;
+      territory: string;
+      scars: number;
+      injury: number;
+      stolen: number;
+      holder: string | null;
+    };
+    playerDied: boolean;
+    extracted: boolean;
+  } | null = null;
+  /** cycle counter shown in the god screen's acceleration readout */
+  private godBusy = false;
+  private godGuide = new Guide();
+  private godLesson: Lesson | null = null;
+  private godIdleCycles = 0;
+  /** the roster screen is shared; this says where CLOSE should return to */
+  private hierarchyFromGod = false;
   private lockGrace = 0;
   private deathTimer = 0;
   private pendingKiller: Enemy | null = null;
+  /** Lines to toast in the first seconds of the next run — world turned while dead. */
+  private pendingWorldPayoff: string[] = [];
   private lockTargetUid: number | null = null;
   private debugInvulnerable = false;
   private debugInfiniteSurge = false;
@@ -132,12 +252,41 @@ export class Game {
   private debugDraw = new DebugDraw();
   /** kills needed for the next stat-boon offer — MegaBonk-style growth */
   private nextBoonKills = 7;
+  /** alternates kill-milestone offers between stat boons and run loot */
+  private runLootCycle = 0;
+  /** A vendetta offer is armed and waiting for a safe beat to open. */
+  private vendettaOfferPending = false;
+  /** Non-blocking vendetta rolled and waiting for Y/N. */
+  private vendettaOffer: VendettaInstance | null = null;
+  /** Seconds of play this run — gates early-run interruptions. */
+  private runClock = 0;
+  /** Seconds of uninterrupted calm, for the vendetta lull test. */
+  private calmTime = 0;
+  /** Seconds before another optional offer may open after one closed. */
+  private offerQuiet = 0;
+  /** Fullscreen offer waiting for intro / lull to finish. */
+  private pendingModal: { label: string; open: () => void } | null = null;
+  /** Real-time seconds of idle with no intro, before a queued modal may open. */
+  private modalCalm = 0;
   /** True between the Overlord's death and the succession report. */
   private succession = false;
   private quality: Quality;
   private lowFpsTime = 0;
   private markedUid = -1;
   private uiRoot: HTMLElement;
+  private comic!: ComicService;
+  /** True while the comic viewer owns input (overlay, not a Mode). */
+  private comicOpen = false;
+  /** Encounter recap waiting for rewards / a lull. */
+  private pendingComic: import('../comic/Types').ComicSequence | null = null;
+  /** Seconds after a named kill before a queued comic may present. */
+  private comicHold = 0;
+  /** Playing-time while a comic has been waiting. */
+  private comicAge = 0;
+  /** Seconds of empty-arena idle before a queued recap may present. */
+  private comicCalm = 0;
+  /** Vertical-slice / debug: present as soon as the intro is not busy. */
+  private comicForce = false;
 
   constructor(canvas: HTMLCanvasElement, uiRoot: HTMLElement) {
     this.uiRoot = uiRoot;
@@ -175,6 +324,12 @@ export class Game {
       pause: new PauseScreen(),
       debug: new DebugOverlay(),
       aiStatus: new AIStatus(),
+      build: new BuildScreen(),
+      god: new GodScreen(),
+      primer: new PrimerScreen(),
+      legends: new LegendsScreen(),
+      godEnd: new RunEndScreen(),
+      comic: new ComicViewer(),
     };
     for (const k of Object.keys(this.ui) as Array<keyof typeof this.ui>) {
       uiRoot.append(this.ui[k].root);
@@ -197,6 +352,7 @@ export class Game {
         this.audio.play('nemesis_betrayal', { volume: 0.45 });
       },
       onAid: (g, m) => this.ui.hud.toast(aidCallout(g.nemesis, m.nemesis), 'gold'),
+      onEnterTerritory: (areaName, p) => this.onEnterTerritory(areaName, p),
     });
 
     this.arena.scene.add(this.particles.group);
@@ -218,35 +374,65 @@ export class Game {
         onEnemyKilled: (e, executed) => this.onEnemyKilled(e, executed),
         onPlayerKilled: (killer) => this.onPlayerKilled(killer),
         onPlayerDamaged: (from, amount) => this.onPlayerDamaged(from, amount),
-        onParrySuccess: (e) => {
+        onParrySuccess: (e, perfect) => {
           this.world.noteParry(e);
-          this.world.vendettaCounters.parries++;
+          if (this.isVendettaTarget(e) && perfect) this.world.vendettaCounters.parries++;
         },
         onEnemyStaggered: () => void 0,
         onHabit: (k, amount) => {
           this.player.stats.habits[k] += amount ?? 1;
+          this.trackVendettaAdaptation(k);
         },
         onExecutionStarted: (e) => this.onNamedExecution(e),
         onPostureBroken: (e) => {
-          this.world.vendettaCounters.posture++;
+          if (this.isVendettaTarget(e)) this.world.vendettaCounters.posture++;
           this.maybeOpenOutcome(e);
         },
-        onInterrupt: () => {
-          this.world.vendettaCounters.interrupts++;
+        onInterrupt: (e) => {
+          if (this.isVendettaTarget(e)) this.world.vendettaCounters.interrupts++;
+        },
+        onWeaknessHit: (e) => {
+          if (this.isVendettaTarget(e)) this.world.vendettaCounters.weakness = true;
         },
         onProcNote: (t) => {
           this.world.run.lastProcNote = t;
           this.ui.hud.toast(t, 'gold', 1.6);
+        },
+        onEnemyStrikeLanded: (e, info) => {
+          if (!e.named) return;
+          this.comic?.onNamedStrike(e.nemesis.id, {
+            critical: info.critical,
+            amount: info.amount,
+            attackId: info.attackId,
+            attackLabel: info.attackLabel,
+          });
         },
       }
     );
 
     this.combat.telemetry = this.telemetry;
     this.combat.abilities = this.abilities;
+    this.combat.setDirector(this.world.director);
+    this.setupComic();
 
-    this.bus.on('sfx', ({ name, volume, pitch }) => this.audio.play(name, { volume, pitch }));
     this.bus.on('worldEvent', (ev) => {
       if (ev.important && this.mode === 'playing') this.ui.hud.toast(ev.text, ev.tone === 'bad' ? 'hot' : 'gold');
+    });
+    this.bus.on('nemesisPromoted', ({ nemesis, to }) => {
+      if (this.mode === 'playing') {
+        this.ui.hud.toast(`${fullName(nemesis)} IS NOW ${to.toUpperCase()}`, 'gold', 4);
+      }
+      this.aiDirty = true;
+    });
+    this.bus.on('nemesisDied', ({ nemesis, byPlayer }) => {
+      if (!byPlayer && this.mode === 'playing') {
+        this.ui.hud.toast(`${fullName(nemesis)} FELL`, 'neutral', 3.5);
+      }
+      this.aiDirty = true;
+    });
+    this.bus.on('nemesisReturned', ({ nemesis }) => {
+      if (this.mode === 'playing') this.ui.hud.toast(`${fullName(nemesis)} RETURNED`, 'hot', 4.5);
+      this.aiDirty = true;
     });
 
     window.addEventListener('resize', () => this.onResize());
@@ -265,6 +451,132 @@ export class Game {
   private loopRef(): GameLoop {
     if (!this._loop) this._loop = new GameLoop((dt, rdt) => this.tick(dt, rdt));
     return this._loop;
+  }
+
+  /* ============================================================
+     Comic combat (presentation — simulation facts only)
+     ============================================================ */
+
+  private setupComic(): void {
+    const g = this;
+    this.comic = new ComicService({
+      renderer: this.renderer,
+      scene: this.arena.scene,
+      backend: this.ai.backend,
+      world: {
+        getSubjects(nemesisId) {
+          const e = g.world.enemies.find((x) => x.named && x.nemesis.id === nemesisId);
+          if (!e) return null;
+          return {
+            player: g.player.position.clone(),
+            enemy: e.position.clone(),
+            enemyFacing: e.facing,
+            playerFacing: g.player.facing,
+          };
+        },
+        getSeed(nemesisId) {
+          const n = g.mgr.byId(nemesisId);
+          if (!n) return null;
+          const rel = relationshipLabel(n);
+          return {
+            nemesisId: n.id,
+            nemesisName: n.name,
+            title: g.ai.titleFor(n),
+            rank: n.rank,
+            weapon: n.weapon,
+            locationName: g.world.currentArea.name,
+            relationshipNote: rel || '',
+          };
+        },
+        hpFracs(nemesisId) {
+          const e = g.world.enemies.find((x) => x.nemesis.id === nemesisId);
+          return {
+            player: g.player.stats.maxHp > 0 ? g.player.stats.hp / g.player.stats.maxHp : 1,
+            enemy: e && e.maxHp > 0 ? e.hp / e.maxHp : 1,
+          };
+        },
+      },
+      onSequenceReady: (seq) => g.openComic(seq),
+      onPanelReady: (panel, seq) => {
+        if (g.comicOpen && g.ui.comic.visible) g.ui.comic.appendPanel(panel, seq);
+      },
+    });
+    this.comic.setQuality('potato');
+    this.comic.setEnabled(!this.mgr.data.settings.reducedMotion);
+  }
+
+  private openComic(seq: import('../comic/Types').ComicSequence): void {
+    if (this.comicOpen) return;
+    this.pendingComic = seq;
+    this.comicAge = 0;
+    this.tryPresentComic();
+  }
+
+  private tryPresentComic(): void {
+    if (!this.pendingComic || this.comicOpen) return;
+    if (this.mode !== 'playing') return;
+    if (this.pendingModal) return;
+    if (this.encounter.busy || this.ui.intro.active) return;
+    if (!this.comicForce) {
+      if (this.qaSuppressOffers) return;
+      if (this.comicHold > 0) return;
+      if (this.offerQuiet > 0) return;
+      if (this.player.combat.action !== 'idle') return;
+      if (this.world.enemies.some((e) => e.alive)) return;
+      if (this.comicCalm < 1.4) return;
+    }
+    this.presentComicNow(this.pendingComic);
+  }
+
+  private presentComicNow(seq: import('../comic/Types').ComicSequence): void {
+    this.pendingComic = null;
+    this.comicForce = false;
+    this.comicAge = 0;
+    this.comicHold = 0;
+    this.comicCalm = 0;
+    this.comicOpen = true;
+    this.uiRoot.classList.add('comic-open');
+    this.input.exitPointerLock();
+    this.input.setEnabled(false);
+    this.input.clearBuffers();
+    this.loop.paused = true;
+    this.ui.comic.beginSequence(seq, () => this.closeComic());
+    for (const p of seq.panels) {
+      if (p.state === 'ready' || p.state === 'failed') this.ui.comic.appendPanel(p, seq);
+    }
+    this.ui.comic.finalizeSequence(seq);
+  }
+
+  private closeComic(): void {
+    this.comicOpen = false;
+    this.uiRoot.classList.remove('comic-open');
+    this.input.clearBuffers();
+    const keepPaused =
+      this.mode === 'paused' ||
+      this.mode === 'hierarchy' ||
+      this.mode === 'power' ||
+      this.mode === 'choice' ||
+      this.mode === 'report' ||
+      this.mode === 'build' ||
+      this.mode === 'godend';
+    this.loop.paused = keepPaused;
+    if (this.mode === 'playing') {
+      this.input.setEnabled(true);
+      this.lockGrace = 0.8;
+      this.input.requestPointerLock();
+    }
+  }
+
+  /** Close the viewer and optionally drop a queued recap (death, title, new run). */
+  private dismissComic(dropQueue: boolean): void {
+    if (this.comicOpen) this.ui.comic.hide();
+    if (dropQueue) {
+      this.pendingComic = null;
+      this.comicForce = false;
+      this.comicAge = 0;
+      this.comicHold = 0;
+      this.comicCalm = 0;
+    }
   }
 
   /* ============================================================
@@ -288,6 +600,14 @@ export class Game {
         // A portrait or title landing while the Book is open should show up
         // without the player doing anything.
         this.ui.hierarchy.refreshIfOpen();
+        if (this.ui.report.visible && this.lastReport?.recap?.length) {
+          this.presentReport(this.lastReport);
+        }
+        if (this.mode === 'god' && this.ui.god.visible) this.ui.god.refresh();
+        if (this.mode === 'legends' && this.ui.legends.visible) this.ui.legends.refresh();
+        if (this.mode === 'godend' && this.ui.godEnd.visible && this.godRun?.outcome) {
+          this.ui.godEnd.refreshVoice(recapLineFor(this.ai, this.godRun.outcome, this.godRun.god.run));
+        }
         // If the enemy on screen just earned a title, say so — quietly.
         if (kind === 'identity' && this.mode === 'playing') {
           const n = this.mgr.byId(id);
@@ -320,7 +640,11 @@ export class Game {
   private bindEncounter(): void {
     const g = this;
     this.encounter.bind({
-      presentCard: (p) => g.ui.intro.present(p),
+      presentCard: (p) => {
+        g.ui.hud.clearAreaBanner();
+        g.tutorial.dismiss();
+        g.ui.intro.present(p);
+      },
       revealCard: (part) => g.ui.intro.reveal(part),
       hideCard: () => g.ui.intro.hide(),
       callout: (text, tone) => g.ui.hud.toast(text, tone),
@@ -356,6 +680,11 @@ export class Game {
       portraitFor: (n) => g.ai.portraitFor(n),
       titleFor: (n) => g.ai.titleFor(n),
       tauntFor: (n, salt) => g.ai.tauntFor(n, salt),
+      observeEncounter: (n, kind, headline, chip) => {
+        g.syncAIWorld();
+        observeEncounter(g.ai, n, kind, headline, chip);
+      },
+      headlineFor: (n, kind, fallback) => encounterHeadlineFor(g.ai, n, kind, fallback),
     });
   }
 
@@ -436,6 +765,7 @@ export class Game {
   private openAISettings(): void {
     if (this.mode === 'playing') this.openPause();
     else if (this.mode === 'title') this.openTitleSettings();
+    else if (this.mode === 'god' || this.mode === 'legends' || this.mode === 'godend') this.openGodSettings();
     this.ui.pause.focusAI();
   }
 
@@ -456,8 +786,38 @@ export class Game {
           if (this.saveSys.exists()) this.mgr.persist();
         },
         ai: this.aiSettingsHooks(),
+        onSkipTutorials: () => this.skipGodTeaching(),
+        onReplayTutorials: () => this.replayGodTeaching(),
+        ...this.telemetryPauseHooks(),
       },
-      false
+      false,
+      { asSettings: true }
+    );
+  }
+
+  /**
+   * Settings from THE LONG GAME. Same panel as title; mode stays `god` so
+   * closing it returns to the board rather than starting a 3D run.
+   */
+  private openGodSettings(): void {
+    if (this.mode !== 'god' && this.mode !== 'legends' && this.mode !== 'godend') return;
+    this.ui.pause.open(
+      this.mgr.data.settings,
+      {
+        onResume: () => this.ui.pause.close(),
+        onExtract: () => this.ui.pause.close(),
+        onQuit: () => this.ui.pause.close(),
+        onSettingsChanged: (s) => {
+          this.applySettings(s);
+          if (this.saveSys.exists()) this.mgr.persist();
+        },
+        ai: this.aiSettingsHooks(),
+        onSkipTutorials: () => this.skipGodTeaching(),
+        onReplayTutorials: () => this.replayGodTeaching(),
+        ...this.telemetryPauseHooks(),
+      },
+      false,
+      { asSettings: true }
     );
   }
 
@@ -469,6 +829,17 @@ export class Game {
     if (!this.mgr.data) return;
     this.syncAIWorld();
     this.ai.ensureRoster(this.mgr.living());
+  }
+
+  private telemetryPauseHooks(): Pick<import('../ui/PauseScreen').PauseHandlers, 'telemetryOptIn' | 'onTelemetryOptInChanged'> {
+    return {
+      telemetryOptIn: this.mgr.data.playerMeta.telemetryOptIn,
+      onTelemetryOptInChanged: (v) => {
+        this.mgr.data.playerMeta.telemetryOptIn = v;
+        this.syncTelemetryOptIn();
+        if (this.saveSys.exists()) this.mgr.persist();
+      },
+    };
   }
 
   /** Handed to the settings panel so it never touches the service directly. */
@@ -568,6 +939,8 @@ export class Game {
       this.mgr.data.settings.autoQuality = false;
     }
     this.applySettings(this.mgr.data.settings);
+    ensureStarterGear(this.mgr.data.playerMeta);
+    this.syncTelemetryOptIn();
     this.syncAIWorld();
     this.rebuildArena();
     this.showTitle(loaded);
@@ -576,14 +949,22 @@ export class Game {
 
   private showTitle(hasSave: boolean): void {
     this.mode = 'title';
+    this.ui.aiStatus.clear();
     this.input.setEnabled(false);
     this.input.exitPointerLock();
     this.ui.hud.setVisible(false);
     this.ui.report.hide();
     this.ui.intro.hide();
     this.ui.power.hide();
+    this.ui.choice.hide();
+    this.dismissComic(true);
     this.ui.hierarchy.close();
     this.ui.pause.close();
+    this.ui.build.hide();
+    this.ui.god.hide();
+    this.ui.primer.hide();
+    this.ui.legends.hide();
+    this.ui.godEnd.hide();
     this.world.endRun();
 
     const ov = this.mgr.overlord();
@@ -597,20 +978,41 @@ export class Game {
         livingNamed: this.mgr.living().length,
         runs: this.mgr.data.playerMeta.runs,
         deaths: this.mgr.data.playerMeta.deaths,
+        legendCount: (this.mgr.data.legends ?? []).length,
       },
       {
         onContinue: () => this.beginPlaying(),
         onNewWorld: () => {
           this.mgr.newWorld(randomSeed());
           this.rebuildArena();
-          this.beginPlaying();
+          this.godRun = null;
+          this.openLongGame();
         },
         onReset: () => {
           this.mgr.wipe();
           this.mgr.newWorld(randomSeed());
           this.rebuildArena();
+          this.godRun = null;
           this.showTitle(true);
         },
+        onBuild: () => this.openBuild('title'),
+        onLongGame: () => {
+          if (!this.saveSys.exists()) {
+            this.mgr.newWorld(randomSeed());
+            this.rebuildArena();
+          }
+          this.openLongGame();
+        },
+        onDescendAlone: () => {
+          if (!this.saveSys.exists()) {
+            this.mgr.newWorld(randomSeed());
+            this.rebuildArena();
+          }
+          this.beginPlaying();
+        },
+        onLegends: () => this.openLegends('title'),
+        onSettings: () => this.openTitleSettings(),
+        hasGodRun: !!this.mgr.data.god,
       }
     );
     if (hasSave) this.warmTitleGeneration();
@@ -640,6 +1042,15 @@ export class Game {
     this.vfx.clear();
     this.damageNumbers.clear();
     this.nextBoonKills = 7;
+    this.runLootCycle = 0;
+    this.vendettaOfferPending = false;
+    this.vendettaOffer = null;
+    this.runClock = 0;
+    this.calmTime = 0;
+    this.offerQuiet = 0;
+    this.pendingModal = null;
+    this.modalCalm = 0;
+    this.dismissComic(true);
 
     this.camera.snapBehind(this.player.position, this.player.facing);
     this.lockTargetUid = null;
@@ -662,12 +1073,679 @@ export class Game {
     // the centre of the screen. The area banner is the lesser message and the
     // area name is permanently in the HUD corner anyway, so it simply yields
     // rather than trying to share the space.
+    const terr = this.world.territoryNow();
+    const rule = terr.rules[0];
+    const bannerSub =
+      terr.holderName !== 'UNCLAIMED' && rule
+        ? `${terr.holderName.toUpperCase()} · ${rule.title}`
+        : `AGE ${this.mgr.age} — ${this.mgr.ageState.name}`;
     if (!this.ui.intro.active) {
-      this.ui.hud.showAreaBanner('THE PIT', `AGE ${this.mgr.age} — ${this.mgr.ageState.name}`);
+      this.ui.hud.showAreaBanner(this.world.currentArea.name.toUpperCase(), bannerSub);
     }
-    this.ui.hud.toast('FIND SOMETHING WORTH REMEMBERING', 'neutral', 5);
+    const payoff = this.pendingWorldPayoff.splice(0, this.pendingWorldPayoff.length);
+    if (payoff.length) {
+      for (const line of payoff.slice(0, 2)) this.ui.hud.toast(line, line.includes('STILL') || line.includes('KILLED') ? 'hot' : 'gold', 5.5);
+    } else {
+      this.ui.hud.toast('FIND SOMETHING WORTH REMEMBERING', 'neutral', 5);
+    }
     this.syncSkillLoadout();
+    this.maybeTeach('basics');
+    if (this.mgr.data.playerMeta.runs >= 2) this.maybeTeach('second_run');
+    this.applyPlayerBuild(true);
     this.mgr.persist();
+  }
+
+  private onEnterTerritory(areaName: string, p: TerritoryPresentation): void {
+    const rule = p.rules[0];
+    const sub =
+      p.holderName !== 'UNCLAIMED' && rule
+        ? `${p.holderName.toUpperCase()} · ${rule.title}`
+        : rule?.id === 'void_quiet'
+          ? 'UNCLAIMED GROUND'
+          : areaName;
+    if (!this.ui.intro.active && !this.encounter.busy) {
+      this.ui.hud.showAreaBanner(areaName.toUpperCase(), sub);
+    }
+  }
+
+
+  /* ============================================================
+     THE LONG GAME — the god layer
+     ============================================================ */
+
+  /**
+   * Start or resume the god-layer run. The world in the save is the same world
+   * the third-person game uses; the long game simply stops moving a hero
+   * through it and starts moving the conditions around it.
+   */
+  private openLongGame(): void {
+    this.audio.unlock();
+    this.ui.title.hide();
+    this.ui.pause.close();
+    this.ui.report.hide();
+    this.ui.hud.setVisible(false);
+    this.world.endRun();
+
+    if (!this.godRun) {
+      this.godRun = new GodRun(this.mgr, {
+        onBeats: (beats) => this.onGodBeats(beats),
+        onEnd: (o) => this.onGodEnd(o),
+      });
+    }
+    const saved = this.mgr.data.god;
+    if (saved && !saved.ended) {
+      this.godRun.resume(saved);
+    } else {
+      this.ai.invalidateGodWork();
+      this.mgr.data.playerMeta.runs++;
+      this.godRun.begin(randomSeed());
+      this.godIdleCycles = 0;
+      this.godLesson = null;
+    }
+    const tut = this.mgr.data.settings.tutorial;
+    this.godGuide.load(tut.godGuide || 'select');
+    if (tut.skipped) this.godGuide.finish();
+    this.showGodScreen();
+  }
+
+  private showGodScreen(): void {
+    if (!this.godRun) return;
+    this.ui.aiStatus.clear();
+    this.mode = 'god';
+    this.input.setEnabled(false);
+    this.input.exitPointerLock();
+    this.loop.paused = false;
+    this.ui.legends.hide();
+    this.ui.godEnd.hide();
+    this.ui.primer.hide();
+    this.ui.god.bindTeach({
+      onSkip: () => this.skipGodTeaching(),
+      onDismiss: () => this.dismissGodLesson(),
+      onPrimer: () => this.openPrimer(),
+    });
+    this.ui.god.present({
+      run: () => this.godRun!,
+      advance: (n) => this.godAdvance(n),
+      intervene: (id, a, b, area) => this.godIntervene(id, a, b, area),
+      openRoster: () => this.openRosterFromGod(),
+      openLegends: () => this.openLegends('god'),
+      abandon: () => this.abandonGodRun(),
+      close: () => this.showTitle(true),
+      portraitFor: (n) => this.ai.portraitFor(n),
+      displayName: (n) => this.ai.displayName(n),
+      dossierFor: (n) => (this.godRun ? dossierFor(this.ai, n, this.godRun.god, this.mgr) : ''),
+      beatVoiceFor: (b) => (this.godRun ? beatVoiceFor(this.ai, b, this.godRun.god) : null),
+      crisisVoiceFor: () => (this.godRun ? crisisVoiceFor(this.ai, this.godRun.god) : null),
+      aftermathLinkFor: (cycle, label, text) =>
+        this.godRun ? aftermathLinkFor(this.ai, this.godRun.god.run, cycle, label, text) : text,
+      situationVoiceFor: (s) => (this.godRun ? situationVoiceFor(this.ai, s, this.godRun.god) : null),
+      inspectCharacter: (n) => {
+        if (!this.godRun) return;
+        this.syncAIWorld();
+        observeInspect(this.ai, this.mgr, this.godRun.god, n);
+      },
+      clearAftermath: () => this.godRun?.clearAftermath(),
+      clearDescentReport: () => this.godRun?.clearDescentReport(),
+      onTeach: (ev) => this.onGodTeach(ev),
+      openSettings: () => this.openGodSettings(),
+    });
+    this.refreshGodTeach();
+  }
+
+  private onGodTeach(ev: GuideEvent): void {
+    const tut = this.mgr.data.settings.tutorial;
+    if (tut.skipped) return;
+    if (this.godGuide.notify(ev)) {
+      tut.godGuide = this.godGuide.step;
+      this.mgr.persist();
+      this.refreshGodTeach();
+    }
+  }
+
+  private refreshGodTeach(): void {
+    const tut = this.mgr.data.settings.tutorial;
+    if (tut.skipped) {
+      this.ui.god.teach.set(null);
+      return;
+    }
+    this.godGuide.load(tut.godGuide || this.godGuide.step);
+    if (this.godRun && this.godGuide.maybeGiveUp(this.godRun.god.cycle)) {
+      tut.godGuide = 'done';
+      this.mgr.persist();
+    }
+    if (this.godGuide.active) {
+      const step = this.godGuide.current!;
+      const index = STEP_ORDER.indexOf(step.id) + 1;
+      this.ui.god.teach.set({ kind: 'guide', step, index, total: STEP_COUNT });
+      return;
+    }
+    if (this.godLesson) {
+      this.ui.god.teach.set({ kind: 'lesson', lesson: this.godLesson });
+      return;
+    }
+    this.ui.god.teach.set(null);
+  }
+
+  private skipGodTeaching(): void {
+    this.tutorial.skipAll(this.mgr.data.settings);
+    this.godGuide.finish();
+    this.godLesson = null;
+    this.mgr.data.settings.tutorial.godGuide = 'done';
+    this.mgr.persist();
+    this.refreshGodTeach();
+    this.ui.hud.toast('TUTORIALS SKIPPED', 'neutral');
+  }
+
+  private dismissGodLesson(): void {
+    if (!this.godLesson) return;
+    this.mgr.data.settings.tutorial.god[this.godLesson.id] = true;
+    this.godLesson = null;
+    this.mgr.persist();
+    this.refreshGodTeach();
+  }
+
+  private openPrimer(): void {
+    this.ui.primer.present(
+      this.godRun?.god ?? null,
+      () => this.ui.primer.hide(),
+      () => {
+        this.ui.primer.hide();
+        this.replayGodTeaching();
+      }
+    );
+  }
+
+  private replayGodTeaching(): void {
+    const s = this.mgr.data.settings;
+    s.tutorial.skipped = false;
+    s.tutorial.god = {};
+    s.tutorial.godGuide = '';
+    this.godGuide.restart();
+    this.godLesson = null;
+    this.mgr.persist();
+    this.refreshGodTeach();
+  }
+
+  /** The roster screen is the same one the third-person game uses. */
+  private openRosterFromGod(): void {
+    if (!this.godRun) return;
+    this.hierarchyFromGod = true;
+    this.mode = 'hierarchy';
+    this.ui.god.hide();
+    this.ui.hierarchy.open(this.mgr, () => this.closeHierarchy(), this.ai);
+  }
+
+  /** The developer readout. Everything here is derived; nothing is stored for it. */
+  private godDebugState(): GodDebugState | null {
+    const run = this.godRun;
+    if (!run) return null;
+    const god = run.god;
+    return {
+      run: god.run,
+      cycle: god.cycle,
+      act: run.act().name,
+      phase: god.phase,
+      influence: `${Math.round(god.influence * 10) / 10}/${god.influenceMax}`,
+      chaos: `${Math.round(god.chaos)} (${chaosTier(god.chaos).name})`,
+      living: this.mgr.living().length,
+      factions: livingFactions(god).map(
+        (f) => `${f.name} ${Math.round(f.strength)}pw st${Math.round(f.stability)}${f.warWith.length ? ' WAR' : ''}`
+      ),
+      crisis: god.crisis
+        ? `${god.crisis.title} — ${this.mgr.byId(god.crisis.bodyId)?.name ?? '—'} pw${Math.round(god.crisis.power)} [${god.crisis.resolved}] deadline ${god.crisis.deadline}`
+        : 'none yet',
+      conditions: god.conditions.map(
+        (c) => `${c.kind}:${this.mgr.byId(c.targetId)?.name ?? c.targetId}${c.otherId ? '>' + (this.mgr.byId(c.otherId)?.name ?? c.otherId) : ''} x${round2(c.magnitude)} (${c.expiresCycle - god.cycle})`
+      ),
+      decisions: god.decisions.map((d) => ({
+        actor: d.actorName,
+        chosen: d.chosen ? `${d.chosen.actionName}${d.chosen.targetName ? ' -> ' + d.chosen.targetName : ''}  ${d.chosen.total}` : '—',
+        considered: d.considered.map(
+          (c) =>
+            `${c.actionName}${c.targetName ? ' -> ' + c.targetName : ''}  ${c.total}  ` +
+            `(base ${round2(c.parts.base)} per ${round2(c.parts.personality)} rel ${round2(c.parts.relationship)} mem ${round2(c.parts.memory)} ` +
+            `need ${round2(c.parts.need)} dgr -${round2(c.parts.danger)} opp ${round2(c.parts.opportunity)} amb ${round2(c.parts.ambition)} noise ${round2(c.parts.noise)})`
+        ),
+      })),
+    };
+  }
+
+  private forceGodCrisis(): string {
+    const run = this.godRun;
+    if (!run) return 'no run';
+    run.god.cycle = Math.max(run.god.cycle, 23);
+    run.god.act = 'crisis';
+    this.showGodScreen();
+    return run.god.crisis ? run.god.crisis.title : 'pushed to the crisis act';
+  }
+
+  private godIntervene(id: string, a: string | null, b: string | null, area: string | null) {
+    const run = this.godRun;
+    if (!run) return { ok: false, reason: 'No run.' };
+    const res = run.intervene(id, a, b, area);
+    if (res.ok) {
+      this.godIdleCycles = 0;
+      this.onGodTeach('intervened');
+      this.audio.play('world_event', { volume: 0.4 });
+      // DESCEND is the one intervention that leaves this screen.
+      const target = run.god.pendingDescent;
+      if (target) {
+        run.god.pendingDescent = null;
+        this.beginDescent(target);
+        return res;
+      }
+      const noticed = this.noticeAfterIntervention(run, res.effect?.actors ?? [], a);
+      if (noticed) this.ui.god.markNoticed(noticed.id, noticed.headline);
+      else if (res.effect?.headline) {
+        this.ui.god.flash(`THE WORLD NOTICED — ${res.effect.headline}`, 'gold', 4200);
+      }
+      this.ui.god.refresh();
+    }
+    return res;
+  }
+
+  /**
+   * One board beat that proves the condition landed — not a feed dump.
+   * Prefer a situation involving the target; else invent a compact condition line.
+   */
+  private noticeAfterIntervention(
+    run: GodRun,
+    actors: string[],
+    primaryId: string | null
+  ): { id: string; headline: string } | null {
+    const focus = actors[0] ?? primaryId;
+    if (focus) {
+      const condSit = run.situations.find((s) => s.kind === 'condition' && s.actors.includes(focus));
+      if (condSit) return { id: condSit.id, headline: condSit.headline };
+      const sit = run.situations.find((s) => s.actors.includes(focus));
+      if (sit) return { id: sit.id, headline: sit.headline };
+      const n = this.mgr.byId(focus);
+      const cond = run.god.conditions.find((c) => c.targetId === focus && c.source === 'god');
+      if (n && cond) {
+        const label = CONDITION_LABEL[cond.kind] ?? cond.kind.toUpperCase();
+        return {
+          id: `cond:${cond.id}`,
+          headline: `${fullName(n).toUpperCase()} — ${label}`,
+        };
+      }
+    }
+    const top = run.situations.find((s) => s.kind === 'condition') ?? run.situations[0];
+    return top ? { id: top.id, headline: top.headline } : null;
+  }
+
+  /**
+   * Accelerated simulation. Cycles are resolved synchronously — the whole
+   * point of the headless duel resolver is that a hundred of them cost
+   * milliseconds — and the feed is what the player reads afterwards.
+   */
+  private godAdvance(cycles: number): void {
+    const run = this.godRun;
+    if (!run || this.godBusy) return;
+    this.godBusy = true;
+    const t0 = performance.now();
+    let done = 0;
+    const actorFocus = new Set(
+      run.god.conditions.filter((c) => c.source === 'god').map((c) => c.targetId)
+    );
+    let noticed: Beat | null = null;
+    const spent = run.spentThisCycle;
+    const { beats, cycles: resolved } = run.advanceMany(cycles);
+    done = resolved;
+    if (spent) this.godIdleCycles = 0;
+    else this.godIdleCycles += resolved;
+    this.onGodTeach('cycleAdvanced');
+    this.maybeGodLesson();
+    for (const b of beats) {
+      if (noticed) break;
+      if (b.kind === 'intervention') continue;
+      if (actorFocus.size && !b.actors.some((id) => actorFocus.has(id))) continue;
+      if (BEAT_RANK[b.priority] >= BEAT_RANK.notable) {
+        noticed = b;
+      }
+    }
+    this.godBusy = false;
+    if (noticed) {
+      this.ui.god.markNoticed(noticed.id.startsWith('beat:') ? noticed.id : `beat:${noticed.id}`, noticed.headline);
+    } else {
+      // Quiet advance after spending Influence must still prove the condition lives.
+      const quiet = this.quietAdvanceNotice(run, actorFocus);
+      if (quiet) {
+        this.ui.god.markNoticed(quiet.id, quiet.headline);
+      } else if (cycles > 1) {
+        this.ui.god.flash(`${done} CYCLES RESOLVED IN ${Math.round(performance.now() - t0)}MS`, 'neutral');
+      }
+    }
+    if (run.ended) {
+      this.presentGodEnd(run.outcome!);
+      return;
+    }
+    if (run.god.lastAftermath) {
+      this.syncAIWorld();
+      observeAftermath(this.ai, this.mgr, run.god, run.god.lastAftermath);
+    }
+    observeSituations(this.ai, this.mgr, run.god, run.god.situations);
+    this.ui.god.refresh();
+    this.refreshGodTeach();
+  }
+
+  private maybeGodLesson(): void {
+    if (!this.godRun) return;
+    if (this.godGuide.active || this.mgr.data.settings.tutorial.skipped) {
+      this.refreshGodTeach();
+      return;
+    }
+    if (this.godLesson) {
+      this.refreshGodTeach();
+      return;
+    }
+    const lesson = pickLesson(
+      {
+        god: this.godRun.god,
+        mgr: this.mgr,
+        cycleBeats: this.godRun.lastCycleBeats,
+        outcome: this.godRun.god.outcome,
+        idleCycles: this.godIdleCycles,
+        blessedLosers: this.godRun.lastBlessedLosers,
+        runIndex: this.godRun.god.run,
+      },
+      this.mgr.data.settings.tutorial.god
+    );
+    if (lesson) this.godLesson = lesson;
+    this.refreshGodTeach();
+  }
+
+  /** Fallback when cycles produce no related beat — condition / who it leans on. */
+  private quietAdvanceNotice(
+    run: GodRun,
+    actorFocus: Set<string>
+  ): { id: string; headline: string } | null {
+    const condSit =
+      run.situations.find((s) => s.kind === 'condition' && s.actors.some((id) => actorFocus.has(id))) ??
+      run.situations.find((s) => s.kind === 'condition') ??
+      null;
+    if (condSit) {
+      return { id: condSit.id, headline: `${condSit.headline} — STILL LIVE` };
+    }
+    const related = run.situations.find((s) => s.actors.some((id) => actorFocus.has(id)));
+    if (related) return { id: related.id, headline: related.headline };
+    for (const id of actorFocus) {
+      const n = this.mgr.byId(id);
+      const cond = run.god.conditions.find((c) => c.targetId === id && c.source === 'god');
+      if (n && cond) {
+        const label = CONDITION_LABEL[cond.kind] ?? cond.kind.toUpperCase();
+        return {
+          id: `cond:${cond.id}`,
+          headline: `${fullName(n).toUpperCase()} — ${label} STILL HOLDS`,
+        };
+      }
+    }
+    const top = run.situations[0];
+    return top ? { id: top.id, headline: top.headline } : null;
+  }
+
+  private onGodBeats(beats: Beat[]): void {
+    if (this.godRun) {
+      this.syncAIWorld();
+      observeGodBeats(this.ai, this.mgr, this.godRun.god, beats);
+    }
+    // Only the loudest beat is allowed to interrupt; everything else waits in
+    // the feed, which is the difference between a story and a notification
+    // storm.
+    for (const b of beats) {
+      if (b.priority !== 'legendary') continue;
+      this.ui.god.flash(b.headline, b.tone === 'good' || b.tone === 'gold' ? 'gold' : 'hot', 4200);
+      break;
+    }
+  }
+
+  private onGodEnd(outcome: RunOutcome): void {
+    if (this.mode === 'godend') return;
+    this.presentGodEnd(outcome);
+  }
+
+  private presentGodEnd(outcome: RunOutcome): void {
+    this.mode = 'godend';
+    this.ui.god.hide();
+    this.ai.invalidateGodWork();
+    const legends = this.mgr.data.legends ?? [];
+    if (this.godRun) {
+      this.syncAIWorld();
+      observeEnding(this.ai, this.mgr, this.godRun.god, outcome, legends);
+    }
+    this.ui.godEnd.present(
+      outcome,
+      {
+        onNext: () => {
+          this.ui.godEnd.hide();
+          this.ai.invalidateGodWork();
+          this.godRun = null;
+          this.mgr.data.god = null;
+          // A new world, with the Book and the unlocks intact. The legends of the
+          // last run reach into this one as relics, descendants, rumours and
+          // inherited grudges — see Legends.applyLegacies.
+          this.mgr.reseedWorld(randomSeed());
+          this.rebuildArena();
+          this.openLongGame();
+        },
+        onBook: () => this.openLegends('godend'),
+        onTitle: () => {
+          this.ui.godEnd.hide();
+          this.ai.invalidateGodWork();
+          this.godRun = null;
+          this.showTitle(true);
+        },
+      },
+      recapLineFor(this.ai, outcome, this.godRun?.god.run ?? 0)
+    );
+  }
+
+  private abandonGodRun(): void {
+    const run = this.godRun;
+    if (!run) return;
+    const outcome = run.abandon();
+    this.presentGodEnd(outcome);
+  }
+
+  private openLegends(from: Mode): void {
+    const back = from;
+    this.mode = 'legends';
+    this.ui.god.hide();
+    this.ui.godEnd.hide();
+    this.ui.title.hide();
+    this.ui.legends.present(
+      this.mgr.data.legends ?? [],
+      () => {
+        this.ui.legends.hide();
+        if (back === 'god' && this.godRun) this.showGodScreen();
+        else if (back === 'godend' && this.godRun?.outcome) this.presentGodEnd(this.godRun.outcome);
+        else this.showTitle(this.saveSys.exists());
+      },
+      {
+        voiceFor: (l) => legendVoiceFor(this.ai, l),
+        portraitFor: (l) => {
+          const id = l.id.split(':')[1];
+          const n = id ? this.mgr.byId(id) : null;
+          return n ? this.ai.portraitFor(n) : '';
+        },
+      }
+    );
+  }
+
+  /**
+   * DESCEND. The god puts itself in the world for one confrontation, using the
+   * whole third-person game exactly as it already exists. Nothing about the
+   * run below is special-cased; the only difference is where it returns to.
+   */
+  private beginDescent(brief: import('../god/GodTypes').DescentBrief): void {
+    const nemesisId = brief.nemesisId;
+    const n = this.mgr.byId(nemesisId);
+    const holder = this.mgr.data.territories.tower ?? null;
+    this.descent = {
+      nemesisId,
+      cycle: this.godRun?.god.cycle ?? 0,
+      brief,
+      snapshot: {
+        alive: !!n?.alive,
+        power: n?.power ?? 0,
+        territory: n?.territory ?? '',
+        scars: n?.scars.length ?? 0,
+        injury: n ? simOf(n).injury : 0,
+        stolen: n?.stolen.length ?? 0,
+        holder,
+      },
+      playerDied: false,
+      extracted: false,
+    };
+    this.ui.god.hide();
+    this.startRun();
+
+    if (brief.scenario === 'tower') {
+      applyVerticalSlice({
+        mgr: this.mgr,
+        world: this.world,
+        player: this.player,
+        rng: this.rng,
+        arena: this.arena,
+      });
+      // Keep the descent target as the commander even if slice reassigned ids.
+      const commander = this.mgr.byId(nemesisId) ?? this.mgr.living().find((x) => x.archetype === 'commander');
+      if (commander) this.descent.nemesisId = commander.id;
+    } else if (n && n.alive) {
+      n.territory = this.world.currentArea.id;
+      this.world.spawnNamed(n, this.player, true, undefined, undefined, { hunting: true });
+    }
+
+    this.ui.hud.toast(brief.goal.toUpperCase().slice(0, 72), 'gold', 5.5);
+    this.ui.hud.showAreaBanner(
+      brief.scenario === 'tower' ? 'THE TOWER' : this.world.currentArea.name.toUpperCase(),
+      brief.reason.toUpperCase().slice(0, 64)
+    );
+  }
+
+  /**
+   * Where a third-person run hands control back. Without a descent this is the
+   * game it always was; with one, the board is waiting and the world has moved
+   * while the player was busy.
+   */
+  private afterRunEnds(): void {
+    const d = this.descent;
+    if (!d || !this.godRun) {
+      this.startRun();
+      return;
+    }
+    this.descent = null;
+    const run = this.godRun;
+    const cycles = Math.max(1, d.brief.cyclesWhileGone);
+    run.fastForward(cycles);
+    if (run.ended) {
+      this.presentGodEnd(run.outcome!);
+      return;
+    }
+
+    const target = this.mgr.byId(d.nemesisId);
+    const lines: string[] = [];
+    let outcome: import('../god/GodTypes').DescentReport['outcome'] = 'spared';
+    if (d.playerDied) {
+      outcome = 'player_died';
+      lines.push('You died below. The mark of exposure still sits on them.');
+    } else if (d.extracted) {
+      outcome = 'escaped';
+      lines.push('You extracted. They remember you ran.');
+    } else if (target && !target.alive) {
+      outcome = 'killed';
+      lines.push(`${fullName(target)} is dead. The board loses a piece you touched in person.`);
+    } else if (target && target.alive) {
+      if (simOf(target).injury > d.snapshot.injury + 15 || target.scars.length > d.snapshot.scars) {
+        outcome = 'spared';
+        lines.push(`${fullName(target)} still stands — scarred. Your conditions still apply.`);
+      } else {
+        outcome = 'fled';
+        lines.push(`${fullName(target)} still holds. The confrontation ended without a body.`);
+      }
+    } else {
+      outcome = 'fled';
+      lines.push('The target is gone from the roster.');
+    }
+
+    if (target) {
+      if (target.power !== d.snapshot.power) {
+        lines.push(`Power ${d.snapshot.power} → ${target.power}.`);
+      }
+      if (target.territory !== d.snapshot.territory) {
+        lines.push(`Ground shifted: ${target.territory.toUpperCase()}.`);
+      }
+      if (target.stolen.length !== d.snapshot.stolen) {
+        lines.push(
+          target.stolen.length < d.snapshot.stolen
+            ? 'Stolen steel left their hands.'
+            : 'They still carry what they took.'
+        );
+      }
+    }
+    const towerNow = this.mgr.data.territories.tower ?? null;
+    if (towerNow !== d.snapshot.holder) {
+      const holder = towerNow ? this.mgr.byId(towerNow) : null;
+      lines.push(holder ? `The Tower answers to ${fullName(holder)}.` : 'The Tower has no holder.');
+    }
+    lines.push(`${cycles} cycles turned while you were below. Autonomy did not wait.`);
+
+    run.god.lastAftermath = null;
+    run.god.lastDescentReport = {
+      targetId: d.nemesisId,
+      targetName: target ? fullName(target) : 'UNKNOWN',
+      outcome,
+      cyclesElapsed: cycles,
+      lines,
+    };
+    run.refreshSituations();
+    run.persist();
+
+    this.showGodScreen();
+  }
+
+  private applyPlayerBuild(announce = false): void {
+    const meta = this.mgr.data.playerMeta;
+    ensureStarterGear(meta);
+    const compiled = applyBuildToStats(meta, this.player.stats, this.world.run?.runLoot ?? []);
+    this.player.rebuildWeapon();
+    this.refreshPowerChips();
+    if (announce && compiled.synergy.length) this.ui.hud.toast(compiled.synergy.join('  ·  '), 'gold', 3.2);
+  }
+
+  private openBuild(from: Mode): void {
+    ensureStarterGear(this.mgr.data.playerMeta);
+    const returnMode = from === 'paused' ? 'paused' : from;
+    this.mode = 'build';
+    this.ui.title.hide();
+    this.input.setEnabled(false);
+    this.input.exitPointerLock();
+    this.loop.paused = true;
+    this.ui.pause.close();
+    this.ui.build.open(
+      this.mgr.data.playerMeta,
+      this.player.stats,
+      {
+        onClose: () => {
+          this.ui.build.hide();
+          this.mgr.persist();
+          if (returnMode === 'paused') {
+            this.mode = 'paused';
+            this.openPause();
+          } else if (returnMode === 'title') {
+            this.showTitle(true);
+          } else {
+            this.resumeToPlaying();
+          }
+        },
+        onChanged: () => {
+          syncLegacyWeapons(this.mgr.data.playerMeta);
+          if (this.world.runActive) this.applyPlayerBuild();
+          this.player.rebuildWeapon();
+          this.mgr.persist();
+        },
+      },
+      this.world.run?.runLoot ?? []
+    );
   }
 
   private syncSkillLoadout(): void {
@@ -677,9 +1755,60 @@ export class Game {
     if (!this.abilities.unlocked.includes('shadow_step')) this.abilities.unlocked.unshift('shadow_step');
     const pair = (meta.skillLoadout ?? DEFAULT_LOADOUT) as [SkillId, SkillId];
     this.abilities.equip(pair[0], pair[1]);
+    const ult = (meta.ultimateLoadout ?? 'pit_eruption') as SkillId;
+    if (isUltimateSkill(ult)) this.abilities.equipUltimate(ult);
+    if (!this.abilities.unlocked.includes(this.abilities.ultimate)) this.abilities.unlock(this.abilities.ultimate);
     meta.skillLoadout = this.abilities.loadout;
+    meta.ultimateLoadout = this.abilities.ultimate;
     this.world.run.skillLoadout = this.abilities.loadout;
     this.abilities.reset();
+  }
+
+  private maybeTeach(id: TutorialId): void {
+    const s = this.mgr.data.settings;
+    if (tutorialDone(s.tutorial, id)) return;
+    if (this.tutorial.offer(id)) markTutorial(s, id);
+  }
+
+  private tickTutorials(): void {
+    const s = this.mgr.data.settings;
+    if (s.tutorial.skipped) return;
+    for (const e of this.world.enemies) {
+      if (!e.alive) continue;
+      if (e.nemesis.rank !== 'grunt' && e.combat.postureFrac > 0.15) this.maybeTeach('posture');
+      if (e.combat.intent === 'parryable' && e.combat.attacking) this.maybeTeach('parry');
+    }
+    if (this.abilities.ready(this.abilities.loadout[0]) && tutorialDone(s.tutorial, 'basics') && !this.tutorial.prompt) {
+      this.maybeTeach('skill');
+    }
+  }
+
+  private purposeLines(inCombat: boolean): string[] {
+    const lines: string[] = [];
+    const focus = this.plateTarget();
+    if (focus?.named) {
+      const n = focus.nemesis;
+      const sig = n.signatureKnown ? signatureDef(n.signatureId) : null;
+      if (sig) lines.push(`${sig.name} — ${sig.counterplay}`);
+      const steel = n.stolen.find((s) => s.kind === 'weapon');
+      if (steel) lines.push(`CARRIES YOUR ${steel.name}`);
+    }
+    const v = vendettaHud(this.world.run.vendetta);
+    if (v) lines.push(v);
+    if (inCombat) return lines.slice(0, 1);
+
+    const terr = this.world.territoryNow();
+    if (terr.holderName && terr.holderName !== 'UNCLAIMED') {
+      const rule = terr.rules[0];
+      if (rule) lines.push(`${terr.holderName} · ${rule.title}`);
+    }
+    if (!focus?.named) {
+      const stolen = this.mgr.living().find((n) => n.stolen.some((s) => s.kind === 'weapon'));
+      if (stolen) lines.push(`${stolen.name.toUpperCase()} CARRIES YOUR ${stolen.stolen[0]?.name ?? 'STEEL'}`);
+    }
+    if (this.world.run.extraction.unlocked) lines.push('EXTRACTION GATE IS LIVE');
+    else if (!lines.length) lines.push('FIND A NAMED ENEMY — OR A GATE');
+    return lines.slice(0, 3);
   }
 
   private tryPlayerSkill(slot: 'skill1' | 'skill2' | 'ultimate'): boolean {
@@ -703,7 +1832,7 @@ export class Game {
       def.windup * prof.windupMul,
       def.active,
       def.recover * prof.recoverMul,
-      prof.armor || def.id === 'pit_eruption' ? (def.id === 'pit_eruption' ? 0.18 : 0.22) : 0,
+      prof.armor || isUltimateSkill(def.id) ? (isUltimateSkill(def.id) ? 0.18 : 0.22) : 0,
       def.id === 'shadow_step',
       def.id === 'shadow_step' ? fx * (speed / 42) * 42 : 0,
       def.id === 'shadow_step' ? fz * (speed / 42) * 42 : 0
@@ -757,6 +1886,11 @@ export class Game {
   private tickInner(dt: number, rdt: number): void {
     this.input.beginFrame();
 
+    // The stylesheet keys gameplay-layer visibility off the current mode, so
+    // fullscreen screens never have toasts / damage numbers / tutorial text
+    // bleeding through them.
+    if (this.uiRoot.dataset.mode !== this.mode) this.uiRoot.dataset.mode = this.mode;
+
     switch (this.mode) {
       case 'playing':
         this.tickPlaying(dt, rdt);
@@ -769,7 +1903,8 @@ export class Game {
         break;
     }
 
-    this.ui.intro.update(rdt);
+    const introClock = this.mode === 'playing' || this.mode === 'dying' ? rdt : 0;
+    this.ui.intro.update(introClock);
     this.tickAI(rdt);
     if (this.telemetry.enabled) this.sampleTelemetry(rdt);
     this.particles.update(dt > 0 ? dt : rdt * 0.02);
@@ -799,7 +1934,14 @@ export class Game {
     // Title is the one fullscreen screen that is allowed to show the indicator:
     // generation warms the roster before a run starts, and the player needs
     // to see that — and to reach settings — without beginning play.
-    this.ui.aiStatus.setVisible(this.mode === 'playing' || this.mode === 'dying' || this.mode === 'title');
+    this.ui.aiStatus.setVisible(
+      this.mode === 'playing' ||
+        this.mode === 'dying' ||
+        this.mode === 'title' ||
+        this.mode === 'god' ||
+        this.mode === 'legends' ||
+        this.mode === 'godend'
+    );
 
     if (!this.aiDirty) return;
     // Batch writes: generated content arrives in bursts and the save is a
@@ -885,6 +2027,7 @@ export class Game {
       camPitch: this.camera.pitch,
       camY: cam.y,
       camToPlayer: Math.hypot(cam.x - p.position.x, cam.y - (p.position.y + 1.45), cam.z - p.position.z),
+      playerFade: p.fadeAmount,
       enemiesAlive: alive,
       attackers,
       winding,
@@ -898,8 +2041,9 @@ export class Game {
   }
 
   private tickIdle(dt: number, rdt: number): void {
-    // Keep the camera drifting over the arena so the title screen has life.
-    if (this.mode === 'title') {
+    // Keep the camera drifting over the arena so the title screen — and the
+    // god layer's board, which sits over the same live scene — has life.
+    if (this.mode === 'title' || this.mode === 'god' || this.mode === 'legends' || this.mode === 'godend') {
       this.camera.yaw += rdt * 0.06;
       this.camera.pitch = -0.3;
       this.camera.distance = 26;
@@ -912,7 +2056,13 @@ export class Game {
 
   private tickPlaying(dt: number, rdt: number): void {
     if (this.lockGrace > 0) this.lockGrace -= rdt;
-    else if (!this.input.isPointerLocked && this.mode === 'playing' && !this.debugOpen && !this.qaNoAutoPause) {
+    else if (
+      !this.input.isPointerLocked &&
+      this.mode === 'playing' &&
+      !this.debugOpen &&
+      !this.comicOpen &&
+      !this.qaNoAutoPause
+    ) {
       // Losing pointer lock pauses a human's game. QA harnesses run headless
       // with no real pointer lock, so __qaStart() turns this off — otherwise
       // every keyboard-only test phase silently freezes the sim.
@@ -920,7 +2070,7 @@ export class Game {
       return;
     }
 
-    if (!this.debugOpen) this.handlePlayingInput();
+    if (!this.debugOpen && !this.comicOpen) this.handlePlayingInput();
 
     const lockPoint = this.currentLockPoint();
     this.combat.lockUid = this.lockTargetUid;
@@ -933,6 +2083,7 @@ export class Game {
       const speed = Math.hypot(this.player.controller.velocity.x, this.player.controller.velocity.z);
       if (speed > 3.4 && crossedFootstep(this.prevLocoPhase, phase)) {
         this.particles.dust(this.player.position.x, 0.12, this.player.position.z, speed > 8 ? 4 : 2);
+        this.audio.play('footstep', { volume: speed > 8 ? 0.22 : 0.16, pitch: speed > 8 ? 0.92 : 1.05, minGap: 0.08 });
       }
       this.prevLocoPhase = phase;
     }
@@ -956,11 +2107,19 @@ export class Game {
 
     this.combat.update(dt);
     this.abilities.update(dt);
+    this.tutorial.update(rdt);
+    this.tickTutorials();
     this.combat.checkStampede();
     this.separateBodies();
     this.world.postUpdate(dt, this.player);
+    this.flushSignatureCues();
     if (this.world.tickExtraction(dt, this.player)) this.finishExtraction(true);
     this.tickVendetta();
+    this.runClock += dt;
+    if (this.offerQuiet > 0) this.offerQuiet -= dt;
+    this.maybeOpenPendingVendetta(dt);
+    this.flushPendingModal(rdt);
+    this.flushPendingComic(rdt);
     if (!this.player.alive && this.mode === 'playing') this.onPlayerKilled(this.pendingKiller);
 
     if (this.debugDraw.any) {
@@ -985,10 +2144,31 @@ export class Game {
     );
     if (this.input.wheel !== 0) this.camera.zoom(this.input.wheel);
     this.camera.update(dt, rdt, this.player.position, framing ? framing.position : null);
+    // Close camera → dissolve the body rather than shoving the lens into a
+    // wall. Measured to the chest, which is what the lens actually clips.
+    this.player.setProximityFade(this.camera.distanceToChest(this.player.position), rdt);
 
     /* HUD */
     const plateTarget = this.plateTarget();
     const ov = this.mgr.overlord();
+    const inCombat = this.world.enemies.some((e) => e.alive && (e.combat.attacking || e.state === 'chase' || e.state === 'attack'));
+    const purpose = this.purposeLines(inCombat);
+    const prompt = this.readPrompt();
+    const overlay = decideOverlays({
+      mode: this.mode,
+      introActive: this.ui.intro.active,
+      encounterBusy: this.encounter.busy,
+      bannerActive: this.ui.hud.bannerActive,
+      tutorialActive: !!this.tutorial.prompt,
+      executable: prompt.execute,
+      interact: prompt.interact,
+      remnantHeal: prompt.remnant,
+      inCombat,
+      pendingLabel: this.pendingModal?.label ?? null,
+      comicOpen: this.comicOpen,
+      pendingComic: !!this.pendingComic,
+    });
+    const storyOwnsCentre = overlay.lane === 'intro';
     this.ui.hud.update(
       rdt,
       this.player,
@@ -1001,9 +2181,14 @@ export class Game {
         heat: this.world.run.heat,
         heatLabel: heatLabel(this.world.run.heat),
         remnants: this.world.run.remnants,
+        essence: this.mgr.data.playerMeta.essence,
         vendetta: vendettaHud(this.world.run.vendetta),
         territory: this.world.territoryNow().rules.map((r) => r.title).join(' · '),
         holderName: this.world.territoryNow().holderName,
+        purpose,
+        showPurpose: this.mgr.data.settings.showPurpose !== false && overlay.showPurpose,
+        inCombat,
+        tutorial: overlay.showTutorial ? this.tutorial.prompt : null,
         landmarks: this.arena.landmarks,
         areaColors: Object.fromEntries(
           Object.entries(this.world.occupancy).map(([id, o]) => [id, '#' + o.accent.toString(16).padStart(6, '0')])
@@ -1013,6 +2198,9 @@ export class Game {
       this.world.enemies,
       this.arena.shrines
     );
+    this.ui.hud.setStoryMode(storyOwnsCentre);
+    this.ui.hud.setCombatFocus(overlay.combatFocus);
+    this.ui.hud.setNextOverlay(overlay.nextLabel);
     this.ui.hud.setSkills(
       this.abilities.snapshot({ skill1: '1', skill2: '2', ultimate: 'G' }),
       this.player.stats.surgeFrac
@@ -1021,7 +2209,11 @@ export class Game {
       this.audio.play('skill_ready', { volume: 0.28, pitch: id === 'pit_eruption' ? 0.8 : 1.15, minGap: 0.15 });
     }
     this.ui.hud.setLowHealth(this.player.stats.hp / this.player.stats.maxHp);
-    this.updatePrompt();
+    if (!overlay.showBanner && this.ui.hud.bannerActive) this.ui.hud.clearAreaBanner();
+    this.ui.hud.setToastsEnabled(overlay.showToasts);
+    const promptText =
+      overlay.showPrompt && !(prompt.remnant && !overlay.allowRemnantPrompt) ? prompt.text : null;
+    this.ui.hud.setPrompt(promptText);
     this.autoQuality(rdt);
   }
 
@@ -1083,6 +2275,7 @@ export class Game {
      ============================================================ */
 
   private handlePlayingInput(): void {
+    if (this.comicOpen) return;
     const p = this.player;
     const input = this.input;
 
@@ -1135,7 +2328,7 @@ export class Game {
         dz = Math.cos(p.facing);
       }
       const l = Math.hypot(dx, dz) || 1;
-      if (p.combat.tryDodge(dx / l, dz / l)) {
+      if (p.combat.tryDodge(dx / l, dz / l, p.stats)) {
         input.consume('dodge');
         this.combat.onPlayerDodge();
       }
@@ -1216,36 +2409,49 @@ export class Game {
     }
   }
 
-  private updatePrompt(): void {
+  private readPrompt(): { text: string | null; execute: boolean; interact: boolean; remnant: boolean } {
+    const empty = { text: null as string | null, execute: false, interact: false, remnant: false };
+    if (this.vendettaOffer) {
+      return {
+        text: `Y — ACCEPT VENDETTA · N — NOT NOW (${this.vendettaOffer.title})`,
+        execute: false,
+        interact: true,
+        remnant: false,
+      };
+    }
     const target = this.combat.findExecutable();
     if (target) {
-      this.ui.hud.setPrompt(`E — EXECUTE ${target.named ? target.nemesis.name.toUpperCase() : 'THEM'}`);
-      return;
+      return {
+        text: `E — EXECUTE ${target.named ? target.nemesis.name.toUpperCase() : 'THEM'}`,
+        execute: true,
+        interact: false,
+        remnant: false,
+      };
     }
     const gate = this.world.nearestExtract(this.player.position.x, this.player.position.z, 4.5);
     if (gate) {
-      this.ui.hud.setPrompt(
-        this.world.run.extraction.unlocked || this.world.run.remnants >= REMNANT.extractCost
-          ? 'E — BEGIN EXTRACTION'
-          : 'EXTRACTION LOCKED — KILL A NAMED FOE OR PAY REMNANTS'
-      );
-      return;
+      return {
+        text:
+          this.world.run.extraction.unlocked || this.world.run.remnants >= REMNANT.extractCost
+            ? 'E — BEGIN EXTRACTION'
+            : 'EXTRACTION LOCKED — KILL A NAMED FOE OR PAY REMNANTS',
+        execute: false,
+        interact: true,
+        remnant: false,
+      };
     }
     const shrine = this.arena.nearestShrine(this.player.position.x, this.player.position.z, 4.5);
     if (shrine) {
-      this.ui.hud.setPrompt('E — TAKE A POWER');
-      return;
+      return { text: 'E — TAKE A POWER', execute: false, interact: true, remnant: false };
     }
     const cache = this.arena.nearestCache(this.player.position.x, this.player.position.z, 3.6);
     if (cache) {
-      this.ui.hud.setPrompt('E — RIFLE CACHE');
-      return;
+      return { text: 'E — RIFLE CACHE', execute: false, interact: true, remnant: false };
     }
-    if (this.world.run.remnants > 0) {
-      this.ui.hud.setPrompt('E — CONSUME REMNANT (VULNERABLE HEAL)');
-      return;
+    if (this.world.run.remnants > 0 && this.player.stats.hp / this.player.stats.maxHp < 0.72) {
+      return { text: 'E — CONSUME REMNANT', execute: false, interact: false, remnant: true };
     }
-    this.ui.hud.setPrompt(null);
+    return empty;
   }
 
   private onRawKey(e: KeyboardEvent): void {
@@ -1264,6 +2470,30 @@ export class Game {
       }
       return;
     }
+    if (this.comicOpen) {
+      if (
+        e.code === 'Escape' ||
+        e.code === 'Enter' ||
+        e.code === 'Space' ||
+        e.code === 'Digit1'
+      ) {
+        e.preventDefault();
+        this.ui.comic.hide();
+      }
+      return;
+    }
+    if (this.mode === 'playing' && this.vendettaOffer) {
+      if (e.code === 'KeyY') {
+        e.preventDefault();
+        this.acceptVendettaOffer();
+        return;
+      }
+      if (e.code === 'KeyN') {
+        e.preventDefault();
+        this.refuseVendettaOffer();
+        return;
+      }
+    }
     if (this.mode === 'power' && /^Digit[1-9]$/.test(e.code)) {
       this.ui.power.pickIndex(parseInt(e.code.slice(5), 10) - 1);
       return;
@@ -1281,8 +2511,32 @@ export class Game {
         this.closeHierarchy();
       } else if (this.mode === 'paused') {
         this.resumeFromPause();
+      } else if (this.mode === 'build') {
+        this.ui.build.hide();
+        if (this.ui.title.visible) this.showTitle(this.saveSys.exists());
+        else this.openPause();
       } else if (this.mode === 'title' && this.ui.pause.visible) {
         this.ui.pause.close();
+      } else if (this.mode === 'god') {
+        if (this.ui.pause.visible) {
+          this.ui.pause.close();
+          return;
+        }
+        if (this.ui.primer.visible) {
+          this.ui.primer.hide();
+          return;
+        }
+        // The run stays in the save; leaving the board is not abandoning it.
+        this.godRun?.persist();
+        this.showTitle(true);
+      } else if (this.mode === 'legends') {
+        this.ui.legends.hide();
+        if (this.godRun && !this.godRun.ended) this.showGodScreen();
+        else this.showTitle(this.saveSys.exists());
+      } else if (this.mode === 'godend') {
+        this.ui.godEnd.hide();
+        this.godRun = null;
+        this.showTitle(true);
       }
       return;
     }
@@ -1417,11 +2671,46 @@ export class Game {
     this.ui.hud.clearAreaBanner();
     this.syncAIWorld();
     this.encounter.begin(e, salt, ctx);
-    this.maybeOfferVendetta();
-    if (e.nemesis.memory.length === 0 && e.nemesis.defeatsByPlayer === 0) {
-      this.myth(e.nemesis, 'first_encounter');
+    // The vendetta offer is a pause-the-world decision; opening it over the
+    // arrival presentation froze the sim mid-intro and stacked two cards.
+    // Arm it instead — tickPlaying opens it at the next safe beat.
+    this.vendettaOfferPending = true;
+    this.maybeTeach('named');
+    const n = e.nemesis;
+    this.comic?.onNamedIntro(n.id);
+    if (n.memory.length === 0 && n.defeatsByPlayer === 0) {
+      this.myth(n, 'first_encounter');
     } else {
-      this.ai.ensureFor(e.nemesis);
+      this.ai.ensureFor(n);
+    }
+
+    // One arrival beat — stolen steel wins; else signature entrance / remind / scar.
+    const steel = n.stolen.find((s) => s.kind === 'weapon');
+    const metBefore =
+      n.defeatsByPlayer > 0 || n.killsAgainstPlayer > 0 || n.escapedPlayer > 0 || n.returns > 0 || n.memory.length > 0;
+
+    // return_burst lives on the entrance, not a later swing.
+    if (
+      !steel &&
+      (ctx.resurrected || e.entranceKind === 'resurrection') &&
+      signatureEventMatches(n, 'resurrection')
+    ) {
+      e.queueSignatureCue();
+    }
+
+    if (steel) {
+      this.ui.hud.toast(`${n.name.toUpperCase()} CARRIES YOUR ${steel.name}`, 'hot', 4.5);
+      this.audio.play('nemesis_return', { volume: 0.55 });
+    } else if (!e.signatureCue && metBefore && n.signatureKnown) {
+      const sig = signatureDef(n.signatureId);
+      if (sig) this.ui.hud.toast(`${n.name.toUpperCase()} · ${sig.name} — YOU KNOW THIS`, 'gold', 3.4);
+    } else if (!e.signatureCue && metBefore) {
+      const scar = n.scars[n.scars.length - 1];
+      if (scar) {
+        this.ui.hud.toast(`${n.name.toUpperCase()} STILL WEARS ${SCAR_NAMES[scar.id] ?? 'YOUR MARK'}`, 'gold', 4);
+      } else if (n.killsAgainstPlayer > 0) {
+        this.ui.hud.toast(`${n.name.toUpperCase()} REMEMBERS KILLING YOU`, 'hot', 4);
+      }
     }
   }
 
@@ -1433,31 +2722,75 @@ export class Game {
     this.vfx.story('death', e.position.x, e.position.z, e.rig.accent);
   }
 
-  private onEnemyKilled(e: Enemy, executed: boolean): void {
+  /** Named signature just committed — loud existing systems, no new mechanics. */
+  private flushSignatureCues(): void {
+    for (const e of this.world.enemies) {
+      if (!e.alive || !e.named || !e.signatureCue) continue;
+      e.signatureCue = false;
+      const first = e.signatureCueFirst;
+      e.signatureCueFirst = false;
+      const def = signatureDef(e.nemesis.signatureId);
+      if (!def) continue;
+      const who = e.nemesis.name.toUpperCase();
+      // One strong line: telegraph always; counterplay folds into the same toast
+      // on first reveal (NOW panel also keeps counterplay while locked on).
+      const line = `${who} · ${def.name} — ${def.telegraph}`;
+      this.ui.hud.toast(line, 'hot', first ? 4.2 : 3.2);
+      this.audio.play('shockwave', { volume: 0.45, pitch: 0.85 });
+      this.ui.hud.screenFlash(accentColorFor(e.nemesis), 0.28, 220);
+      this.camera.shake(0.18);
+    }
+  }
+
+  private onEnemyKilled(e: Enemy, executed: boolean, definite = false): void {
+    this.noteVendettaLoyalistKill(e);
     const rank = e.nemesis.rank;
     const wasOverlord = rank === 'overlord';
+    if (e.summoned) {
+      this.world.onEnemyKilled(e, executed, definite);
+      return;
+    }
     this.player.stats.essence += Math.round((e.named ? 30 + rankIndex(rank) * 25 : 4) * (1 + this.world.run.heat / 250));
+    if (e.named && this.pendingModal?.label === 'THEIR FATE') this.pendingModal = null;
     if (e.named) {
+      this.comicHold = COMIC_HOLD_AFTER_NAMED;
       this.world.noteAllyKilled(e.nemesis);
       addHeat(this.world.run, HEAT.namedKill);
       this.world.run.extraction.unlocked = true;
       this.world.run.rerolls++;
-      if (this.abilities.unlock('void_grasp')) {
-        this.mgr.data.playerMeta.unlockedSkills = [...this.abilities.unlocked];
-        this.ui.hud.toast('LEARNED VOID GRASP', 'gold', 3.2);
+      const ci = rankIndex(rank);
+      grantCinders(this.mgr.data.playerMeta, ci >= 4 ? 8 : ci >= 3 ? 4 : ci >= 2 ? 2 : 1);
+      addMastery(this.mgr.data.playerMeta, weaponFamily(this.player.stats.weaponId) === 'hammer' ? 'hammer' : weaponFamily(this.player.stats.weaponId) === 'spear' ? 'spear' : 'sword');
+      if (e.nemesis.name.toUpperCase() === 'VARK' && !this.mgr.data.playerMeta.progress.inventory.some((x) => x.defId === 'vark_mask')) {
+        const trophy = mint(this.mgr.data.playerMeta.progress, 'vark_mask');
+        trophy.history.push({ type: 'trophy', nemesisId: e.nemesis.id, nemesisName: e.nemesis.name, turn: this.mgr.turn });
+        this.mgr.data.playerMeta.progress.inventory.push(trophy);
+        this.ui.hud.toast("VARK'S CRACKED MASK", 'gold', 4);
       }
+      if (this.abilities.unlock('void_grasp')) {
+        this.ui.hud.toast('LEARNED VOID GRASP', 'gold', 3.2);
+      } else {
+        const extras: SkillId[] = ['spectral_guard', 'hunters_brand', 'shadow_snare', 'living_weapon', 'last_defiance'];
+        const next = extras.find((id) => !this.abilities.unlocked.includes(id));
+        if (next && this.abilities.unlock(next)) this.ui.hud.toast(`LEARNED ${getSkill(next).name}`, 'gold', 2.4);
+      }
+      this.mgr.data.playerMeta.unlockedSkills = [...this.abilities.unlocked];
     }
     this.world.dropRemnant(e.named, this.combat.lastKillPlayerCredit, false);
     this.finishVendettaAgainst(e, executed, false);
-    this.world.onEnemyKilled(e, executed);
+    this.world.onEnemyKilled(e, executed, definite);
+    this.applyPlayerBuild();
     if (!wasOverlord && e.named && this.mode === 'playing') {
       window.setTimeout(() => {
         if (this.mode === 'playing') this.offerNemesisReward(e.nemesis, executed);
       }, 700);
     } else if (this.mode === 'playing' && !this.succession && this.player.stats.runKills >= this.nextBoonKills) {
       this.nextBoonKills = Math.ceil(this.nextBoonKills * 1.55 + 3);
+      const lootTurn = this.runLootCycle++ % 2 === 0;
       window.setTimeout(() => {
-        if (this.mode === 'playing') this.offerBoons('THE PIT FEEDS YOU');
+        if (this.mode !== 'playing') return;
+        if (lootTurn) this.offerRunLoot('RUN FINDING');
+        else this.offerBoons('THE PIT FEEDS YOU');
       }, 500);
     }
     this.refreshPowerChips();
@@ -1477,16 +2810,23 @@ export class Game {
       }
       this.particles.burst(e.position.x, 1.2, e.position.z, 20, 0xffffff, 9, { size: 0.14 });
       this.myth(e.nemesis, 'survived_death');
+      this.comic?.onNamedOutcome(e.nemesis.id, 'enemy_escaped');
     } else if (e.named) {
       this.encounter.begin(e, this.mgr.turn, { outcome: 'nemesis_dead' });
       this.ai.bumpEvents(e.nemesis);
       this.aiDirty = true;
+      this.comic?.onNamedOutcome(e.nemesis.id, 'enemy_dead');
     }
     this.mgr.persist();
   }
 
   private onPlayerDamaged(_from: Enemy | null, amount: number): void {
     this.ui.hud.damageVignette(0.2 + amount / 60);
+    if (amount >= 8) {
+      this.camera.kick(Math.min(0.35, amount / 80));
+      this.camera.shake(Math.min(0.25, amount / 100));
+    }
+    if (this.world.run.extraction.active) this.world.cancelExtraction('EXTRACTION BROKEN');
   }
 
   private onPlayerKilled(killer: Enemy | null): void {
@@ -1506,9 +2846,14 @@ export class Game {
     this.audio.play('player_death', { volume: 1 });
     this.ui.hud.screenFlash('#ff2010', 0.55, 700);
     this.ui.hud.setPrompt(null);
+    this.pendingModal = null;
+    this.tutorial.dismiss();
+    if (killer?.named) this.comic?.onNamedOutcome(killer.nemesis.id, 'player_dead');
+    this.dismissComic(true);
     if (killer && killer.named) {
       this.ui.hud.toast(`${fullName(killer.nemesis)} KILLED YOU`, 'hot', 6);
       this.encounter.begin(killer, this.mgr.turn, { outcome: 'player_dead' });
+      // Recap waits for the death report; do not steal the dying beat.
     }
   }
 
@@ -1541,11 +2886,16 @@ export class Game {
     );
     this.mgr.markEventsKnown(result.turn - 1);
 
+    this.pendingWorldPayoff = this.composeWorldPayoff(events, killerNemesis);
+
     const highlights = this.mgr.living().map((n) => n.name.toUpperCase());
     this.world.endRun();
     this.ui.hud.setVisible(false);
 
     const recap = composeWorldTurnRecap(this.mgr.data, events, killerNemesis?.id);
+    this.syncAIWorld();
+    observeRecapBeats(this.ai, this.mgr, recap);
+    this.maybeTeach('death');
     this.presentReport({
       title: 'YOU DIED',
       subtitle: killerNemesis
@@ -1569,10 +2919,32 @@ export class Game {
       onContinue: () => {
         this.lastReport = null;
         this.ui.report.hide();
-        this.startRun();
+        if (this.descent) this.descent.playerDied = true;
+        this.afterRunEnds();
       },
     });
     this.audio.play('world_event', { volume: 0.6 });
+  }
+
+  private composeWorldPayoff(events: WorldEvent[], killer: Nemesis | null): string[] {
+    const lines: string[] = [];
+    if (killer) {
+      const steel = killer.stolen.find((s) => s.kind === 'weapon');
+      if (steel) lines.push(`${fullName(killer).toUpperCase()} STILL CARRIES ${steel.name}`);
+      else lines.push(`${fullName(killer).toUpperCase()} KILLED YOU — THE WORLD KEPT MOVING`);
+    }
+    const important = events.filter((e) => e.important).slice(0, 3);
+    for (const ev of important) {
+      const t = ev.text.toUpperCase();
+      if (!lines.some((l) => l.includes(t.slice(0, 18)))) lines.push(t);
+    }
+    const pitHolderId = this.mgr.data.territories['pit'];
+    const pitHolder = pitHolderId ? this.mgr.byId(pitHolderId) : null;
+    if (pitHolder?.alive) {
+      const line = `${fullName(pitHolder).toUpperCase()} HOLDS THE PIT`;
+      if (!lines.includes(line)) lines.push(line);
+    }
+    return lines.slice(0, 3);
   }
 
   private onOverlordSlain(e: Enemy): void {
@@ -1601,9 +2973,14 @@ export class Game {
     if (relic) {
       meta.weapons.push(relic);
       meta.equipped = relic;
+      const inst = mint(meta.progress, relic);
+      meta.progress.inventory.push(inst);
+      meta.progress.loadout.weapon = inst.id;
+      syncLegacyWeapons(meta);
       this.ui.hud.toast(`YOU TOOK ${RELIC_WEAPONS[relic].name}`, 'gold', 6);
     }
     meta.essence += 200;
+    grantCinders(meta, 8);
 
     window.setTimeout(() => {
       this.succession = false;
@@ -1628,11 +3005,14 @@ export class Game {
 
       this.world.endRun();
       this.ui.hud.setVisible(false);
+      const recap = composeWorldTurnRecap(this.mgr.data, [...successionEvents, ageEvent]);
+      this.syncAIWorld();
+      observeRecapBeats(this.ai, this.mgr, recap);
       this.presentReport({
         title: 'THE SEAT IS EMPTY',
         subtitle: `${name} IS DEAD — ${this.mgr.ageState.name} BEGINS`,
         events: [...successionEvents, ageEvent],
-        recap: composeWorldTurnRecap(this.mgr.data, [...successionEvents, ageEvent]),
+        recap,
         highlight: this.mgr.living().map((n) => n.name.toUpperCase()),
         buttonLabel: 'INTO THE NEW AGE  ▸',
         onContinue: () => {
@@ -1690,7 +3070,35 @@ export class Game {
     };
   }
 
-  private presentOffer(options: PowerDef[], subtitle: string): void {
+  private runLootCard(def: ItemDef): PowerDef {
+    return {
+      id: `run:${def.id}` as PowerId,
+      name: def.name,
+      tag: 'UTILITY',
+      family: 'Utility',
+      desc: def.desc,
+      short: def.name,
+      stackable: false,
+      weight: 1,
+    };
+  }
+
+  /** Pick-one run modifiers — same offer shell as boons. */
+  private offerRunLoot(subtitle: string): void {
+    const owned = new Set(this.world.run.runLoot);
+    const options = runLootChoices(this.mgr.age)
+      .filter((d) => !owned.has(d.id))
+      .map((d) => this.runLootCard(d));
+    if (!options.length) return;
+    this.presentOffer(options, subtitle, 'RUN LOOT');
+  }
+
+  private presentOffer(options: PowerDef[], subtitle: string, layer = 'RUN POWER'): void {
+    this.requestModal('POWER', () => this.openPowerOffer(options, subtitle, layer));
+  }
+
+  private openPowerOffer(options: PowerDef[], subtitle: string, layer = 'RUN POWER'): void {
+    if (this.mode === 'power' || this.mode === 'choice') return;
     this.mode = 'power';
     this.ui.intro.hide();
     this.input.setEnabled(false);
@@ -1698,7 +3106,11 @@ export class Game {
     this.loop.paused = true;
     this.ui.power.present(options, subtitle, (p) => {
       const id = String(p.id);
-      if (id.startsWith('stat:')) {
+      if (id.startsWith('run:')) {
+        this.world.run.runLoot.push(id.slice(4));
+        this.applyPlayerBuild(true);
+        this.ui.hud.toast(`RUN — ${p.name}`, 'gold');
+      } else if (id.startsWith('stat:')) {
         this.player.stats.addStatBoon(id.slice(5) as RunStatId);
         this.ui.hud.toast(`${p.name} UP`, 'gold');
       } else {
@@ -1707,12 +3119,14 @@ export class Game {
         this.ui.hud.toast(`GAINED ${p.name}`, 'gold');
       }
       this.refreshPowerChips();
+      this.mgr.data.run = this.world.run;
       this.audio.play('pickup', { volume: 0.8 });
       this.resumeToPlaying();
     }, {
       reactions: this.offerReactionText(),
       rerolls: this.world.run.rerolls + this.world.run.remnants,
       onReroll: () => this.tryRerollOffer(),
+      layer,
     });
   }
 
@@ -1774,16 +3188,19 @@ export class Game {
     this.world.run.outcomeOpen = true;
     this.world.run.outcomeEnemyId = e.nemesis.id;
     const opts = outcomeOptions(e.nemesis, { allyPresent: this.world.enemies.some((x) => x.alive && x.named && x !== e), heat: this.world.run.heat });
-    this.mode = 'choice';
-    this.loop.paused = true;
-    this.input.setEnabled(false);
-    this.input.exitPointerLock();
-    this.ui.choice.present(
-      'THEIR FATE',
-      fullName(e.nemesis).toUpperCase(),
-      opts.map((o) => ({ id: o.id, title: o.title, tag: o.accepted ? 'OPEN' : 'REFUSED', desc: o.desc, disabled: !o.accepted })),
-      (id) => this.resolveOutcome(e, id as OutcomeId)
-    );
+    this.requestModal('THEIR FATE', () => {
+      if (this.mode !== 'playing') return;
+      this.mode = 'choice';
+      this.loop.paused = true;
+      this.input.setEnabled(false);
+      this.input.exitPointerLock();
+      this.ui.choice.present(
+        'THEIR FATE',
+        fullName(e.nemesis).toUpperCase(),
+        opts.map((o) => ({ id: o.id, title: o.title, tag: o.accepted ? 'OPEN' : 'REFUSED', desc: o.desc, disabled: !o.accepted })),
+        (id) => this.resolveOutcome(e, id as OutcomeId)
+      );
+    });
   }
 
   private resolveOutcome(e: Enemy, id: OutcomeId): void {
@@ -1840,7 +3257,16 @@ export class Game {
       n.branded = true;
       addHeat(this.world.run, HEAT.humiliate);
       if (rankIndex(n.rank) >= 2) this.mgr.demote(n, 'humiliation');
-      this.mgr.log(makeEvent(turn, this.mgr.age, 'humiliation', `You branded ${fullName(n)}.`, [n.id], true, 'bad'));
+      this.mgr.log(makeEvent(turn, this.mgr.age, 'humiliation', `You humiliated ${fullName(n)}.`, [n.id], true, 'bad'));
+      e.escaping = true;
+    }
+    if (id === 'branding') {
+      remember(n, 'PLAYER_HUMILIATED_ME', turn);
+      n.branded = true;
+      const scar = applyScar(n, 'burn', turn, 'you');
+      if (scar) n.title = chooseTitle(n, this.mgr.titlesInUse(n));
+      n.revengeChance = Math.min(1, n.revengeChance + 0.12);
+      this.mgr.log(makeEvent(turn, this.mgr.age, 'injury', `You branded ${fullName(n)}.`, [n.id], true, 'bad'));
       e.escaping = true;
     }
     if (id === 'message' && n.master) {
@@ -1852,20 +3278,36 @@ export class Game {
   }
 
   private offerNemesisReward(n: Nemesis, executed: boolean): void {
+    if (this.mode === 'power' || this.mode === 'choice') return;
     const vendetta = this.world.run.vendetta?.complete && this.world.run.vendetta.targetId === n.id;
     const rng = new RNG(this.world.run.runSeed ^ n.id.length * 997);
     const choices = nemesisRewardChoices(n, rng, { vendetta: !!vendetta, executed, farms: n.playerRewardFarms ?? 0 });
+    this.requestModal('NEMESIS TROPHY', () => this.openNemesisReward(n, executed, choices));
+  }
+
+  private openNemesisReward(
+    n: Nemesis,
+    _executed: boolean,
+    choices: ReturnType<typeof nemesisRewardChoices>
+  ): void {
+    if (this.mode === 'power' || this.mode === 'choice') return;
     this.mode = 'choice';
     this.loop.paused = true;
     this.input.setEnabled(false);
     this.input.exitPointerLock();
     this.ui.choice.present(
-      'THE SPOILS',
+      'NEMESIS TROPHY',
       `FROM ${fullName(n).toUpperCase()}`,
       choices.map((c) => ({ id: c.id, title: c.title, tag: c.kind.toUpperCase(), desc: c.desc })),
       (id) => {
         this.applyNemesisReward(n, choices.find((c) => c.id === id) ?? choices[0]);
         this.resumeToPlaying();
+        const runLootRoll = rankIndex(n.rank) >= 2 || this.rng.next() < 0.3;
+        if (runLootRoll) {
+          window.setTimeout(() => {
+            if (this.mode === 'playing') this.offerRunLoot('TROPHY SHARD');
+          }, 400);
+        }
         if (rankIndex(n.rank) >= 2) this.offerPower(`${n.name.toUpperCase()} IS DEAD`);
       }
     );
@@ -1896,7 +3338,7 @@ export class Game {
   }
 
   private beginExtraction(siteId: string): void {
-    if (this.world.run.lockedExits) {
+    if (this.world.run.lockedExits && !this.world.run.extractHeatImmune) {
       this.ui.hud.toast('EXITS LOCKED — HEAT', 'hot');
       return;
     }
@@ -1915,6 +3357,7 @@ export class Game {
     this.world.run.extraction.active = false;
     if (success) {
       this.player.stats.essence += 80 + Math.round(this.world.run.heat);
+      grantCinders(this.mgr.data.playerMeta, 2);
       this.mgr.log(makeEvent(this.mgr.turn, this.mgr.age, 'extraction', 'You extracted from the Pit.', [], true, 'gold'));
       for (const e of this.world.enemies) {
         if (e.named && e.alive) remember(e.nemesis, 'PLAYER_RAN_FROM_ME', this.mgr.turn);
@@ -1940,7 +3383,10 @@ export class Game {
       reducedFlash: this.mgr.data.settings.reducedFlash,
       buttonLabel: 'CONTINUE',
       extras: [{ label: 'VIEW THE WEB', onClick: () => this.openHierarchyFromReport() }],
-      onContinue: () => this.startRun(),
+      onContinue: () => {
+        if (this.descent) this.descent.extracted = true;
+        this.afterRunEnds();
+      },
     });
   }
 
@@ -1948,8 +3394,57 @@ export class Game {
     /* progress is applied on kills/escapes */
   }
 
+  /**
+   * Open the armed vendetta offer only in a genuine LULL.
+   *
+   * This is an optional, world-pausing decision, so it must never ambush the
+   * player mid-input. It waits for a sustained calm — nothing swinging at
+   * them, nothing nearby aggroed, no card on screen, no other offer just
+   * closed — rather than firing on the first frame the player happens to be
+   * idle. The offer keeps indefinitely until such a moment exists.
+   */
+  private maybeOpenPendingVendetta(dt: number): void {
+    if (this.qaSuppressOffers) return;
+    if (!this.vendettaOfferPending || this.mode !== 'playing') return;
+    if (this.world.run.vendetta) {
+      this.vendettaOfferPending = false;
+      this.vendettaOffer = null;
+      this.calmTime = 0;
+      return;
+    }
+    if (this.vendettaOffer) return;
+
+    const s = this.encounterSafety();
+    const threatNear = this.world.enemies.some(
+      (e) =>
+        e.alive &&
+        (e.combat.attacking || e.state === 'chase' || e.state === 'attack' || e.state === 'hunt_player') &&
+        Math.hypot(e.position.x - this.player.position.x, e.position.z - this.player.position.z) < 14
+    );
+    const calmNow =
+      this.runClock > 4 &&
+      this.offerQuiet <= 0 &&
+      !this.encounter.busy &&
+      !this.ui.intro.active &&
+      !this.comicOpen &&
+      !this.pendingComic &&
+      !threatNear &&
+      s.playerHpFrac >= 0.4 &&
+      !s.playerStaggered &&
+      !s.incomingActive &&
+      !s.projectileClose &&
+      this.player.combat.action === 'idle';
+
+    this.calmTime = calmNow ? this.calmTime + dt : 0;
+    if (this.calmTime < VENDETTA_CALM_REQUIRED) return;
+
+    this.calmTime = 0;
+    this.vendettaOfferPending = false;
+    this.maybeOfferVendetta();
+  }
+
   private maybeOfferVendetta(): void {
-    if (this.world.run.vendetta) return;
+    if (this.world.run.vendetta || this.vendettaOffer) return;
     const named = this.world.enemies.find((e) => e.alive && e.named);
     if (!named) return;
     if (this.world.run.offeredVendettaId === named.nemesis.id) return;
@@ -1961,32 +3456,57 @@ export class Game {
     );
     const v = rollVendetta(facts, this.mgr.data.playerMeta.vendettaPatternHistory, this.mgr.data.worldSeed, this.mgr.turn, this.player.stats.powers);
     if (!v) return;
+    this.vendettaOffer = v;
+    this.ui.hud.toast(`${v.title} — ${v.reward.text}`, 'hot', 4.5);
+  }
+
+  private acceptVendettaOffer(): void {
+    const v = this.vendettaOffer;
+    if (!v) return;
+    this.vendettaOffer = null;
     this.world.run.vendetta = v;
-    this.mode = 'choice';
-    this.loop.paused = true;
-    this.input.setEnabled(false);
-    this.input.exitPointerLock();
-    this.ui.choice.present(
-      'VENDETTA',
-      `${v.title} — ${v.reward.text}`,
-      [
-        { id: 'accept', title: 'ACCEPT', tag: 'OPTIONAL', desc: v.desc },
-        { id: 'refuse', title: 'NOT NOW', tag: 'PASS', desc: 'The slight will wait. Failure still writes history if you later abandon it.' },
-      ],
-      (id) => {
-        if (id === 'accept') {
-          v.committed = true;
-          this.mgr.data.playerMeta.vendettaPatternHistory.push(v.pattern);
-          this.ui.hud.toast(v.title, 'hot');
-        } else this.world.run.vendetta = null;
-        this.resumeToPlaying();
-      }
-    );
+    v.committed = true;
+    this.world.resetVendettaCounters();
+    this.mgr.data.playerMeta.vendettaPatternHistory.push(v.pattern);
+    this.ui.hud.toast(v.title, 'hot');
+    this.offerQuiet = OFFER_QUIET_AFTER;
+  }
+
+  private refuseVendettaOffer(): void {
+    this.vendettaOffer = null;
+    this.offerQuiet = OFFER_QUIET_AFTER;
+  }
+
+  private isVendettaTarget(e: Enemy): boolean {
+    const v = this.world.run.vendetta;
+    return !!v?.committed && v.targetId === e.nemesis.id;
+  }
+
+  private trackVendettaAdaptation(habit: keyof import('./SaveSystem').PlayerHabits): void {
+    const v = this.world.run.vendetta;
+    if (!v?.committed) return;
+    const target = this.mgr.byId(v.targetId);
+    if (!target) return;
+    const need = adaptationHabitFor(target.adaptations[0] ?? null);
+    if (need && need === habit) this.world.vendettaCounters.adapted = true;
+  }
+
+  private noteVendettaLoyalistKill(e: Enemy): void {
+    const v = this.world.run.vendetta;
+    if (!v?.committed) return;
+    if (e.nemesis.personality === 'loyalist' && e.nemesis.master === v.targetId) {
+      this.world.vendettaCounters.loyalistSeparated = true;
+    }
   }
 
   private finishVendettaAgainst(e: Enemy, executed: boolean, fled: boolean): void {
     const v = this.world.run.vendetta;
     if (!v || !v.committed || v.targetId !== e.nemesis.id) return;
+    const facts = factsFromNemesis(
+      e.nemesis,
+      (id) => this.mgr.byId(id) ?? undefined,
+      (id) => !!this.mgr.byId(id)?.alive
+    );
     const master = e.nemesis.master ? this.mgr.byId(e.nemesis.master) : null;
     const next = applyVendettaProgress(v, {
       postureBreaks: this.world.vendettaCounters.posture,
@@ -2000,13 +3520,14 @@ export class Game {
       heat: this.world.run.heat,
       heatMax: HEAT.max,
       weaponId: this.player.stats.weaponId,
-      usedWeakness: true,
-      usedAdaptedHabit: this.player.stats.habits.parry + this.player.stats.habits.dodge > 0,
-      loyalistSeparated: !this.world.enemies.some((x) => x.alive && x.nemesis.personality === 'loyalist' && x.nemesis.master === e.nemesis.id),
+      stolenWeaponId: facts.stolenWeaponId,
+      usedWeakness: this.world.vendettaCounters.weakness,
+      usedAdaptedHabit: this.world.vendettaCounters.adapted,
+      loyalistSeparated: this.world.vendettaCounters.loyalistSeparated || !facts.hasLoyalistFollower,
     });
     this.world.run.vendetta = next;
     if (next.complete) {
-      this.player.stats.essence += 45;
+      this.applyVendettaCompletion(next, e.nemesis);
       this.ui.hud.toast('VENDETTA COMPLETE', 'gold');
       this.mgr.log(makeEvent(this.mgr.turn, this.mgr.age, 'vendetta', `Vendetta against ${fullName(e.nemesis)} complete.`, [e.nemesis.id], true, 'gold'));
     } else if (next.failed) {
@@ -2016,15 +3537,141 @@ export class Game {
     }
   }
 
+  private applyVendettaCompletion(v: VendettaInstance, n: import('../nemesis/Nemesis').Nemesis): void {
+    const kind = v.reward.kind;
+    switch (kind) {
+      case 'essence':
+        this.player.stats.essence += v.pattern === 'max_heat' ? 70 : 45;
+        if (v.pattern === 'max_heat') this.world.run.extractHeatImmune = true;
+        break;
+      case 'technique': {
+        const wid =
+          v.pattern === 'defeat_recovered_weapon' && n.stolen.find((s) => s.weaponId)?.weaponId
+            ? n.stolen.find((s) => s.weaponId)!.weaponId!
+            : this.player.stats.weaponId;
+        const list = this.mgr.data.playerMeta.techniques[wid] ?? [];
+        const add =
+          wid.includes('sword') || wid === 'sunblade'
+            ? 'sword_riposte_drive'
+            : wid.includes('great') || wid === 'ashfang'
+              ? 'gs_breaker'
+              : 'spear_chase';
+        if (!list.includes(add)) list.push(add);
+        this.mgr.data.playerMeta.techniques[wid] = list;
+        this.player.stats.techniques = this.mgr.data.playerMeta.techniques[this.player.stats.weaponId] ?? list;
+        break;
+      }
+      case 'territory':
+        this.world.run.territoryMods = applyVendettaRewardKind('territory', this.world.run.territoryMods, n.territory, this.mgr.turn);
+        this.mgr.data.territoryMods = this.world.run.territoryMods;
+        this.world.liberateCurrent('destabilised');
+        break;
+      case 'permanence':
+        n.fakeDeathPenalty = Math.min(1, (n.fakeDeathPenalty ?? 0) + 0.45);
+        break;
+      case 'weaken':
+        if (n.strengths.length) n.strengths = n.strengths.slice(1);
+        break;
+      case 'steal_adapt':
+        if (n.adaptations[0]) {
+          const t = n.adaptations[0];
+          n.adaptations = n.adaptations.filter((x) => x !== t);
+          this.player.stats.stolenTraits.push(t);
+        }
+        break;
+      case 'informant': {
+        const loyalist = this.mgr
+          .living()
+          .find((x) => x.personality === 'loyalist' && x.master === n.id);
+        if (loyalist) {
+          loyalist.informant = true;
+          this.world.run.informantIds.push(loyalist.id);
+        }
+        break;
+      }
+      case 'power':
+        window.setTimeout(() => {
+          if (this.mode === 'playing') this.offerPower(v.title);
+        }, 900);
+        break;
+      case 'choice':
+        break;
+    }
+    this.mgr.persist();
+  }
+
+
+  private requestModal(label: string, open: () => void): void {
+    if (this.mode === 'dying' || this.mode === 'report' || this.mode === 'title') return;
+    if (this.mode === 'power' || this.mode === 'choice') return;
+    if (this.canOpenModal()) {
+      open();
+      return;
+    }
+    const rank = this.modalRank(label);
+    if (!this.pendingModal || rank >= this.modalRank(this.pendingModal.label)) {
+      this.pendingModal = { label, open };
+    }
+  }
+
+  private modalRank(label: string): number {
+    if (label === 'THEIR FATE') return 3;
+    if (label === 'NEMESIS TROPHY') return 2;
+    return 1;
+  }
+
+  private canOpenModal(): boolean {
+    if (this.mode !== 'playing') return false;
+    if (this.comicOpen) return false;
+    if (this.encounter.busy || this.ui.intro.active) return false;
+    if (this.player.combat.action !== 'idle') return false;
+    return true;
+  }
+
+  private flushPendingModal(rdt: number): void {
+    const calm =
+      this.mode === 'playing' &&
+      !this.comicOpen &&
+      !this.encounter.busy &&
+      !this.ui.intro.active &&
+      this.player.combat.action === 'idle';
+    this.modalCalm = calm ? this.modalCalm + rdt : 0;
+    if (!this.pendingModal) return;
+    if (!calm || this.modalCalm < 0.55) return;
+    const job = this.pendingModal;
+    this.pendingModal = null;
+    this.modalCalm = 0;
+    job.open();
+  }
+
+  private flushPendingComic(rdt: number): void {
+    if (this.comicHold > 0) this.comicHold = Math.max(0, this.comicHold - rdt);
+    const emptyLull =
+      this.mode === 'playing' &&
+      !this.comicOpen &&
+      !this.encounter.busy &&
+      !this.ui.intro.active &&
+      this.player.combat.action === 'idle' &&
+      !this.world.enemies.some((e) => e.alive);
+    this.comicCalm = emptyLull ? this.comicCalm + rdt : 0;
+    if (!this.pendingComic || this.comicOpen) return;
+    if (this.mode !== 'playing') return;
+    this.comicAge += rdt;
+    if (!this.comicForce && this.comicAge > COMIC_EXPIRE) {
+      this.pendingComic = null;
+      this.comicAge = 0;
+      return;
+    }
+    this.tryPresentComic();
+  }
 
   /* ============================================================
      screens
      ============================================================ */
 
   private openHierarchy(): void {
-    if (this.mode !== 'playing') return;
+    if (this.mode !== 'playing' || this.comicOpen) return;
     this.mode = 'hierarchy';
-    this.ui.intro.hide();
     this.loop.paused = true;
     this.input.setEnabled(false);
     this.input.exitPointerLock();
@@ -2036,7 +3683,10 @@ export class Game {
 
   private presentReport(opts: ReportArgs): void {
     this.lastReport = opts;
+    this.dismissComic(true);
     this.ui.intro.hide();
+    this.ui.choice.hide();
+    this.ui.power.hide();
     this.ui.report.present({
       title: opts.title,
       subtitle: opts.subtitle,
@@ -2049,6 +3699,7 @@ export class Game {
       extras: [{ label: 'VIEW THE WEB', onClick: () => this.openHierarchyFromReport() }],
       onContinue: opts.onContinue,
       spotlight: opts.spotlight,
+      recapLineFor: opts.recap?.length ? (b) => recapBeatLineFor(this.ai, b) : undefined,
     });
   }
 
@@ -2068,13 +3719,17 @@ export class Game {
   private closeHierarchy(): void {
     this.ui.hierarchy.close();
     if (this.mode !== 'hierarchy') return;
+    if (this.hierarchyFromGod) {
+      this.hierarchyFromGod = false;
+      this.showGodScreen();
+      return;
+    }
     this.resumeToPlaying();
   }
 
   private openPause(): void {
-    if (this.mode !== 'playing') return;
+    if (this.mode !== 'playing' || this.comicOpen) return;
     this.mode = 'paused';
-    this.ui.intro.hide();
     this.loop.paused = true;
     this.input.setEnabled(false);
     this.input.exitPointerLock();
@@ -2105,6 +3760,7 @@ export class Game {
           this.endRunAndBank();
           this.showTitle(true);
         },
+        onBuild: () => this.openBuild('paused'),
         onSettingsChanged: (s) => {
           this.applySettings(s);
           this.mgr.persist();
@@ -2112,10 +3768,19 @@ export class Game {
         ai: this.aiSettingsHooks(),
         runStats: () =>
           this.player.stats.statList().map((s) => ({ name: s.def.name, text: s.text, count: s.count })),
+        currencies: {
+          remnants: this.world.run.remnants,
+          essence: this.mgr.data.playerMeta.essence,
+        },
         skills: {
           unlocked: this.abilities.unlocked,
           loadout: this.abilities.loadout,
-          descriptions: this.abilities.unlocked.map((id) => {
+          ultimate: this.abilities.ultimate,
+          ultimates: this.abilities.unlocked.filter(isUltimateSkill).concat(this.abilities.ultimate).filter((id, i, a) => a.indexOf(id) === i).map((id) => {
+            const d = getSkill(id);
+            return { id, name: d.name, desc: d.desc };
+          }),
+          descriptions: this.abilities.unlocked.filter((id) => !isUltimateSkill(id)).map((id) => {
             const d = getSkill(id);
             return { id, name: d.name, desc: d.desc };
           }),
@@ -2127,7 +3792,29 @@ export class Game {
             this.world.run.skillLoadout = this.abilities.loadout;
             this.mgr.persist();
           },
+          onEquipUltimate: (id) => {
+            this.abilities.unlock(id);
+            this.abilities.equipUltimate(id);
+            this.mgr.data.playerMeta.ultimateLoadout = this.abilities.ultimate;
+            this.mgr.data.playerMeta.unlockedSkills = [...this.abilities.unlocked];
+            this.mgr.persist();
+          },
         },
+        onSkipTutorials: () => {
+          this.tutorial.skipAll(this.mgr.data.settings);
+          this.godGuide.finish();
+          this.godLesson = null;
+          this.mgr.data.settings.tutorial.godGuide = 'done';
+          this.mgr.persist();
+          this.ui.hud.toast('TUTORIALS SKIPPED', 'neutral');
+        },
+        onReplayTutorials: () => {
+          this.tutorial.replay(this.mgr.data.settings);
+          this.godGuide.restart();
+          this.godLesson = null;
+          this.mgr.persist();
+        },
+        ...this.telemetryPauseHooks(),
       },
       this.world.runActive
     );
@@ -2149,6 +3836,11 @@ export class Game {
     this.ui.hud.setVisible(true);
     this.ui.choice.hide();
     this.ui.power.hide();
+    // Coming out of ANY offer, give the player their hands back for a moment
+    // before another optional one may interrupt. Two modals back to back is
+    // the fastest way to make a reward feel like paperwork.
+    this.offerQuiet = OFFER_QUIET_AFTER;
+    this.calmTime = 0;
   }
 
   /* ============================================================
@@ -2157,15 +3849,26 @@ export class Game {
 
   private applySettings(s: Settings): void {
     this.audio.setVolume(s.masterVolume);
-    this.camera.shakeScale = s.cameraShake;
-    this.vfx.reduced = s.cameraShake < 0.35 || s.quality === 'low';
+    const motion = s.reducedMotion ? 0.5 : 1;
+    this.camera.shakeScale = s.cameraShake * motion;
+    this.loop.hitStopScale = motion;
+    this.vfx.reduced = s.cameraShake < 0.35 || s.quality === 'low' || s.reducedMotion;
     this.ui.hud.setMinimapVisible(s.showMinimap);
     this.ui.hud.reducedFlash = s.reducedFlash;
+    this.ui.hud.setScale(s.hudScale ?? 1);
     document.documentElement.classList.toggle('reduced-motion', s.reducedMotion);
     document.documentElement.classList.toggle('reduced-flash', s.reducedFlash);
+    document.documentElement.style.setProperty('--hud-scale', String(s.hudScale ?? 1));
     this.ai.setSettings(s.ai);
+    this.comic?.setEnabled(!s.reducedMotion);
     this.applyQuality(s.quality);
     if (this.mode === 'title' && this.saveSys.exists()) this.warmTitleGeneration();
+  }
+
+  /** Respect player opt-in for QA-grade frame/hit recording. */
+  private syncTelemetryOptIn(): void {
+    if (this.mgr.data.playerMeta.telemetryOptIn) this.telemetry.start();
+    else this.telemetry.stop();
   }
 
   /**
@@ -2262,7 +3965,10 @@ export class Game {
         if (e) {
           e.hp = 0;
           e.kill();
-          g.onEnemyKilled(e, false);
+          // Definite: a debug kill that sometimes rolls a fake death is not a
+          // debug tool, and the survivor kept walking off afterwards writing
+          // I_ESCAPED_PLAYER over whatever the caller did next.
+          g.onEnemyKilled(e, false, true);
           return;
         }
         const n = g.mgr.byId(id);
@@ -2339,6 +4045,7 @@ export class Game {
         g.startRun();
       },
       resetSave() {
+        g.ai.invalidateAllWork();
         g.mgr.wipe();
         g.ai.clearCaches();
         g.mgr.newWorld(randomSeed());
@@ -2427,6 +4134,10 @@ export class Game {
       forceResurrection(id: string) {
         const n = g.mgr.byId(id);
         if (!n) return;
+        // Clear any body of theirs still on stage first. A live enemy that is
+        // mid-escape will keep writing to this record after the resurrection,
+        // so the returning nemesis would arrive classified as an escapee.
+        g.world.removeNamedFromStage(id);
         if (n.alive) {
           n.alive = false;
           n.diedOnTurn = g.mgr.turn - 1;
@@ -2476,15 +4187,22 @@ export class Game {
         g.abilities.infinite = g.debugInfiniteSurge;
       },
       unlockAllSkills() {
-        for (const id of ['shadow_step', 'ground_rupture', 'void_grasp'] as SkillId[]) g.abilities.unlock(id);
+        for (const id of ['shadow_step', 'ground_rupture', 'void_grasp', 'spectral_guard', 'hunters_brand', 'shadow_snare', 'pit_eruption', 'living_weapon', 'last_defiance'] as SkillId[]) {
+          g.abilities.unlock(id);
+        }
         g.mgr.data.playerMeta.unlockedSkills = [...g.abilities.unlocked];
         g.mgr.persist();
       },
       equipSkill(slot: 0 | 1, id: string) {
-        if (!isUnlockableSkill(id) || id === 'pit_eruption') return;
+        if (!isUnlockableSkill(id) || isUltimateSkill(id)) return;
         const cur = [...g.abilities.loadout] as [SkillId, SkillId];
         cur[slot] = id;
         g.abilities.equip(cur[0], cur[1]);
+      },
+      equipUltimate(id: string) {
+        if (!isUltimateSkill(id)) return;
+        g.abilities.unlock(id as SkillId);
+        g.abilities.equipUltimate(id as SkillId);
       },
       kitDump() {
         return {
@@ -2494,6 +4212,45 @@ export class Game {
           loadout: g.abilities.loadout,
           surge: g.player.stats.surge,
         };
+      },
+      progressAction(cmd: string, arg?: string) {
+        return g.progressAction(cmd, arg);
+      },
+
+      /* ---- THE LONG GAME ---- */
+      godState() {
+        return g.godDebugState();
+      },
+      godAdvance(cycles: number) {
+        const run = g.godRun;
+        if (!run) return;
+        run.advanceMany(cycles);
+        if (run.ended && g.mode === 'god') g.presentGodEnd(run.outcome!);
+        else g.ui.god.refresh();
+      },
+      godAddInfluence(amount: number) {
+        const run = g.godRun;
+        if (!run) return;
+        run.god.influence = Math.max(0, Math.min(run.god.influenceMax, run.god.influence + amount));
+        g.ui.god.refresh();
+      },
+      godAddChaos(amount: number) {
+        const run = g.godRun;
+        if (!run) return;
+        addChaos(run.god, amount);
+        g.ui.god.refresh();
+      },
+      godForceCrisis() {
+        const run = g.godRun;
+        if (!run) return 'no run';
+        return g.forceGodCrisis();
+      },
+      godEndRun() {
+        if (!g.godRun) return;
+        g.abandonGodRun();
+      },
+      godStart() {
+        g.openLongGame();
       },
       setTimeScale(s: number) {
         g.loop.timeScale = s;
@@ -2646,6 +4403,9 @@ export class Game {
         if (!e) return;
         g.encounter.playKind(e, kind as EncounterKind, g.mgr.turn);
       },
+      forceComicSlice() {
+        return g.__comicSlice();
+      },
       stageNemesisLoop(id: string) {
         const n = g.mgr.byId(id);
         if (!n || g.mode !== 'playing') return;
@@ -2704,6 +4464,8 @@ export class Game {
         best = e;
       }
     }
+    best.pendingIntro = false;
+    best.introHold = false;
     const id = kind === 'slam' ? 'ground_slam' : kind === 'projectile' ? 'single_arrow' : null;
     const def =
       exact ??
@@ -2746,6 +4508,7 @@ export class Game {
       heat: this.world.run.heat,
       remnants: this.world.run.remnants,
       vendetta: this.world.run.vendetta?.title ?? null,
+      multiRule: this.world.multiRule?.id ?? null,
       powers: this.player.stats.powers.ids(),
       worldTurn: this.mgr.turn,
       worldAge: this.mgr.age,
@@ -2756,6 +4519,10 @@ export class Game {
       axisX: this.input.axisX,
       axisY: this.input.axisY,
       loopPaused: this.loop.paused,
+      introActive: this.ui.intro.active,
+      encounterBusy: this.encounter.busy,
+      overlayNext: this.pendingModal?.label ?? (this.pendingComic ? 'ENCOUNTER' : null),
+      comicOpen: this.comicOpen,
       debugOpen: this.debugOpen,
       lockGrace: Math.round(this.lockGrace * 100) / 100,
       vel: Math.round(Math.hypot(this.player.controller.velocity.x, this.player.controller.velocity.z) * 100) / 100,
@@ -2887,6 +4654,7 @@ export class Game {
       this.player.position.x + 6,
       this.player.position.z + 6
     );
+    if (e) this.encounter.playKind(e, 'FIRST_MEETING', this.mgr.turn);
     return e ? fullName(n) : 'failed';
   }
 
@@ -2926,6 +4694,43 @@ export class Game {
   /** Presentation snapshot for tests. */
   __lastEncounter(): Record<string, unknown> | null {
     return (this.encounter.last as unknown as Record<string, unknown>) ?? null;
+  }
+
+  /**
+   * Vertical slice: ensure a named nemesis is on stage, capture 4 comic panels
+   * (intro / attack / impact / outcome), open the viewer when ready.
+   */
+  __comicSlice(qualityArg?: string): Record<string, unknown> {
+    if (qualityArg === 'potato' || qualityArg === 'fast' || qualityArg === 'balanced' || qualityArg === 'offline') {
+      this.comic.setQuality(qualityArg);
+    }
+    if (this.mode !== 'playing') {
+      // Best-effort: slice needs a live arena. Tests should descend first.
+      if (this.mode === 'title') {
+        return { ok: false, error: 'not_playing', hint: 'descend first, then __sim("comicSlice")' };
+      }
+    }
+    let e = this.world.enemies.find((x) => x.alive && x.named) ?? null;
+    if (!e) {
+      const n =
+        this.mgr.living().find((x) => x.rank !== 'grunt') ??
+        this.mgr.living()[0] ??
+        null;
+      if (!n) {
+        // Spawn a captain if the roster is empty of named foes
+        this.debugHooks().spawnNemesis('captain');
+        e = this.world.enemies.find((x) => x.alive && x.named) ?? null;
+      } else {
+        e = this.world.spawnNamed(n, this.player, true, this.player.position.x + 5, this.player.position.z + 3);
+      }
+    }
+    if (!e) return { ok: false, error: 'no_named_on_stage' };
+    this.comicForce = true;
+    this.comicAge = 0;
+    // Pose them for a readable capture
+    e.taunt();
+    const result = this.comic.forceSlice(e.nemesis.id);
+    return { ...result, mode: this.mode, comicOpen: this.comicOpen };
   }
 
   /* ---------- QA hooks ---------- */
@@ -3113,6 +4918,12 @@ export class Game {
     return Math.round(this.player.stats.rangedCharges * 100) / 100;
   }
 
+  /** Drop leftover skill/attack pose so a later QA beat can fire. */
+  __qaIdle(): void {
+    this.player.combat.reset();
+    this.input.clearBuffers();
+  }
+
   /** Grant run-stat boons directly, for TEST 5 build assembly. */
   __qaGrantStat(id: string, count = 1): void {
     for (let i = 0; i < count; i++) this.player.stats.addStatBoon(id as RunStatId);
@@ -3120,6 +4931,21 @@ export class Game {
 
   __qaStatValue(id: string): number {
     return this.player.stats.stat(id as RunStatId);
+  }
+
+  __qaSetWeapon(id: string): void {
+    this.player.stats.weaponId = id;
+    this.player.rebuildWeapon();
+  }
+
+  __qaCastSkill(slot: 'skill1' | 'skill2' | 'ultimate'): boolean {
+    this.abilities.reset();
+    this.player.combat.reset();
+    this.player.stats.surge = this.player.stats.surgeMax;
+    this.abilities.infinite = true;
+    const ok = this.tryPlayerSkill(slot);
+    this.abilities.infinite = this.debugInfiniteSurge;
+    return ok;
   }
 
   __qaForceAttack(kind: 'any' | 'slam' | 'projectile'): string {
@@ -3153,6 +4979,8 @@ export class Game {
       ['fighter', 'sword'],
       ['heavy', 'club'],
       ['archer', 'bow'],
+      ['duelist', 'sword'],
+      ['commander', 'spear'],
     ];
     const out: string[] = [];
     let i = 0;
@@ -3170,6 +4998,10 @@ export class Game {
         this.player.position.x + Math.sin(ang) * dist,
         this.player.position.z + Math.cos(ang) * dist
       );
+      if (e) {
+        e.pendingIntro = false;
+        e.introHold = false;
+      }
       out.push(`${arch}:${e ? n.name : 'FAILED'}`);
       i++;
     }
@@ -3179,7 +5011,8 @@ export class Game {
 
   /** Spawn exactly one enemy of the given archetype near the player. */
   __qaSpawnOne(arch: Archetype, dist = 12): string {
-    const weapon: WeaponType = arch === 'heavy' ? 'club' : arch === 'archer' ? 'bow' : 'sword';
+    const weapon: WeaponType =
+      arch === 'heavy' ? 'club' : arch === 'archer' ? 'bow' : arch === 'commander' ? 'spear' : 'sword';
     const n = this.mgr.recruit('elite', false);
     n.archetype = arch;
     n.weapon = weapon;
@@ -3192,6 +5025,11 @@ export class Game {
       this.player.position.x - Math.sin(a) * dist,
       this.player.position.z - Math.cos(a) * dist
     );
+    if (e) {
+      e.pendingIntro = false;
+      e.introHold = false;
+      e.engagePlayer = true;
+    }
     return e ? `${arch}:${e.uid}` : 'failed';
   }
 
@@ -3235,10 +5073,25 @@ export class Game {
 
 
   private qaNoAutoPause = false;
+  /** headless harness: never open optional world-pausing offers */
+  private qaSuppressOffers = false;
 
+  /**
+   * Put the game into headless-harness mode.
+   *
+   * As well as disabling the lost-pointer-lock auto-pause, this suppresses the
+   * optional vendetta prompt. That prompt is a world-pausing decision that
+   * opens at the first calm moment, which for an animation or QA harness is
+   * precisely the moment it is measuring — a frozen loop then reads as
+   * "the gait cycle stopped advancing". Harnesses that mean to exercise the
+   * offer (playtest, aitest) simply do not call this.
+   */
   __qaStart(): void {
     this.telemetry.start();
     this.qaNoAutoPause = true;
+    this.qaSuppressOffers = true;
+    this.vendettaOfferPending = false;
+    this.vendettaOffer = null;
   }
 
   __qaStop(): Record<string, unknown> {
@@ -3341,6 +5194,83 @@ export class Game {
     this.myth(this.mgr.byId(id), kind);
   }
 
+  /** Test-only provider. Null restores the real backend path. */
+  __aiInstallHarness(cfg: {
+    delayMs?: number;
+    available?: boolean;
+    fail?: boolean;
+    timeout?: boolean;
+    malformed?: boolean;
+    hang?: boolean;
+  } | null): void {
+    this.ai.installHarness(cfg);
+  }
+
+  /** Long-game AI presentation, never mechanical state. */
+  __godAi(cmd: string, arg?: string): Record<string, unknown> {
+    const run = this.godRun;
+    if (cmd === 'harnessOff') {
+      this.ai.installHarness(null);
+      return { ok: true };
+    }
+    if (!run) return { active: false };
+    if (cmd === 'snapshot') return { ok: true, snap: mechanicalSnapshot(this.mgr, run.god) };
+    if (cmd === 'scope') return { scope: this.ai.generationScope, queued: this.ai.queue.queuedCount, active: this.ai.queue.activeCount, overlays: this.ai.overlayCount() };
+    if (cmd === 'inspect') {
+      const n = this.mgr.byId(arg ?? '') ?? this.mgr.living()[0];
+      if (!n) return { ok: false };
+      this.syncAIWorld();
+      observeInspect(this.ai, this.mgr, run.god, n);
+      if (this.mode === 'god') this.ui.god.inspect(n.id);
+      const key = dossierKey(n, run.god);
+      const overlay = this.ai.peekOverlay(key);
+      return {
+        ok: true,
+        id: n.id,
+        name: n.name,
+        dossier: dossierFor(this.ai, n, run.god, this.mgr),
+        overlay: overlay,
+        generated: overlay != null,
+        title: this.ai.titleFor(n),
+        displayName: this.ai.displayName(n),
+        eventVersion: n.ai?.eventVersion ?? 0,
+      };
+    }
+    if (cmd === 'feedVoices') {
+      const list = run.god.feed
+        .filter((b) => BEAT_RANK[b.priority] >= BEAT_RANK.major)
+        .slice(-40)
+        .map((b) => ({
+          id: b.id,
+          kind: b.kind,
+          headline: b.headline,
+          voice: beatVoiceFor(this.ai, b, run.god),
+          key: beatKey(b, run.god),
+        }));
+      return { list };
+    }
+    if (cmd === 'recap') {
+      const o = run.outcome;
+      if (!o) return { ok: false };
+      return {
+        ok: true,
+        line: recapLineFor(this.ai, o, run.god.run),
+        key: recapKey(o, run.god.run),
+        overlay: this.ai.peekOverlay(recapKey(o, run.god.run)),
+      };
+    }
+    if (cmd === 'legends') {
+      const list = (this.mgr.data.legends ?? []).map((l) => ({
+        id: l.id,
+        epitaph: l.epitaph,
+        voice: legendVoiceFor(this.ai, l),
+        overlay: this.ai.peekOverlay(legendKey(l)),
+      }));
+      return { list };
+    }
+    return { error: 'unknown ' + cmd };
+  }
+
   /** Everything the save holds, so a test can assert no key is in it. */
   __rawSave(): string {
     return localStorage.getItem('shdowpit.world.v1') ?? '';
@@ -3349,6 +5279,35 @@ export class Game {
   __storySelfTest(): { passed: number; failed: number; log: string } {
     const r = runStorySelfTest();
     return { passed: r.passed, failed: r.failed, log: formatStorySelfTest(r) };
+  }
+
+  __wiringSelfTest(): {
+    passed: number;
+    failed: number;
+    knownGaps: number;
+    regressionPassed: number;
+    regressionFailed: number;
+    log: string;
+  } {
+    const r = runWiringSelfTest({
+      comicServiceReady: !!this.comic,
+      onGodEndIsStub: false,
+      overlayGateWired: true,
+      comicPlayerDeadWired: true,
+      runLootWired: true,
+      nemesisEventsWired: true,
+      telemetryOptInWired: true,
+      abilityManagerRemoved: true,
+    });
+    const wired = r.results.filter((x) => x.category === 'wired');
+    return {
+      passed: r.passed,
+      failed: r.failed,
+      knownGaps: r.knownGaps,
+      regressionPassed: wired.filter((x) => x.ok).length,
+      regressionFailed: wired.filter((x) => !x.ok).length,
+      log: formatWiringSelfTest(r),
+    };
   }
 
   __storyAction(cmd: string): string {
@@ -3435,6 +5394,142 @@ export class Game {
     }
   }
 
+  private progressAction(cmd: string, arg?: string): string {
+    const meta = this.mgr.data.playerMeta;
+    ensureStarterGear(meta);
+    const p = meta.progress;
+    const give = (defId: string) => {
+      const it = mint(p, defId);
+      p.inventory.push(it);
+      if (it.kind === 'weapon' || it.slot === 'chest' || it.kind === 'relic' || it.kind === 'trophy') equipItem(meta, it.id);
+      this.applyPlayerBuild();
+      this.mgr.persist();
+      return `${it.name} (${it.id})`;
+    };
+    const unlockChain = (ids: string[]) => {
+      grantCinders(meta, 40);
+      for (const id of ids) unlockNode(meta, id);
+    };
+    switch (cmd) {
+      case 'dump': {
+        const w = p.loadout.weapon;
+        const stolen = this.mgr.living().filter((n) => n.stolen.length).map((n) => `${n.name}:${n.stolen.map((s) => s.name).join(',')}`);
+        return [
+          `cinders ${p.cinders}`,
+          `nodes ${p.skillNodes.join(',') || '—'}`,
+          `weapon ${w ?? '—'} ${meta.equipped}`,
+          `pack ${p.inventory.length}`,
+          `stolen ${stolen.join(' | ') || '—'}`,
+          `powers ${this.player.stats.powers.ids().join(',')}`,
+        ].join('\n');
+      }
+      case 'hammer':
+        return give('pit_hammer');
+      case 'spear':
+        return give('ash_spear');
+      case 'sunspear':
+        return give('sunspear');
+      case 'randWeapon':
+        return give(['duelist_blade', 'breaker_maul', 'long_needle', 'cinder_sword', 'toxic_spear'][Math.floor(Math.random() * 5)]);
+      case 'randArmor':
+        return give(['light_chest', 'heavy_chest', 'toxic_chest', 'toxic_helm', 'hunter_legs'][Math.floor(Math.random() * 5)]);
+      case 'anvil':
+        return give('pit_anvil');
+      case 'lens':
+        return give('toxic_lens');
+      case 'cinders':
+        grantCinders(meta, 20);
+        this.mgr.persist();
+        return String(p.cinders);
+      case 'respec':
+        respecTree(meta);
+        this.mgr.persist();
+        return 'tree cleared';
+      case 'mastery':
+        p.mastery = { sword: 3, hammer: 3, spear: 3 };
+        this.mgr.persist();
+        return 'mastery 3';
+      case 'buildA':
+        unlockChain(['dash_strike', 'heavy_breaker', 'riposte']);
+        give('pit_hammer');
+        give('heavy_chest');
+        give('pit_anvil');
+        this.applyPlayerBuild();
+        return 'BUILD A — hammer / heavy / breaker / riposte / anvil';
+      case 'buildB':
+        unlockChain(['crippling_bolt', 'piercing_shot', 'multishot']);
+        give('ash_spear');
+        give('light_chest');
+        give('toxic_lens');
+        this.applyPlayerBuild();
+        return 'BUILD B — spear / light / cripple / multishot / toxic lens';
+      case 'buildC':
+        unlockChain(['dash_strike', 'heavy_breaker', 'riposte', 'combo_finisher', 'execution_flow']);
+        give('iron_sword');
+        give('light_chest');
+        this.player.stats.addPower('execution_surge');
+        this.applyPlayerBuild();
+        return 'BUILD C — sword / riposte / dash / execution surge';
+      case 'vark': {
+        let n = this.mgr.living().find((x) => x.name.toUpperCase() === 'VARK');
+        if (!n) {
+          n = this.mgr.recruit('captain', true);
+          n.name = 'Vark';
+          n.title = 'THE THIEF';
+        }
+        n.territory = this.world.currentArea.id;
+        n.alive = true;
+        n.diedOnTurn = null;
+        if (this.mode === 'playing') this.world.spawnNamed(n, this.player, true);
+        this.mgr.persist();
+        return n.id;
+      }
+      case 'forceSteal': {
+        const e = this.world.enemies.find((x) => x.alive && x.named);
+        const n = e?.nemesis ?? this.mgr.living().find((x) => x.name.toUpperCase() === 'VARK') ?? this.mgr.living()[0];
+        if (!n) return 'no named enemy';
+        const stolen = this.world.forceStealFrom(n);
+        this.applyPlayerBuild();
+        this.mgr.persist();
+        return stolen ? `${n.name} carries ${stolen.name} (${stolen.weaponId})` : 'nothing to steal';
+      }
+      case 'trophy': {
+        const e = this.world.enemies.find((x) => x.named);
+        const n = e?.nemesis ?? this.mgr.living()[0];
+        if (!n) return 'no nemesis';
+        const it = mint(p, 'vark_mask');
+        it.history.push({ type: 'trophy', nemesisId: n.id, nemesisName: n.name, turn: this.mgr.turn });
+        p.inventory.push(it);
+        this.mgr.persist();
+        return it.name;
+      }
+      case 'runLoot': {
+        this.world.run.runLoot.push('run_posture', 'run_proj', 'run_toxic_shot');
+        this.applyPlayerBuild();
+        return this.world.run.runLoot.join(',');
+      }
+      case 'procs':
+        return this.combat.effects.dump();
+      case 'effects':
+        return [
+          ...this.player.stats.powers.list().map((x) => `${x.def.name}${x.count > 1 ? ' x' + x.count : ''}`),
+          `armorIncoming ${this.player.stats.armorIncomingMul}`,
+          `weapon ${this.player.stats.weaponId}`,
+        ].join('\n');
+      default:
+        if (cmd.startsWith('unlock:')) {
+          grantCinders(meta, 10);
+          const id = cmd.slice(7);
+          const r = unlockNode(meta, id);
+          if (SKILL_NODE_MAP.get(id) && this.world.runActive) this.applyPlayerBuild();
+          this.mgr.persist();
+          return r;
+        }
+        void arg;
+        return 'unknown';
+    }
+  }
+
   __grantPower(id: PowerId): void {
     this.player.stats.addPower(id);
     this.refreshPowerChips();
@@ -3483,6 +5578,24 @@ export class Game {
       case 'fakedeath':
         run.blockFakeDeath = true;
         break;
+      case 'verticalSlice':
+        return applyVerticalSlice({ mgr: this.mgr, world: this.world, player: this.player, rng: this.rng, arena: this.arena });
+      case 'procStress': {
+        const channels = ['primary', 'secondary', 'dot', 'reflect', 'eve', 'area', 'afterimage'] as const;
+        const kinds = ['cooldownRefund', 'remnant', 'killCredit', 'surge', 'reaction'] as const;
+        let blocked = 0;
+        let allowed = 0;
+        for (const ch of channels) {
+          for (const k of kinds) {
+            if (canProc({ channel: ch } as DamageInfo, k)) allowed++;
+            else blocked++;
+          }
+        }
+        return { blocked, allowed, secondaryNoCd: !canProc({ channel: 'secondary' } as DamageInfo, 'cooldownRefund') };
+      }
+      case 'tutorialReplay':
+        this.tutorial.replay(this.mgr.data.settings, (arg as TutorialId) || undefined);
+        break;
       case 'surrender': {
         const e = this.world.enemies.find((x) => x.alive && x.named);
         if (e) this.maybeOpenOutcome(e, true);
@@ -3492,6 +5605,15 @@ export class Game {
         const e = this.world.enemies.find((x) => x.named);
         if (e) this.offerNemesisReward(e.nemesis, true);
         break;
+      }
+      case 'comicSlice':
+        return this.__comicSlice(arg);
+      case 'comicStatus':
+        return this.comic?.status() ?? { ok: false };
+      case 'comicQuality': {
+        const q = (arg as ComicQualityProfileId) || 'potato';
+        this.comic?.setQuality(q);
+        return { quality: this.comic?.quality ?? q };
       }
       default:
         break;
@@ -3507,6 +5629,221 @@ export class Game {
       channel: this.combat.lastKillChannel,
       playerCredit: this.combat.lastKillPlayerCredit,
     };
+  }
+
+  /**
+   * Test hook for THE LONG GAME. The god layer is almost entirely invisible
+   * from the DOM — a hundred cycles of simulation leave no pixels behind — so
+   * the harness drives it through here and asserts on the returned state.
+   */
+  __god(cmd: string, arg?: string, arg2?: string, arg3?: string): Record<string, unknown> {
+    const run = this.godRun;
+    switch (cmd) {
+      case 'start': {
+        this.openLongGame();
+        return this.__god('state');
+      }
+      case 'state': {
+        if (!this.godRun) return { active: false, mode: this.mode };
+        const g = this.godRun.god;
+        return {
+          active: true,
+          mode: this.mode,
+          run: g.run,
+          cycle: g.cycle,
+          act: g.act,
+          phase: g.phase,
+          influence: g.influence,
+          influenceMax: g.influenceMax,
+          chaos: g.chaos,
+          chaosPeak: g.chaosPeak,
+          living: this.mgr.living().length,
+          dead: this.mgr.dead().length,
+          factions: this.godRun.god.factions.filter((f) => !f.destroyedCycle).length,
+          conditions: g.conditions.length,
+          godConditions: g.conditions.filter((c) => c.source === 'god').length,
+          crisis: g.crisis ? { kind: g.crisis.kind, title: g.crisis.title, body: this.mgr.byId(g.crisis.bodyId)?.name ?? '', resolved: g.crisis.resolved, power: Math.round(g.crisis.power) } : null,
+          ended: g.ended,
+          outcome: g.outcome,
+          feed: g.feed.length,
+          situations: g.situations.length,
+          interventions: g.interventionsUsed,
+          descents: g.descents,
+          championId: g.championId,
+          legends: (this.mgr.data.legends ?? []).length,
+          unlocks: this.mgr.data.godUnlocks ?? [],
+          openingDone: g.openingDone,
+          boardUnlocked: g.boardUnlocked,
+          focusSituationId: g.focusSituationId,
+          towerScenario: !!g.scenarioFlags?.towerCommander,
+          hasAftermath: !!g.lastAftermath,
+          aftermathIntention: g.lastAftermath?.intention ?? null,
+          hasDescentReport: !!g.lastDescentReport,
+          guideStep: this.godGuide.step,
+          teachShowing: this.ui.god.teach.showing,
+        };
+      }
+      case 'advance': {
+        if (!run) return { ok: false };
+        const n = Math.max(1, parseInt(arg ?? '1', 10) || 1);
+        const t0 = performance.now();
+        if (this.mode === 'god') this.godAdvance(n);
+        else run.advanceMany(n);
+        return { ok: true, ms: Math.round(performance.now() - t0), ...this.__god('state') };
+      }
+      case 'situations': {
+        if (!run) return { list: [] };
+        return {
+          list: run.situations.map((s) => ({
+            id: s.id,
+            kind: s.kind,
+            headline: s.headline,
+            detail: s.detail,
+            actors: s.actors,
+            urgency: Math.round(s.urgency * 100) / 100,
+            suggest: s.suggest,
+          })),
+        };
+      }
+      case 'interventions': {
+        if (!run) return { list: [] };
+        return {
+          list: run.interventions().map((i) => ({
+            id: i.def.id,
+            name: i.def.name,
+            cost: i.def.cost,
+            chaos: i.def.chaos,
+            targeting: i.def.targeting,
+            affordable: i.affordable,
+          })),
+        };
+      }
+      case 'intervene': {
+        if (!run) return { ok: false, reason: 'no run' };
+        const res = this.godIntervene(arg ?? '', arg2 ?? null, arg3 ?? null, null);
+        return { ok: res.ok, reason: res.reason ?? '', headline: res.effect?.headline ?? '', ...this.__god('state') };
+      }
+      case 'interveneArea': {
+        if (!run) return { ok: false, reason: 'no run' };
+        const res = this.godIntervene(arg ?? '', null, null, arg2 ?? null);
+        return { ok: res.ok, reason: res.reason ?? '', headline: res.effect?.headline ?? '' };
+      }
+      case 'feed': {
+        if (!run) return { list: [] };
+        const floor = arg ?? 'notable';
+        return {
+          list: run.god.feed
+            .filter((b) => BEAT_RANK[b.priority] >= BEAT_RANK[floor as keyof typeof BEAT_RANK])
+            .slice(-60)
+            .map((b) => ({ cycle: b.cycle, priority: b.priority, kind: b.kind, headline: b.headline, detail: b.detail, actors: b.actors })),
+        };
+      }
+      case 'decisions': {
+        if (!run) return { list: [] };
+        return {
+          list: run.god.decisions.slice(0, 12).map((d) => ({
+            actor: d.actorName,
+            chosen: d.chosen?.actionId ?? '',
+            total: d.chosen?.total ?? 0,
+            parts: d.chosen?.parts ?? null,
+            considered: d.considered.map((c) => ({ action: c.actionId, target: c.targetName, total: c.total })),
+          })),
+        };
+      }
+      case 'roster': {
+        return {
+          list: this.mgr.roster.map((n) => {
+            const s = simOf(n);
+            return {
+              id: n.id,
+              name: n.name,
+              title: n.title,
+              rank: n.rank,
+              alive: n.alive,
+              power: n.power,
+              territory: n.territory,
+              fear: Math.round(s.fear),
+              confidence: Math.round(s.confidence),
+              ambition: Math.round(s.ambition),
+              loyalty: Math.round(s.loyalty),
+              injury: Math.round(s.injury),
+              goal: s.goal,
+              goalTarget: s.goalTargetId,
+              revenge: s.revengeTargets.slice(),
+              escapedFrom: s.escapedFrom.slice(),
+              kills: s.kills.length,
+              wins: s.wins,
+              losses: s.losses,
+              deeds: s.deeds.map((d) => d.text),
+              heretic: s.heretic,
+              standing: n.playerRelationship,
+              faction: s.factionId,
+              memoryTypes: n.memory.map((m) => m.type),
+            };
+          }),
+        };
+      }
+      case 'book': {
+        return { list: (this.mgr.data.legends ?? []).map((l) => ({ ...l })) };
+      }
+      case 'forceCrisis':
+        return { note: this.forceGodCrisis(), ...this.__god('state') };
+      case 'abandon': {
+        if (!run) return { ok: false };
+        this.abandonGodRun();
+        return { ok: true, outcome: run.outcome };
+      }
+      case 'next': {
+        // Dismiss the end screen and start the following run in a new world.
+        this.ui.godEnd.hide();
+        this.godRun = null;
+        this.mgr.data.god = null;
+        this.mgr.reseedWorld(randomSeed());
+        this.rebuildArena();
+        this.openLongGame();
+        return this.__god('state');
+      }
+      case 'descend': {
+        if (!run) return { ok: false };
+        const res = this.godIntervene('descend', arg ?? null, null, null);
+        return { ok: res.ok, reason: res.reason ?? '', mode: this.mode };
+      }
+      case 'forceReturn': {
+        if (!this.descent || !this.godRun) return { ok: false, reason: 'no descent' };
+        this.world.endRun();
+        this.afterRunEnds();
+        return { ok: true, mode: this.mode, ...this.__god('state') };
+      }
+      case 'clearBoards': {
+        this.godRun?.clearAftermath();
+        this.godRun?.clearDescentReport();
+        if (this.mode === 'god') this.ui.god.refresh();
+        return { ok: true, ...this.__god('state') };
+      }
+      case 'legendsScreen': {
+        this.openLegends(this.mode);
+        return { mode: this.mode };
+      }
+      case 'inspect': {
+        if (!run) return { ok: false };
+        const n = this.mgr.byId(arg ?? '') ?? this.mgr.living()[0];
+        if (!n) return { ok: false };
+        this.ui.god.inspect(n.id);
+        return this.__godAi('inspect', n.id);
+      }
+      case 'expandFeed': {
+        if (!run) return { ok: false };
+        const last = [...run.god.feed].reverse().find((b) => BEAT_RANK[b.priority] >= BEAT_RANK.major);
+        if (last) this.ui.god.expandBeat(last.id);
+        return { ok: !!last, id: last?.id ?? '' };
+      }
+      case 'snapshot':
+        return this.__godAi('snapshot');
+      case 'ai':
+        return this.__godAi(arg ?? 'scope', arg2);
+      default:
+        return { error: 'unknown command ' + cmd };
+    }
   }
 
   __teleport(areaId: string): void {
@@ -3666,4 +6003,9 @@ function describeNemesis(n: Nemesis, mgr: NemesisManager, ai?: AIContentService)
     lines.push(`ai.versions: visual=${a?.visualVersion ?? 0} events=${a?.eventVersion ?? 0}`);
   }
   return lines.join('\n');
+}
+
+/** Two decimal places, for the debug readouts. */
+function round2(v: number): number {
+  return Math.round(v * 100) / 100;
 }

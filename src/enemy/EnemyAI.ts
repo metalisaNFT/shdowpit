@@ -15,6 +15,7 @@ import { chooseAttack } from '../data/attacks';
 import { anticipationFor, ENEMY } from '../data/balance';
 import type { CombatDirector } from '../combat/CombatDirector';
 import { rankIndex } from '../nemesis/Nemesis';
+import { isSignatureAttack, signatureEventMatches } from '../data/signatures';
 
 export interface AIContext {
   player: Player;
@@ -26,6 +27,7 @@ export interface AIContext {
   director: CombatDirector;
   /** drives telegraph pressure as the world gets older */
   worldAge: number;
+  spawnCommanded?: (src: Enemy) => void;
 }
 
 const SEPARATION_RADIUS = 2.4;
@@ -37,6 +39,16 @@ export function updateEnemyAI(e: Enemy, ctx: AIContext): void {
   if (!e.alive) return;
   const { player, arena, dt } = ctx;
   const pers = getPersonality(e.nemesis.personality);
+  if (e.orderBuff > 0) e.orderBuff -= dt;
+
+  if (
+    e.combat.current?.id === 'order_pulse' &&
+    e.combat.state === 'active' &&
+    !e.orderFired
+  ) {
+    e.orderFired = true;
+    fireOrder(e, ctx);
+  }
 
   const staggered = e.combat.state === 'stagger' || e.combat.state === 'knockdown';
   const swinging = e.combat.attacking;
@@ -48,6 +60,10 @@ export function updateEnemyAI(e: Enemy, ctx: AIContext): void {
   const targetPos = e.rivalTarget ? e.rivalTarget.position : player.position;
   const d = Math.hypot(targetPos.x - e.position.x, targetPos.z - e.position.z);
   const toPlayer = Math.hypot(player.position.x - e.position.x, player.position.z - e.position.z);
+  if (toPlayer < aggroRange(e) * 0.85) e.ambient = 'none';
+  else if (e.stagePose !== 'none') e.ambient = e.stagePose;
+  else if (!e.named && e.nemesis.personality === 'loyalist') e.ambient = 'guard';
+  else if (e.nemesis.rank !== 'grunt' && e.nemesis.archetype === 'commander') e.ambient = 'guard';
 
   // Head/chest tracking for the animation layer: watch whoever we fight.
   e.aimAt = d < 26 && (player.alive || e.rivalTarget) ? targetPos : null;
@@ -60,7 +76,10 @@ export function updateEnemyAI(e: Enemy, ctx: AIContext): void {
   }
   if (!e.escaping && !e.huntedByPlayer && flee > 0 && hpFrac <= flee && e.stateTime > 1 && !e.introHold) {
     // Give it a moment of hesitation so it does not look scripted.
-    if (Math.random() < 0.6 * pers.survival * dt * 4) e.escaping = true;
+    if (Math.random() < 0.6 * pers.survival * dt * 4) {
+      e.escaping = true;
+      if (e.named && signatureEventMatches(e.nemesis, 'flee')) e.queueSignatureCue();
+    }
   }
 
   /* ---------------- state resolution ---------------- */
@@ -81,7 +100,7 @@ export function updateEnemyAI(e: Enemy, ctx: AIContext): void {
   } else if (e.protectTarget && toPlayer > 6) {
     e.state = 'protect_ally';
   } else {
-    const aggro = aggroRange(e);
+    const aggro = aggroRange(e) * (e.engagePlayer ? 2.2 : 1);
     if (toPlayer < aggro && player.alive) {
       e.state = e.named && e.nemesis.personality === 'hunter' ? 'hunt_player' : 'chase';
     } else if (e.state === 'chase' || e.state === 'hunt_player') {
@@ -114,6 +133,7 @@ export function updateEnemyAI(e: Enemy, ctx: AIContext): void {
         if (e.combat.feint()) {
           ctx.director.release(e.uid);
           e.hesitateTimer = 0.25 + Math.random() * 0.3;
+          if (e.named && signatureEventMatches(e.nemesis, 'feint')) e.queueSignatureCue();
         }
       }
 
@@ -244,9 +264,11 @@ export function updateEnemyAI(e: Enemy, ctx: AIContext): void {
          every fight read as being chased by traffic. Distance now has
          grammar: running means far, walking means intent, stillness means a
          decision — and the director decides how many may press at once. */
-      const swingRange = e.weapon.reach * 0.82;
+      const swingRange = e.weapon.reach * ENEMY.swingRangeFraction;
       const pressureEdge = swingRange + ENEMY.pressureBand;
       const heavy = e.nemesis.archetype === 'heavy';
+      const duelist = e.nemesis.archetype === 'duelist';
+      e.isolated = e.nemesis.archetype === 'commander' && countAllies(e, ctx) === 0;
 
       // The attack decision is independent of the movement band: any time
       // they are ready and inside the WIDEST band, roll. chooseAttack filters
@@ -266,7 +288,7 @@ export function updateEnemyAI(e: Enemy, ctx: AIContext): void {
         // Step back out of the pocket after an attack. Readable rhythm.
         e.intent = 'backoff';
         tmpMove.set(e.position.x - targetPos.x, 0, e.position.z - targetPos.z).normalize();
-        wantSpeed = speed * ENEMY.backoffSpeed * (heavy ? 0.7 : 1);
+        wantSpeed = speed * ENEMY.backoffSpeed * (heavy ? 0.7 : 1) * (duelist ? 1.15 : 1);
       } else if (e.hesitateTimer > 0) {
         // Standing still, watching. The pause IS the behaviour.
         e.intent = 'wait';
@@ -401,6 +423,44 @@ export function updateEnemyAI(e: Enemy, ctx: AIContext): void {
   nx = tmpPos.x;
   nz = tmpPos.z;
   const moved = Math.hypot(nx - e.position.x, nz - e.position.z);
+
+  /* ---- WALL UNSTICK ----
+     No pathfinding, so an enemy that wants to walk through a pillar will
+     lean on it forever, running its walk cycle against stone. Detect
+     "asking to move but going nowhere" and slide along the obstacle
+     instead: pick a side once, commit to it, then re-evaluate. */
+  if (wantSpeed > 0.4 && moved < wantSpeed * dt * 0.35) {
+    e.stuckTime += dt;
+    if (e.stuckTime > 0.22) {
+      if (e.slideDir === 0) e.slideDir = Math.random() < 0.5 ? -1 : 1;
+      // Perpendicular to the blocked direction.
+      const sx = -tmpMove.z * e.slideDir;
+      const sz = tmpMove.x * e.slideDir;
+      let px = e.position.x + sx * wantSpeed * dt;
+      let pz = e.position.z + sz * wantSpeed * dt;
+      arena.resolve(px, pz, e.radius, tmpPos);
+      px = tmpPos.x;
+      pz = tmpPos.z;
+      if (Math.hypot(px - e.position.x, pz - e.position.z) > wantSpeed * dt * 0.35) {
+        nx = px;
+        nz = pz;
+      } else {
+        // That side is blocked too — try the other one next frame.
+        e.slideDir = -e.slideDir as -1 | 1;
+      }
+      if (e.stuckTime > 2.4) {
+        // Long-term stuck (a dead corner): give up on the current goal and
+        // let patrol pick a new one.
+        e.stuckTime = 0;
+        e.slideDir = 0;
+        e.stateTime = 99;
+      }
+    }
+  } else {
+    e.stuckTime = 0;
+    e.slideDir = 0;
+  }
+
   e.position.x = nx;
   e.position.z = nz;
 
@@ -447,15 +507,42 @@ function startSwing(e: Enemy, aggression: number, ctx: AIContext, distance: numb
     return false;
   }
   e.combat.startAttack(def, e.weapon, e.mods, anticipationFor(def.anticipation, ctx.worldAge));
+  if (def.id === 'order_pulse') e.orderFired = false;
+  if (e.named && isSignatureAttack(e.nemesis, def.id)) e.queueSignatureCue();
 
-  // Captains and above sometimes plan a feint here — decided up front, never
-  // as a reaction, so it cannot read as input-sniffing.
+  const duelist = e.nemesis.archetype === 'duelist';
+  const feintChance = duelist ? ENEMY.duelistFeintChance : ENEMY.feintChance;
   e.feintPlanned =
-    rankIndex(e.nemesis.rank) >= 2 &&
+    (duelist || rankIndex(e.nemesis.rank) >= 2) &&
     def.interruptible &&
     !def.ranged &&
-    Math.random() < ENEMY.feintChance;
+    Math.random() < feintChance;
   return true;
+}
+
+function countAllies(e: Enemy, ctx: AIContext): number {
+  let n = 0;
+  for (const o of ctx.enemies) {
+    if (o === e || !o.alive) continue;
+    if (Math.hypot(o.position.x - e.position.x, o.position.z - e.position.z) > ENEMY.commanderOrderRadius) continue;
+    n++;
+  }
+  return n;
+}
+
+function fireOrder(e: Enemy, ctx: AIContext): void {
+  let nearby = 0;
+  for (const o of ctx.enemies) {
+    if (o === e || !o.alive) continue;
+    if (Math.hypot(o.position.x - e.position.x, o.position.z - e.position.z) > ENEMY.commanderOrderRadius) continue;
+    nearby++;
+    o.orderBuff = ENEMY.commanderOrderBuff;
+    o.protectTarget = e;
+    o.state = 'protect_ally';
+  }
+  if (nearby === 0 && !e.summonUsed && ENEMY.commanderSummonOnce) {
+    ctx.spawnCommanded?.(e);
+  }
 }
 
 function aggroRange(e: Enemy): number {

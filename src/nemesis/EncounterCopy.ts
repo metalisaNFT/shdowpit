@@ -17,11 +17,13 @@ export interface IntroPose {
 
 export function relationshipLabel(n: Nemesis): string {
   if (n.killsAgainstPlayer >= 2) return `HAS KILLED YOU ${n.killsAgainstPlayer} TIMES`;
-  if (n.personality === 'obsessed' && n.playerRelationship > 20) return 'OBSESSED';
+  if (n.personality === 'obsessed' && n.playerRelationship > 20) return 'OBSESSED WITH YOU';
   if (n.playerRelationship > 40) return 'HATES YOU';
   if (n.personality === 'coward' || n.playerRelationship < -8) return 'FEARS YOU';
   if (n.killsAgainstPlayer === 1) return 'HAS KILLED YOU ONCE';
-  if (n.defeatsByPlayer > 0) return 'REMEMBERS THE DEFEAT';
+  if (n.defeatsByPlayer > 0) return `YOU BEAT THEM ${n.defeatsByPlayer}`;
+  if (n.escapedPlayer > 0) return `SLIPPED AWAY ${n.escapedPlayer}`;
+  if (n.returns > 0) return `CAME BACK ${n.returns}`;
   return '';
 }
 
@@ -63,15 +65,16 @@ function lastMemoryChip(n: Nemesis): string {
 
 export function encounterHeadline(kind: EncounterKind, n: Nemesis): string {
   const who = n.name.toUpperCase();
+  const rel = relationshipLabel(n);
   switch (kind) {
     case 'FIRST_MEETING':
-      return who;
+      return rel ? `${who} — ${rel}` : who;
     case 'RETURNING_RIVAL':
-      return `${who} RETURNS`;
+      return rel ? `${who} RETURNS — ${rel}` : `${who} RETURNS`;
     case 'REVENGE_ENCOUNTER':
-      return `${who} HAS FOUND YOU`;
+      return `${who} HAS BEEN WAITING`;
     case 'AMBUSH':
-      return `${who} HUNTS YOU`;
+      return `${who} FOUND YOUR TRAIL`;
     case 'INTERRUPTION':
       return `${who} HAS FOUND YOU`;
     case 'PROMOTION_REVEAL':

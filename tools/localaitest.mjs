@@ -19,8 +19,8 @@
  *   node tools/localaitest.mjs
  */
 
-import { chromium } from 'playwright';
 import { spawn, execFileSync } from 'node:child_process';
+import { launchChromium } from './browser.mjs';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -345,10 +345,7 @@ async function partB() {
   run(['--stop']);
   run(['--remove']);
 
-  const browser = await chromium.launch({
-    executablePath: '/opt/pw-browsers/chromium',
-    args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--disable-gpu-sandbox', '--no-sandbox'],
-  });
+  const browser = await launchChromium();
   const page = await browser.newPage({ viewport: { width: 1400, height: 800 } });
   page.on('pageerror', (e) => errors.push('PAGEERROR: ' + e.message));
   page.on('console', (m) => {
@@ -360,7 +357,7 @@ async function partB() {
   await page.evaluate(() => localStorage.clear());
   await page.reload({ waitUntil: 'load' });
   await page.waitForTimeout(2200);
-  await (await page.$('#title-screen button')).click();
+  await (await page.$('#title-descend')).click();
   await page.waitForTimeout(1800);
 
   /* 19 — status carries the local block */

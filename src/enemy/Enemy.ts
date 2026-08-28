@@ -24,7 +24,7 @@ import { fullName, rankIndex } from '../nemesis/Nemesis';
 import { buildEnemyRig, type EnemyRig } from '../nemesis/NemesisAppearance';
 import { EnemyCombat } from './EnemyCombat';
 import { turnToward } from '../combat/Hitbox';
-import { POSTURE, TELEGRAPH, STAGGER, POISON } from '../data/balance';
+import { POSTURE, TELEGRAPH, STAGGER, POISON, BODY } from '../data/balance';
 import { SIGNAL, NEON } from '../data/palette';
 import { CLIPS } from '../anim/ClipLibrary';
 import type { EnemyAttackDef } from '../data/attacks';
@@ -44,9 +44,9 @@ export type EnemyState =
   | 'escape'
   | 'approach_intro';
 
-const RANK_HP: number[] = [0.85, 1.0, 1.18, 1.34, 1.55];
-const ARCH_HP: Record<string, number> = { fighter: 1, heavy: 1.85, archer: 0.72 };
-const ARCH_SPEED: Record<string, number> = { fighter: 4.9, heavy: 3.9, archer: 5.3 };
+const RANK_HP = BODY.rankHp;
+const ARCH_HP = BODY.archHp;
+const ARCH_SPEED = BODY.archSpeed;
 
 let nextUid = 100;
 
@@ -78,6 +78,22 @@ export function clipForAttack(def: EnemyAttackDef): string {
       return 'Shove';
     case 'delayed_smash':
       return 'Atk2H_Slam';
+    case 'dart_slash':
+      return 'Atk1H_A';
+    case 'riposte_cut':
+      return 'Atk1H_C';
+    case 'feint_lunge':
+      return 'AtkThrust';
+    case 'punish_whiff':
+      return 'Atk1H_B';
+    case 'order_pulse':
+      return 'Atk2H_Slam';
+    case 'rally_stab':
+      return 'AtkThrust';
+    case 'banner_sweep':
+      return 'Atk2H_Sweep';
+    case 'commit_thrust':
+      return 'AtkThrust';
     default:
       return 'Atk1H_A';
   }
@@ -116,11 +132,17 @@ export class Enemy implements Combatant {
   protectTarget: Enemy | null = null;
   /** Terror+Predator: fleeing becomes a hunt, not an exit */
   huntedByPlayer = false;
+  /** QA / hunt: close from outside normal aggro. */
+  engagePlayer = false;
 
   patrolTarget = new THREE.Vector3();
   attackTimer = 0;
   strafeDir = 1;
   strafeTimer = 0;
+  /** seconds spent asking to move while going nowhere — wall unstick */
+  stuckTime = 0;
+  /** which way to slide around the obstacle; 0 = undecided */
+  slideDir: -1 | 0 | 1 = 0;
 
   /**
    * What the movement layer is trying to do right now — purely descriptive,
@@ -130,6 +152,14 @@ export class Enemy implements Combatant {
   hesitateTimer = 0;
   backoffTimer = 0;
   feintPlanned = false;
+  summoned = false;
+  isolated = false;
+  orderBuff = 0;
+  orderFired = false;
+  summonUsed = false;
+  ambient: 'none' | 'patrol' | 'guard' | 'kneel' | 'mourn' | 'loot' = 'none';
+  /** MultiEncounter pose; combat with the player clears it. */
+  stagePose: 'none' | 'patrol' | 'guard' | 'kneel' | 'mourn' | 'loot' = 'none';
 
   /** where the head/chest should track (set by EnemyAI: usually the player) */
   aimAt: THREE.Vector3 | null = null;
@@ -172,6 +202,27 @@ export class Enemy implements Combatant {
   hasSpokenArrival = false;
   hasTaunted = false;
 
+  /**
+   * Set by AI / world when a named foe commits their signature. Game consumes
+   * it for a one-shot toast / flash / audio beat, then clears it.
+   */
+  signatureCue = false;
+  /** True when this cue is the first time the player learns the signature. */
+  signatureCueFirst = false;
+  /** Cooldown so spammy signatures still read without toast-storming. */
+  signatureCueCd = 0;
+
+  /** Queue a player-facing signature beat if the cooldown allows. */
+  queueSignatureCue(firstOverride?: boolean): void {
+    if (!this.named) return;
+    const first = firstOverride ?? !this.nemesis.signatureKnown;
+    this.nemesis.signatureKnown = true;
+    if (this.signatureCueCd > 0) return;
+    this.signatureCue = true;
+    this.signatureCueFirst = first;
+    this.signatureCueCd = first ? 0.5 : 5;
+  }
+
   private hurtFlash = 0;
   private telegraph: THREE.Mesh;
   private telegraphMat: THREE.MeshBasicMaterial;
@@ -211,7 +262,7 @@ export class Enemy implements Combatant {
     this.mods = computeMods(allTraits);
 
     const ri = rankIndex(n.rank);
-    const hpBase = 42 + n.level * 12;
+    const hpBase = BODY.hpBase + n.level * BODY.hpPerLevel;
     this.maxHp = Math.round(
       hpBase * (ARCH_HP[n.archetype] ?? 1) * RANK_HP[ri] * this.mods.healthMul * age.health
     );
@@ -220,13 +271,17 @@ export class Enemy implements Combatant {
     this.weapon = enemyWeapon(n.weapon);
     const pers = getPersonality(n.personality);
     this.damage =
-      this.weapon.damage * (1 + n.level * 0.035) * this.mods.damageMul * age.damage * (0.85 + pers.aggression * 0.3);
+      this.weapon.damage *
+      (1 + n.level * BODY.damagePerLevel) *
+      this.mods.damageMul *
+      age.damage *
+      (0.85 + pers.aggression * 0.3);
     if (n.stolen.length) {
       this.damage *= 1.14;
       this.weapon = { ...this.weapon, reach: this.weapon.reach + 0.35, damage: this.weapon.damage + 2 };
     }
     if (n.stolenFromThem?.length) this.damage *= 0.86;
-    this.speed = (ARCH_SPEED[n.archetype] ?? 4.8) * this.mods.speedMul;
+    this.speed = (ARCH_SPEED[n.archetype] ?? BODY.archSpeedDefault) * this.mods.speedMul;
 
     this.rig = buildEnemyRig(n);
     this.radius = this.rig.radius;
@@ -276,11 +331,28 @@ export class Enemy implements Combatant {
       fog: false,
       depthWrite: false,
     });
-    const g = new THREE.ConeGeometry(0.34, 0.6, 4);
-    this.telegraph = new THREE.Mesh(g, this.telegraphMat);
+    this.telegraph = new THREE.Mesh(CHROME_GEO.telegraph, this.telegraphMat);
     this.telegraph.rotation.x = Math.PI;
     this.telegraph.position.y = this.height / Math.max(0.01, this.rig.scale) + 0.55;
     this.rig.root.add(this.telegraph);
+
+    const contactMat = new THREE.MeshBasicMaterial({
+      color: this.named ? this.rig.accent : 0xd8d4c8,
+      transparent: true,
+      opacity: this.named ? 0.38 : 0.22,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      toneMapped: false,
+      fog: false,
+    });
+    const contact = new THREE.Mesh(CHROME_GEO.contact, contactMat);
+    contact.rotation.x = -Math.PI / 2;
+    contact.position.y = 0.05;
+    contact.scale.setScalar(this.radius * 1.15);
+    contact.renderOrder = 1;
+    this.rig.root.add(contact);
+    this.glowMats.push(contactMat);
+    this.glowBase.push(contactMat.color.clone());
 
     for (const m of this.rig.glows) {
       const mat = (m.material as THREE.MeshBasicMaterial).clone();
@@ -300,22 +372,19 @@ export class Enemy implements Combatant {
         fog: true,
       });
     this.areaRingMat = zoneMat();
-    const ringGeo = new THREE.RingGeometry(0.93, 1, 48, 1);
-    this.areaRing = new THREE.Mesh(ringGeo, this.areaRingMat);
+    this.areaRing = new THREE.Mesh(CHROME_GEO.areaRing, this.areaRingMat);
     this.areaRing.rotation.x = -Math.PI / 2;
     this.areaRing.visible = false;
     this.areaRing.renderOrder = 2;
 
     this.areaFillMat = zoneMat();
-    const fillGeo = new THREE.CircleGeometry(1, 40);
-    this.areaFill = new THREE.Mesh(fillGeo, this.areaFillMat);
+    this.areaFill = new THREE.Mesh(CHROME_GEO.areaFill, this.areaFillMat);
     this.areaFill.rotation.x = -Math.PI / 2;
     this.areaFill.visible = false;
     this.areaFill.renderOrder = 1;
 
     this.areaPulseMat = zoneMat();
-    const pulseGeo = new THREE.RingGeometry(0.9, 1, 48, 1);
-    this.areaPulse = new THREE.Mesh(pulseGeo, this.areaPulseMat);
+    this.areaPulse = new THREE.Mesh(CHROME_GEO.areaPulse, this.areaPulseMat);
     this.areaPulse.rotation.x = -Math.PI / 2;
     this.areaPulse.visible = false;
     this.areaPulse.renderOrder = 2;
@@ -329,8 +398,7 @@ export class Enemy implements Combatant {
         fog: false,
         depthWrite: false,
       });
-      const mg = new THREE.OctahedronGeometry(0.16, 0);
-      this.marker = new THREE.Mesh(mg, this.markerMat);
+      this.marker = new THREE.Mesh(CHROME_GEO.marker, this.markerMat);
       this.marker.position.y = this.telegraph.position.y + 0.75;
       this.rig.root.add(this.marker);
     }
@@ -589,6 +657,7 @@ export class Enemy implements Combatant {
     if (this.staggerImmune > 0) this.staggerImmune -= dt;
     if (this.slowTimer > 0) this.slowTimer -= dt;
     if (this.hesitateTimer > 0) this.hesitateTimer -= dt;
+    if (this.signatureCueCd > 0) this.signatureCueCd -= dt;
     if (this.backoffTimer > 0) this.backoffTimer -= dt;
 
     this.combat.update(dt, this.weapon, this.currentDamage(), this.mods);
@@ -744,7 +813,7 @@ export class Enemy implements Combatant {
 
       // A held strike stops pulsing and sits still — the stillness is the tell.
       const pulse = cs === 'hold' ? 0.85 : 0.55 + Math.abs(Math.sin(p * Math.PI * 5)) * 0.45;
-      this.telegraphMat.opacity = (0.3 + p * 0.7) * pulse;
+      this.telegraphMat.opacity = (0.42 + p * 0.58) * pulse;
       this.telegraphMat.color.setHex(colour);
       this.telegraph.scale.setScalar(1.4 - p * 0.5);
       this.telegraph.rotation.y += rdt * (4 + p * 8);
@@ -829,7 +898,10 @@ export class Enemy implements Combatant {
   /** Taunt / intro pose — named arrivals and killer celebrations. */
   taunt(clip = 'Taunt', rate = 1.15): boolean {
     this.hasTaunted = true;
-    return this.rig.anim.playOneShot('NEMESIS_INTRO', clip, rate);
+    // TAUNT, not NEMESIS_INTRO — the intro state belongs to the encounter
+    // director's staged pose; a mid-fight showboat is its own thing and the
+    // QA/anim readout tells them apart.
+    return this.rig.anim.playOneShot('TAUNT', clip, rate);
   }
 
   celebrate(clip = 'Taunt', rate = 1.15): boolean {
@@ -837,24 +909,43 @@ export class Enemy implements Combatant {
   }
 
   dispose(): void {
+    // NOTE: the chrome geometries are SHARED across every enemy (CHROME_GEO)
+    // and must never be disposed here — only the per-instance materials are
+    // ours to free. Disposing a shared geometry would blank the telegraph on
+    // every other enemy on the field.
     for (const m of [this.areaRing, this.areaFill, this.areaPulse]) {
       if (!m) continue;
       m.parent?.remove(m);
-      m.geometry.dispose();
     }
     this.areaRingMat?.dispose();
     this.areaFillMat?.dispose();
     this.areaPulseMat?.dispose();
     for (const m of this.glowMats) m.dispose();
-    this.telegraph.geometry.dispose();
+    this.telegraph.parent?.remove(this.telegraph);
     this.telegraphMat.dispose();
-    this.marker?.geometry.dispose();
+    this.marker?.parent?.remove(this.marker);
     this.markerMat?.dispose();
     this.rig.skin.dispose();
     this.rig.anim.dispose();
     this.rig.root.parent?.remove(this.rig.root);
   }
 }
+
+/**
+ * Per-enemy "chrome" — the telegraph cone, the ground danger ring/fill/pulse
+ * and the named-enemy marker. Every enemy's copy was identical, so a crowd of
+ * sixteen was uploading sixty-four indistinguishable buffers to the GPU and
+ * churning them on every spawn and despawn. One shared set instead; the
+ * materials stay per-instance because colour and opacity are the signal.
+ */
+const CHROME_GEO = {
+  telegraph: new THREE.ConeGeometry(0.34, 0.6, 4),
+  areaRing: new THREE.RingGeometry(0.93, 1, 48, 1),
+  areaFill: new THREE.CircleGeometry(1, 40),
+  areaPulse: new THREE.RingGeometry(0.9, 1, 48, 1),
+  marker: new THREE.OctahedronGeometry(0.16, 0),
+  contact: new THREE.RingGeometry(0.72, 1, 28, 1),
+};
 
 const TELE_COLOR = new THREE.Color();
 const WHITE = new THREE.Color(0xffffff);

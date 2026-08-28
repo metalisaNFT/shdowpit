@@ -116,6 +116,11 @@ export class AudioManager {
       this.noise(0.16, g, 'bandpass', 900 * pitch, 1.2);
     });
 
+    V.set('footstep', (_t, _g, _c, pitch) => {
+      const g = this.env(0.001, 0.05, 0.18);
+      this.noise(0.07, g, 'bandpass', 380 * pitch, 1.2);
+    });
+
     V.set('light_hit', (_t, _g, _c, pitch) => {
       const g = this.env(0.001, 0.11, 0.5);
       this.noise(0.12, g, 'bandpass', 1800 * pitch, 2.4);
@@ -128,6 +133,25 @@ export class AudioManager {
       this.noise(0.3, g, 'lowpass', 900 * pitch, 1);
       const g2 = this.env(0.001, 0.24, 0.6);
       this.tone('sawtooth', 190 * pitch, 42 * pitch, 0.24, g2);
+    });
+
+    // CRITICAL — a bright metallic overtone layered on the base hit, so a crit
+    // is audible as "that one landed properly" without reading the number.
+    V.set('crit', (_t, _g, _c, pitch) => {
+      const g = this.env(0.001, 0.2, 0.42);
+      this.tone('square', 1500 * pitch, 620 * pitch, 0.19, g);
+      const g2 = this.env(0.001, 0.1, 0.3);
+      this.noise(0.1, g2, 'highpass', 3600 * pitch, 1.2);
+      const g3 = this.env(0.002, 0.34, 0.2, 0.02);
+      this.tone('sine', 900 * pitch, 700 * pitch, 0.34, g3, 0.02);
+    });
+
+    // POISON — a wet, low hiss. Acid green has a sound now, not just a colour.
+    V.set('poison', (_t, _g, _c, pitch) => {
+      const g = this.env(0.02, 0.4, 0.26);
+      this.noise(0.42, g, 'bandpass', 480 * pitch, 0.8);
+      const g2 = this.env(0.03, 0.34, 0.16);
+      this.tone('sine', 150 * pitch, 84 * pitch, 0.34, g2);
     });
 
     V.set('parry', (_t, _g, _c, pitch) => {

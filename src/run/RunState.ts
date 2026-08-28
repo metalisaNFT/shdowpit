@@ -39,6 +39,8 @@ export interface RunState {
   pursuitTargetId: string | null;
   informantIds: string[];
   lockedExits: boolean;
+  /** max_heat vendetta: extraction stays available at high Heat */
+  extractHeatImmune: boolean;
   outcomeOpen: boolean;
   outcomeEnemyId: string | null;
   outcomeProtect: number;
@@ -47,6 +49,7 @@ export interface RunState {
   started: boolean;
   blockFakeDeath: boolean;
   skillLoadout: [string, string];
+  runLoot: string[];
 }
 
 export function emptyRunState(runSeed = 1): RunState {
@@ -76,6 +79,7 @@ export function emptyRunState(runSeed = 1): RunState {
     pursuitTargetId: null,
     informantIds: [],
     lockedExits: false,
+    extractHeatImmune: false,
     outcomeOpen: false,
     outcomeEnemyId: null,
     outcomeProtect: 0,
@@ -84,6 +88,7 @@ export function emptyRunState(runSeed = 1): RunState {
     started: false,
     blockFakeDeath: false,
     skillLoadout: ['shadow_step', 'ground_rupture'],
+    runLoot: [],
   };
 }
 
@@ -104,5 +109,7 @@ export function migrateRunState(raw: unknown, runSeed = 1): RunState {
     skillLoadout: Array.isArray(r.skillLoadout) && r.skillLoadout.length === 2
       ? [String(r.skillLoadout[0]), String(r.skillLoadout[1])]
       : base.skillLoadout,
+    runLoot: Array.isArray(r.runLoot) ? r.runLoot.map(String) : [],
+    extractHeatImmune: r.extractHeatImmune ?? false,
   };
 }

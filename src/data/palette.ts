@@ -24,21 +24,21 @@
 
 export const WORLD = {
   /** fog and sky; everything fades to this */
-  void: 0x05060a,
+  void: 0x08090e,
   /** the global ground plane */
-  ground: 0x141519,
+  ground: 0x1c1e26,
   /** worn routes between areas */
-  path: 0x1e2128,
+  path: 0x2c3038,
   /** the base value for brutalist structures */
-  structure: 0x22252c,
+  structure: 0x32363f,
   /** lighter structural faces — dirty metal */
-  metal: 0x343841,
+  metal: 0x42474f,
   /** the darkest recesses, ceilings */
-  shadow: 0x07080b,
+  shadow: 0x0a0b10,
   /** boundary walls */
-  boundary: 0x0d0e12,
+  boundary: 0x14161c,
   /** rusted / contaminated industrial surfaces */
-  rust: 0x332e26,
+  rust: 0x3c352c,
   /** bone and ivory — horns, skulls, exposed structure */
   bone: 0xcfc9b8,
 } as const;
@@ -141,7 +141,7 @@ export const NEMESIS_ACCENTS: number[] = [
  * silhouettes, with the neon doing the identifying.
  */
 export const ENEMY_BODY: number[] = [
-  0x232730, 0x2b2f39, 0x262a33, 0x30343e, 0x212530, 0x353945, 0x282c35, 0x1e222a,
+  0x2e333c, 0x363b46, 0x31363f, 0x3a3f4a, 0x2a2f38, 0x404550, 0x333843, 0x272c35,
 ];
 
 /** Enemy trim — the darker parts that carve the silhouette. */

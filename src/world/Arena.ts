@@ -53,6 +53,12 @@ interface Banner {
   mat: THREE.MeshBasicMaterial;
 }
 
+interface Beacon {
+  areaId: string;
+  mesh: THREE.Mesh;
+  mat: THREE.MeshBasicMaterial;
+}
+
 interface ShortcutLock {
   areaId: string;
   colliderIndex: number;
@@ -89,6 +95,7 @@ export class Arena {
   private dustTint = new THREE.Color();
 
   private banners: Banner[] = [];
+  private beacons: Beacon[] = [];
   private locks: ShortcutLock[] = [];
   private extractMeshes: THREE.Object3D[] = [];
 
@@ -117,16 +124,16 @@ export class Arena {
 
     const tint = new THREE.Color(age.tint);
     this.ageFog = age.fog;
-    this.targetFog = 0.0075 * age.fog;
+    this.targetFog = 0.0054 * age.fog;
     this.fog = new THREE.FogExp2(WORLD.void, this.targetFog);
     this.scene.fog = this.fog;
-    this.scene.background = new THREE.Color(WORLD.void).lerp(tint, 0.25);
+    this.scene.background = new THREE.Color(WORLD.void).lerp(tint, 0.22);
 
-    const hemiSky = new THREE.Color(0x8b94a6).lerp(tint, 0.45);
-    this.hemi = new THREE.HemisphereLight(hemiSky.getHex(), WORLD.shadow, 1.15);
+    const hemiSky = new THREE.Color(0x9aa3b4).lerp(tint, 0.4);
+    this.hemi = new THREE.HemisphereLight(hemiSky.getHex(), WORLD.shadow, 1.42);
     this.scene.add(this.hemi);
 
-    const key = new THREE.DirectionalLight(0xdfe4ff, 2.1);
+    const key = new THREE.DirectionalLight(0xe8ecff, 2.35);
     key.position.set(-60, 48, 34);
     key.castShadow = this.shadowSize > 0;
     key.shadow.mapSize.set(this.shadowSize || 512, this.shadowSize || 512);
@@ -143,7 +150,11 @@ export class Arena {
     this.scene.add(key.target);
     this.keyLight = key;
 
-    const rim = new THREE.DirectionalLight(new THREE.Color(NEON.acid).lerp(tint, 0.55).getHex(), 1.05);
+    const fill = new THREE.DirectionalLight(0xb7c0d0, 0.55);
+    fill.position.set(42, 28, 18);
+    this.scene.add(fill);
+
+    const rim = new THREE.DirectionalLight(new THREE.Color(NEON.acid).lerp(tint, 0.5).getHex(), 1.15);
     rim.position.set(50, 22, -60);
     this.scene.add(rim);
 
@@ -233,6 +244,12 @@ export class Arena {
       this.landmarks.push({ areaId: a.id, name: layout.landmark.name, x: layout.landmark.x, z: layout.landmark.z });
       this.extractAnchors.push({ areaId: a.id, x: layout.extract.x, z: layout.extract.z });
       this.addBanner(a.id, layout.banner.x, layout.banner.z);
+      if (a.id === 'tower') {
+        this.addBanner(a.id, a.cx + 18, a.cz + 8);
+        this.addBanner(a.id, a.cx - 16, a.cz + 10);
+        this.addBeacon(a.id, a.cx, 76, a.cz);
+        this.addCircle(a.cx + 22, a.cz, 0.4, false);
+      }
       this.addExtractGate(layout.extract.x, layout.extract.z, a.accent);
       for (const s of layout.shrines) this.addShrine(a.id, s.x, s.z, a.accent);
       for (const c of layout.caches) this.addCache(a.id, c.x, c.z, a.accent);
@@ -261,6 +278,12 @@ export class Arena {
       b.mat.color.setHex(shade(color, o?.liberated ? 0.5 : 0.85));
       b.cloth.visible = true;
     }
+    for (const b of this.beacons) {
+      const o = occ[b.areaId];
+      const color = o ? o.accent : WORLD.metal;
+      b.mat.color.setHex(color);
+      b.mesh.visible = true;
+    }
     const locked = new Set<string>();
     for (const id of Object.keys(occ)) {
       if (occ[id].ruleIds.includes('locked_shortcuts') && !occ[id].liberated) locked.add(id);
@@ -279,7 +302,14 @@ export class Arena {
 
   private commitBlocks(pieces: Block[], color: number, emissive: boolean, age: AgeModifier): void {
     if (!pieces.length) return;
-    this.addInstanced(pieces, color, emissive, age);
+    if (emissive) {
+      this.addInstanced(pieces, color, true, age);
+    } else {
+      const floors = pieces.filter((p) => p.sy < 1.15);
+      const walls = pieces.filter((p) => p.sy >= 1.15);
+      if (floors.length) this.addInstanced(floors, shade(color, 1.16), false, age);
+      if (walls.length) this.addInstanced(walls, shade(color, 0.82), false, age);
+    }
     for (const p of pieces) {
       if (p.collide === 'none') continue;
       if (p.collide === 'circle') this.addCircle(p.x, p.z, p.r, p.tall);
@@ -334,14 +364,26 @@ export class Arena {
     base.position.y = 0.25;
     base.castShadow = true;
     const shardGeo = new THREE.OctahedronGeometry(0.58, 0);
-    const shardMat = new THREE.MeshBasicMaterial({ color: shade(color, 0.62), toneMapped: false });
+    const shardMat = new THREE.MeshBasicMaterial({ color: shade(color, 0.85), toneMapped: false });
     const shard = new THREE.Mesh(shardGeo, shardMat);
     shard.position.y = 2.1;
-    g.add(base, shard);
-    this.lightSources.push({ x, y: 2.4, z, color, base: 14, phase: x * 0.1 });
+    const ringGeo = new THREE.RingGeometry(1.35, 1.55, 28, 1);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: shade(color, 0.7),
+      transparent: true,
+      opacity: 0.45,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.06;
+    g.add(base, shard, ring);
+    this.lightSources.push({ x, y: 2.4, z, color, base: 18, phase: x * 0.1 });
     g.position.set(x, 0, z);
     this.group.add(g);
-    this.disposables.push(baseGeo, baseMat, shardGeo, shardMat);
+    this.disposables.push(baseGeo, baseMat, shardGeo, shardMat, ringGeo, ringMat);
     this.shrines.push({
       id: `${area}-${this.shrines.length}`,
       position: new THREE.Vector3(x, 0, z),
@@ -360,13 +402,25 @@ export class Arena {
     crate.position.y = 0.55;
     crate.castShadow = true;
     const gemGeo = new THREE.OctahedronGeometry(0.32, 0);
-    const gemMat = new THREE.MeshBasicMaterial({ color: shade(color, 0.55), toneMapped: false });
+    const gemMat = new THREE.MeshBasicMaterial({ color: shade(color, 0.75), toneMapped: false });
     const gem = new THREE.Mesh(gemGeo, gemMat);
     gem.position.y = 1.35;
-    g.add(crate, gem);
+    const ringGeo = new THREE.RingGeometry(0.95, 1.12, 24, 1);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: shade(color, 0.65),
+      transparent: true,
+      opacity: 0.4,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.05;
+    g.add(crate, gem, ring);
     g.position.set(x, 0, z);
     this.group.add(g);
-    this.disposables.push(crateGeo, crateMat, gemGeo, gemMat);
+    this.disposables.push(crateGeo, crateMat, gemGeo, gemMat, ringGeo, ringMat);
     this.addCircle(x, z, 0.85, false);
     this.caches.push({
       id: `${area}-cache-${this.caches.length}`,
@@ -392,6 +446,16 @@ export class Arena {
     this.disposables.push(poleGeo, poleMat, clothGeo, clothMat);
     this.addCircle(x, z, 0.55, true);
     this.banners.push({ areaId, cloth, mat: clothMat });
+  }
+
+  private addBeacon(areaId: string, x: number, y: number, z: number): void {
+    const geo = new THREE.CylinderGeometry(0.9, 1.6, 2.4, 8);
+    const mat = new THREE.MeshBasicMaterial({ color: WORLD.metal, toneMapped: false });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(x, y, z);
+    this.group.add(mesh);
+    this.disposables.push(geo, mat);
+    this.beacons.push({ areaId, mesh, mat });
   }
 
   private addExtractGate(x: number, z: number, color: number): void {
@@ -711,6 +775,7 @@ export class Arena {
     this.landmarks = [];
     this.extractAnchors = [];
     this.banners = [];
+    this.beacons = [];
     this.locks = [];
     this.extractMeshes = [];
     this.colliders = [];

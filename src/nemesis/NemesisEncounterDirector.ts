@@ -55,6 +55,7 @@ export interface IntroCardPayload {
   rank: string;
   line: string;
   chip: string;
+  headline?: string;
   portraitSrc: string;
   accent: string;
   variant: 'intro' | 'return' | 'death' | 'escape';
@@ -79,6 +80,8 @@ export interface EncounterDirectorDeps {
   portraitFor(n: Nemesis): string;
   titleFor(n: Nemesis): string;
   tauntFor(n: Nemesis, salt: number): string;
+  observeEncounter?(n: Nemesis, kind: EncounterKind, headline: string, chip: string): void;
+  headlineFor?(n: Nemesis, kind: EncounterKind, fallback: string): string;
 }
 
 interface ActiveSeq {
@@ -106,7 +109,17 @@ interface QueuedIntro {
   kind: EncounterKind;
   salt: number;
   ctx: ClassifyContext;
+  /** seconds this intro has been waiting for a safe beat */
+  waiting: number;
 }
+
+/**
+ * A deferred intro may wait this long for calm. Past it the meeting plays in
+ * its shortened form anyway: a named NPC who walks in with no presentation at
+ * all is indistinguishable from a grunt with a nameplate, which is the one
+ * thing the nemesis layer must never be.
+ */
+const QUEUE_DEADLINE = 3.5;
 
 export class NemesisEncounterDirector {
   private active: ActiveSeq | null = null;
@@ -150,13 +163,14 @@ export class NemesisEncounterDirector {
     const kind = forced ?? classifyEncounter(e.nemesis, ctx);
 
     if (isIntroKind(kind) && this.active && isIntroKind(this.active.kind)) {
+      e.introHold = false;
       this.deps.callout(`${e.nemesis.name.toUpperCase()} HAS FOUND YOU`, 'hot');
       return kind;
     }
 
-    if (isIntroKind(kind) && !this.isSafe(this.lastSafety)) {
+    if (isIntroKind(kind) && !this.isSafe(this.lastSafety) && e.entranceKind !== 'immediate') {
       e.introHold = true;
-      this.queued = { enemy: e, kind, salt, ctx };
+      this.queued = { enemy: e, kind, salt, ctx, waiting: 0 };
       return kind;
     }
 
@@ -178,11 +192,19 @@ export class NemesisEncounterDirector {
 
   update(dt: number, safety: EncounterSafety, _player: Player): void {
     this.lastSafety = safety;
-    if (this.queued && (!this.active || this.active.t >= this.active.duration)) {
-      if (this.queued.enemy.alive && this.isSafe(safety)) {
-        const q = this.queued;
+    if (this.queued) {
+      this.queued.waiting += dt;
+      if (!this.queued.enemy.alive) {
+        // They died before the meeting could play; drop it rather than
+        // presenting an arrival for a corpse.
+        this.queued.enemy.introHold = false;
         this.queued = null;
-        this.start(q.enemy, q.kind, q.salt, true);
+      } else if (!this.active || this.active.t >= this.active.duration) {
+        const q = this.queued;
+        if (this.isSafe(safety) || q.waiting >= QUEUE_DEADLINE) {
+          this.queued = null;
+          this.start(q.enemy, q.kind, q.salt, true);
+        }
       }
     }
 
@@ -217,8 +239,10 @@ export class NemesisEncounterDirector {
     let line = encounterLine(n, kind, salt, overlay);
     if (overlay && !factAllowsLine(n, overlay)) line = encounterLine(n, kind, salt);
     const title = d.titleFor(n);
-    const headline = encounterHeadline(kind, n);
+    const rawHeadline = encounterHeadline(kind, n);
     const chip = lastEventChip(n);
+    d.observeEncounter?.(n, kind, rawHeadline, chip);
+    const headline = d.headlineFor?.(n, kind, rawHeadline) ?? rawHeadline;
     const portraitSrc = d.portraitFor(n);
     const beats = beatsFor(kind, shortened);
     const duration = sequenceDuration(kind, shortened);
@@ -246,6 +270,7 @@ export class NemesisEncounterDirector {
       cardShown: false,
       focusing: false,
     };
+    this.ensureCard(this.active);
 
     this.last = {
       kind,
@@ -369,6 +394,7 @@ export class NemesisEncounterDirector {
       rank: rankName(n.rank) + (n.returns > 0 && seq.kind === 'RESURRECTION_RETURN' ? '  ·  RETURNED' : ''),
       line: seq.line,
       chip: seq.chip,
+      headline: seq.headline,
       portraitSrc: seq.portraitSrc,
       accent: seq.accentCss,
       variant,

@@ -38,7 +38,14 @@ export function spendSpawn(run: RunState): boolean {
   return true;
 }
 
-export function tickHeatEconomy(run: RunState, dt: number, inCombat: boolean, sameArea: boolean, carryingRelic: boolean, dampen: boolean): void {
+export function tickHeatEconomy(
+  run: RunState,
+  dt: number,
+  inCombat: boolean,
+  inArea: boolean,
+  carryingRelic: boolean,
+  dwellMul: number
+): void {
   if (run.heatCooldown > 0) run.heatCooldown -= dt;
   run.spawnBudgetRegen += dt * HEAT.spawnBudgetRegen;
   if (run.spawnBudgetRegen >= 1 && run.spawnBudget < HEAT.spawnBudget) {
@@ -47,13 +54,15 @@ export function tickHeatEconomy(run: RunState, dt: number, inCombat: boolean, sa
   }
   if (inCombat) {
     run.loudCombatTimer += dt;
-    if (run.loudCombatTimer > 2) addHeat(run, HEAT.loudCombatPerSecond * dt * (dampen ? 0.45 : 1));
+    if (run.loudCombatTimer > HEAT.loudCombatDelay) addHeat(run, HEAT.loudCombatPerSecond * dt * dwellMul);
   } else {
     run.loudCombatTimer = Math.max(0, run.loudCombatTimer - dt * 0.5);
   }
-  if (sameArea) {
+  if (inArea) {
     run.areaDwell += dt;
-    if (run.areaDwell > 25) addHeat(run, HEAT.dwellPerSecond * dt * (dampen ? 0.4 : 1));
+    if (run.areaDwell > HEAT.dwellDelay) addHeat(run, HEAT.dwellPerSecond * dt * dwellMul);
+  } else {
+    run.areaDwell = 0;
   }
   if (carryingRelic) addHeat(run, HEAT.relicCarry * dt);
 }

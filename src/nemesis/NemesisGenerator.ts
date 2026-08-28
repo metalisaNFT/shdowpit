@@ -11,15 +11,17 @@ import { traitsOfKind } from '../data/traits';
 import { generateUniqueName, chooseTitle } from '../data/names';
 import type { AgeModifier } from '../data/ages';
 import type { Archetype, Nemesis, PersonalityType, Rank, TraitId, WeaponType } from './Nemesis';
-import { rankIndex } from './Nemesis';
+import { ARCHETYPES, rankIndex } from './Nemesis';
+import { ensureSignature } from '../data/signatures';
 
-const ARCHETYPES: Archetype[] = ['fighter', 'heavy', 'archer'];
-const ARCHETYPE_WEIGHTS = [0.52, 0.26, 0.22];
+const ARCHETYPE_WEIGHTS = [0.4, 0.2, 0.16, 0.14, 0.1];
 
 const WEAPON_BY_ARCHETYPE: Record<Archetype, WeaponType[]> = {
   fighter: ['sword', 'spear', 'axe'],
   heavy: ['club', 'axe'],
   archer: ['bow'],
+  duelist: ['sword', 'spear'],
+  commander: ['spear', 'sword', 'axe'],
 };
 
 /** Traits that read as "armoured", boosted during the Iron Age. */
@@ -108,9 +110,12 @@ export function generateNemesis(opts: GenerateOptions): Nemesis {
     stolen: [],
     bornTurn: opts.turn,
     returns: 0,
+    signatureId: undefined,
+    signatureKnown: false,
   };
 
   n.title = chooseTitle(n);
+  ensureSignature(n);
   recomputePower(n);
   return n;
 }
@@ -191,6 +196,7 @@ export function generateGrunt(seed: number, level: number, age: AgeModifier, ter
     bornTurn: 0,
     returns: 0,
   };
+  ensureSignature(n);
   recomputePower(n);
   return n;
 }

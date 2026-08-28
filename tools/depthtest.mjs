@@ -6,7 +6,7 @@
  *   node tools/depthtest.mjs
  */
 
-import { chromium } from 'playwright';
+import { launchChromium } from './browser.mjs';
 
 const URL_BASE = process.env.PLAYTEST_URL ?? 'http://localhost:4173/?quality=low';
 const checks = [];
@@ -18,10 +18,7 @@ function check(name, ok, detail = '') {
 }
 
 async function main() {
-  const browser = await chromium.launch({
-    executablePath: process.env.PLAYWRIGHT_CHROMIUM ?? '/opt/pw-browsers/chromium',
-    args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--no-sandbox'],
-  });
+  const browser = await launchChromium();
   const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
   page.on('pageerror', (e) => errors.push(String(e)));
   page.on('console', (m) => {
@@ -35,7 +32,7 @@ async function main() {
   const boot = await page.evaluate(() => typeof window.SHDOWPIT !== 'undefined');
   check('game booted', boot);
 
-  const btn = await page.$('#title-screen button');
+  const btn = await page.$('#title-descend');
   if (btn) {
     await btn.click();
     await page.waitForTimeout(1500);
@@ -75,12 +72,18 @@ async function main() {
       mods: raw.territoryMods,
       farms: raw.nemeses?.[0]?.playerRewardFarms,
       ai: raw.settings?.ai?.mode,
+      tutorial: raw.settings?.tutorial,
+      purpose: raw.settings?.showPurpose,
+      ult: raw.playerMeta?.ultimateLoadout,
     };
   });
   check('v1 save migrates to current', migrated.v >= 3, `v${migrated.v}`);
   check('techniques defaulted', migrated.techniques && typeof migrated.techniques === 'object');
   check('territoryMods defaulted', migrated.mods && typeof migrated.mods === 'object');
   check('AI still off after migrate', migrated.ai === 'off' || migrated.ai === undefined);
+  check('v6 tutorial defaults', migrated.tutorial && migrated.tutorial.skipped === false);
+  check('purpose panel defaults on', migrated.purpose !== false);
+  check('ultimate loadout defaulted', typeof migrated.ult === 'string' && migrated.ult.length > 0);
 
   await page.evaluate(() => {
     const g = window.SHDOWPIT;
@@ -106,10 +109,12 @@ async function main() {
     return {
       saveVersion: JSON.parse(g.__rawSave() || '{}').saveVersion,
       noKey: !(g.__rawSave() || '').includes('sk-'),
+      proc: g.__sim('procStress'),
     };
   });
   check('no api key in save', canProc.noKey);
-  check('save version 3 after sim', canProc.saveVersion === 3 || canProc.saveVersion === 2 || canProc.saveVersion === undefined);
+  check('save version current after sim', typeof canProc.saveVersion === 'number' && canProc.saveVersion >= 6, `v${canProc.saveVersion}`);
+  check('procStress blocks secondary CD reset', canProc.proc && canProc.proc.secondaryNoCd === true);
 
   check('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 

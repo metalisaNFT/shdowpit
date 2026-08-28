@@ -5,7 +5,7 @@
  *   node tools/storytest.mjs
  */
 
-import { chromium } from 'playwright';
+import { launchChromium } from './browser.mjs';
 
 const URL_BASE = process.env.PLAYTEST_URL ?? 'http://localhost:4173/?quality=low';
 const checks = [];
@@ -17,10 +17,7 @@ function check(name, ok, detail = '') {
 }
 
 async function main() {
-  const browser = await chromium.launch({
-    executablePath: process.env.PLAYWRIGHT_CHROMIUM ?? process.env.PLAYWRIGHT_CHROMIUM_PATH,
-    args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--no-sandbox'],
-  });
+  const browser = await launchChromium();
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   page.on('pageerror', (e) => errors.push(String(e)));
   page.on('console', (m) => {
@@ -40,7 +37,7 @@ async function main() {
   console.log(self.log);
   check('story self-test suite', self.failed === 0, `${self.passed} passed / ${self.failed} failed`);
 
-  const btn = await page.$('#title-screen button');
+  const btn = await page.$('#title-descend');
   if (btn) {
     await btn.click();
     await page.waitForTimeout(1200);

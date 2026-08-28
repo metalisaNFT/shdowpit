@@ -40,7 +40,19 @@ export type PowerId =
   | 'execution_surge'
   | 'dash_strike'
   | 'posture_hunter'
-  | 'toxic_detonation';
+  | 'toxic_detonation'
+  | 'heavy_breaker'
+  | 'combo_finisher'
+  | 'execution_flow'
+  | 'relentless'
+  | 'multishot'
+  | 'execution_shot'
+  | 'perfect_dodge'
+  | 'double_dodge'
+  | 'wide_parry'
+  | 'counter_force'
+  | 'last_stand'
+  | 'phase_step';
 
 export type PowerTag = 'MOVEMENT' | 'OFFENCE' | 'DEFENCE' | 'EXECUTION' | 'RISK' | 'UTILITY' | 'RANGED' | 'STAT';
 
@@ -107,6 +119,18 @@ export const POWERS: PowerDef[] = [
   p('dash_strike', 'DASH STRIKE', 'MOVEMENT', 'Movement', 'DODGE INTO LUNGE', 'Attacking immediately after a dodge performs a long lunging strike.'),
   p('posture_hunter', 'POSTURE HUNTER', 'OFFENCE', 'Posture', 'FLINCH = MORE POSTURE', 'Staggered enemies take 60% more posture damage. Void Grasp can interrupt a windup.'),
   p('toxic_detonation', 'TOXIC DETONATION', 'EXECUTION', 'Poison', 'POISON EXPLODES', 'Executing a poisoned enemy detonates the poison, contaminating everything nearby.'),
+  p('heavy_breaker', 'HEAVY BREAKER', 'OFFENCE', 'Posture', 'HEAVY BREAKS GUARD', 'Charged heavies deal far more posture damage.', false, 0),
+  p('combo_finisher', 'COMBO FINISHER', 'OFFENCE', 'Momentum', 'THIRD HIT STAGGERS', 'The third light attack inflicts bonus stagger.', false, 0),
+  p('execution_flow', 'EXECUTION FLOW', 'EXECUTION', 'Movement', 'EXECUTE = DODGE', 'Executions instantly refresh your dodge.', false, 0),
+  p('relentless', 'RELENTLESS', 'OFFENCE', 'Momentum', 'MIX-UP HASTE', 'Alternating light and heavy attacks builds brief attack speed.', false, 0),
+  p('multishot', 'MULTISHOT', 'RANGED', 'Projectile', 'EXTRA NEEDLE', 'Fire an additional Void Needle.', false, 0),
+  p('execution_shot', 'EXECUTION SHOT', 'RANGED', 'Posture', 'NEEDLE VS BROKEN', 'Needles deal bonus damage to posture-broken enemies.', false, 0),
+  p('perfect_dodge', 'PERFECT DODGE', 'DEFENCE', 'Movement', 'NEAR-MISS SLOWS TIME', 'A near-miss slows time longer and pays more Surge.', false, 0),
+  p('double_dodge', 'DOUBLE DODGE', 'DEFENCE', 'Movement', 'TWO CHARGES', 'Gain an additional dodge charge.', false, 0),
+  p('wide_parry', 'WIDE PARRY', 'DEFENCE', 'PerfectDefense', 'LONGER PARRY', 'Slightly increases the parry timing window.', false, 0),
+  p('counter_force', 'COUNTER FORCE', 'DEFENCE', 'Posture', 'PARRY BREAKS', 'Perfect parry deals extra posture damage.', false, 0),
+  p('last_stand', 'LAST STAND', 'DEFENCE', 'Utility', 'LOW HP ARMOR', 'Below 30% health, incoming damage is sharply reduced.', false, 0),
+  p('phase_step', 'PHASE STEP', 'MOVEMENT', 'Movement', 'DODGE PHASES', 'Dodge briefly phases through walls.', false, 0),
 ];
 
 const MAP = new Map<PowerId, PowerDef>(POWERS.map((x) => [x.id, x]));
@@ -150,6 +174,6 @@ export class PowerSet {
 
   /** Which powers can still be offered? */
   offerable(): PowerDef[] {
-    return POWERS.filter((d) => d.stackable || !this.has(d.id));
+    return POWERS.filter((d) => d.weight > 0 && (d.stackable || !this.has(d.id)));
   }
 }

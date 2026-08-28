@@ -90,3 +90,26 @@ export function formatStat(def: RunStatDef, v: number): string {
   if (def.fmt === 'seconds') return `${v.toFixed(2)}s`;
   return Number.isInteger(v) ? String(v) : v.toFixed(1);
 }
+
+export const STAT_TIPS: Record<RunStatId, string> = {
+  maxHp: 'How much damage you can take before death.',
+  hpRegen: 'Health recovered every second.',
+  moveSpeed: 'How quickly you walk and sprint.',
+  attackSpeed: 'How quickly swings recover. Does not shorten enemy telegraphs.',
+  meleeDamage: 'Health damage from light and heavy attacks.',
+  rangedDamage: 'Health damage from Void Needles.',
+  projSpeed: 'How fast needles travel.',
+  projCount: 'How many Void Needles leave the hand per throw.',
+  pierce: 'How many extra enemies a needle can pass through.',
+  chain: 'How many times a needle can jump after a hit.',
+  critChance: 'Chance each hit rolls a critical.',
+  critDamage: 'Multiplier applied when a hit crits.',
+  postureDamage: 'How quickly your attacks break enemy posture.',
+  knockback: 'How far hits push enemies.',
+  dodgeCooldown: 'How soon you can dodge again. Lower is better.',
+  parryWindow: 'How long the parry active window lasts.',
+  surgeGain: 'How much Surge you earn from fighting well.',
+  poisonDamage: 'Poison tick damage and how fast buildup lands.',
+  executionPower: 'Bonus damage against posture-broken enemies; executions reach further.',
+  lifesteal: 'Fraction of damage dealt returned as health.',
+};

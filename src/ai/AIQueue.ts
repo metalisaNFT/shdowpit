@@ -67,6 +67,30 @@ export class AIQueue {
   }
 
   /**
+   * Drop queued (not yet generating) work. In-flight tasks keep running; the
+   * caller is expected to reject their results via a generation scope check.
+   * Marks dropped requests failed so the status notices can expire.
+   */
+  dropPending(pred?: (task: QueueTask) => boolean): number {
+    let n = 0;
+    const keep: typeof this.pending = [];
+    for (const p of this.pending) {
+      if (!pred || pred(p.task)) {
+        this.inFlight.delete(p.task.cacheKey);
+        p.req.state = 'failed';
+        p.req.error = 'dropped';
+        p.req.finishedAt = Date.now();
+        n++;
+      } else {
+        keep.push(p);
+      }
+    }
+    this.pending = keep;
+    if (n) this.notify();
+    return n;
+  }
+
+  /**
    * Queue a task. Returns the request record so callers can watch its state;
    * the returned object is mutated in place as the request progresses.
    */

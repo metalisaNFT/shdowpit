@@ -16,6 +16,9 @@ import { getPersonality } from '../data/personalities';
 import { pickAdaptation } from '../data/traits';
 import { chooseTitle } from '../data/names';
 import { RELIC_WEAPONS, PLAYER_WEAPONS } from '../data/weapons';
+import { equippedWeapon, markRecovered, mint, syncLegacyWeapons } from '../progress/Progression';
+import { weaponIdFor } from '../data/equipment';
+import type { ItemInstance } from '../progress/Types';
 import { makeEvent } from './WorldEvent';
 import type { Arena } from './Arena';
 import { Enemy } from '../enemy/Enemy';
@@ -34,11 +37,17 @@ import { HEAT, REMNANT, EXTRACT } from '../data/balance';
 import { presentTerritory, type TerritoryPresentation } from './TerritoryRules';
 import { snapshotOccupancy, type OccupancyMap } from './WorldOccupancy';
 import { pickMultiRule, type MultiRule } from '../nemesis/MultiEncounter';
+import { applyStagingPose, resolveIgnoredStaging, STAGING_IGNORE_S } from '../nemesis/Staging';
 import type { ExtractSite } from './Extraction';
+import { signatureEventMatches } from '../data/signatures';
 
 const MAX_GRUNTS = 16;
 const MAX_NAMED_ACTIVE = 3;
 const DESPAWN_DISTANCE = 110;
+/** seconds between reinforcements while a group is still standing */
+const RESPAWN_INTERVAL = 6;
+/** longer pause after the player clears the field — the "I won that" beat */
+const RESPAWN_AFTER_CLEAR = 11;
 
 export interface ArrivalContext {
   hunting: boolean;
@@ -54,6 +63,8 @@ export interface WorldHooks {
   onNamedDefeated(e: Enemy, escaped: boolean): void;
   onDuel(a: Enemy, b: Enemy): void;
   onAid(guard: Enemy, master: Enemy): void;
+  /** Area law presentation — banner + once-per-area toast live here. */
+  onEnterTerritory?(areaName: string, presentation: TerritoryPresentation): void;
 }
 
 export class World {
@@ -62,11 +73,17 @@ export class World {
 
   run: RunState = emptyRunState();
   multiRule: MultiRule | null = null;
+  private stageTimer = STAGING_IGNORE_S;
+  private stageResolved = false;
   extractSites: ExtractSite[] = [];
   occupancy: OccupancyMap = {};
   /** HUD label: area name, or the road between areas. */
   locationLabel = 'THE PIT';
   vendettaCounters = { posture: 0, interrupts: 0, parries: 0, weakness: false, adapted: false, loyalistSeparated: false };
+
+  resetVendettaCounters(): void {
+    this.vendettaCounters = { posture: 0, interrupts: 0, parries: 0, weakness: false, adapted: false, loyalistSeparated: false };
+  }
 
   /** nemesis ids already resolved this run (dead, escaped, or fled) */
   private resolvedThisRun = new Set<string>();
@@ -77,6 +94,14 @@ export class World {
   private huntTimer = 60;
   private gruntSeed = 1;
   private encounterSalt = 0;
+  /** gates reinforcement spawns so kills buy quiet — see maintainPopulation */
+  private respawnTimer = 0;
+  /** stock the area in one go on arrival, then drip afterwards */
+  private bulkFill = true;
+  /** territory laws already announced this run (area id) */
+  private lawTold = new Set<string>();
+  /** who last killed the player — used for next-run payoff spawn */
+  lastKillerId: string | null = null;
 
   /** run stopwatch, seconds */
   runTime = 0;
@@ -126,7 +151,10 @@ export class World {
     this.run.started = true;
     this.run.territoryMods = { ...(this.mgr.data.territoryMods ?? {}) };
     this.multiRule = null;
+    this.stageTimer = STAGING_IGNORE_S;
+    this.stageResolved = false;
     this.vendettaCounters = { posture: 0, interrupts: 0, parries: 0, weakness: false, adapted: false, loyalistSeparated: false };
+    this.lawTold.clear();
     this.buildExtractSites();
     this.mgr.data.run = this.run;
     this.refreshOccupancy();
@@ -137,7 +165,11 @@ export class World {
     player.stats.techniques = this.mgr.data.playerMeta.techniques[this.mgr.data.playerMeta.equipped] ?? [];
     this.currentArea = getArea('pit');
     this.locationLabel = `${this.currentArea.name}  ·  ${this.currentArea.landmark}`;
+    this.respawnTimer = 0;
+    this.bulkFill = true;
     this.populateArea(this.currentArea, player, true);
+    this.spawnRunPayoff(player);
+    this.tellAreaLaw(this.currentArea, true);
   }
 
   endRun(): void {
@@ -177,16 +209,35 @@ export class World {
         this.onEnterArea(inside, player);
       }
       this.locationLabel = `${inside.name}  ·  ${inside.landmark}`;
+      if (inside.id === 'tower') {
+        const d = Math.hypot(player.position.x - inside.cx, player.position.z - inside.cz);
+        if (d < 26) this.locationLabel = `${inside.name}  ·  THE RING`;
+      }
     } else {
       const toward = nearestArea(player.position.x, player.position.z);
       this.locationLabel = `THE APPROACH — ${toward.landmark}`;
     }
 
     const inCombat = this.playerInCombat(player);
-    const relic = player.stats.weaponId !== 'sword' && player.stats.weaponId !== 'greatsword' && player.stats.weaponId !== 'spear';
+    const relic = !['sword', 'greatsword', 'spear', 'hammer'].includes(player.stats.weaponId);
     const pres = this.territoryNow();
-    const dampen = pres.liberation?.kind === 'heat_dampen' || pres.rules.some((r) => r.id === 'void_quiet' && pres.liberation);
-    tickHeatEconomy(this.run, dt, inCombat, true, relic, !!dampen || pres.rules.some((r) => r.id === 'tracking_patrols') === false && pres.liberation?.kind === 'heat_dampen');
+    const dampen =
+      pres.liberation?.kind === 'heat_dampen' ||
+      (!!pres.liberation && pres.rules.some((r) => r.id === 'void_quiet'));
+    const tracking = pres.rules.some((r) => r.id === 'tracking_patrols');
+    let dwellMul = 1;
+    if (dampen) dwellMul = 0.4;
+    else if (tracking) dwellMul = 1.5;
+    tickHeatEconomy(this.run, dt, inCombat, !!inside, relic, dwellMul);
+
+    /* ---- combat director pressure ---- */
+    if (this.run.heat >= 85 || this.enemies.filter((e) => e.alive && e.named).length >= 2) {
+      this.director.setPressure('extreme');
+    } else if (this.run.heat >= 60) {
+      this.director.setPressure('high');
+    } else {
+      this.director.setPressure('normal');
+    }
 
     /* ---- combat director ---- */
     // Release permits from anyone who is no longer actually attacking, so a
@@ -205,6 +256,14 @@ export class World {
       dt,
       director: this.director,
       worldAge: this.mgr.age,
+      spawnCommanded: (src: Enemy) => {
+        if (src.summonUsed) return;
+        src.summonUsed = true;
+        const g = this.spawnGrunt(src.position.x + 2.4, src.position.z - 1.6);
+        g.summoned = true;
+        g.protectTarget = src;
+        g.nemesis.persistent = false;
+      },
     };
     for (const e of this.enemies) {
       if (e.alive) updateEnemyAI(e, ctx);
@@ -215,9 +274,10 @@ export class World {
 
     /* ---- housekeeping ---- */
     this.reapEnemies(player);
-    this.maintainPopulation(player);
+    this.maintainPopulation(player, dt);
     this.updateRivalries();
     this.refreshMultiRule();
+    this.tickStaging(dt, player);
 
     /* ---- hunters / heat pulses ---- */
     this.huntTimer -= dt;
@@ -227,7 +287,10 @@ export class World {
       this.pulseHeat(player, crossed);
     } else if (this.huntTimer <= 0) {
       this.huntTimer = 60 + this.rng.range(0, 55);
-      if (this.run.heat >= 60) this.tryHunt(player);
+      if (this.run.heat >= 60) {
+        const hunted = this.tryHunt(player);
+        if (hunted) this.hooks.onToast(this.huntToast(hunted), 'hot');
+      }
     }
   }
 
@@ -242,8 +305,51 @@ export class World {
      ============================================================ */
 
   private onEnterArea(area: AreaDef, player: Player): void {
-    this.hooks.onToast(`ENTERING ${area.name} — ${area.combat}`, 'neutral');
+    this.bulkFill = true;
+    this.respawnTimer = 0;
     this.populateArea(area, player, false);
+    this.tellAreaLaw(area, false);
+  }
+
+  private tellAreaLaw(area: AreaDef, initial: boolean): void {
+    const p = this.territoryNow();
+    const rule = p.rules[0];
+    if (this.hooks.onEnterTerritory) {
+      this.hooks.onEnterTerritory(area.name, p);
+    }
+    if (this.lawTold.has(area.id)) {
+      if (!this.hooks.onEnterTerritory) {
+        this.hooks.onToast(`ENTERING ${area.name} — ${area.combat}`, 'neutral');
+      }
+      return;
+    }
+    this.lawTold.add(area.id);
+    if (rule && rule.id !== 'void_quiet') {
+      const who = p.holderName !== 'UNCLAIMED' ? `${p.holderName} · ` : '';
+      this.hooks.onToast(`${who}${rule.title} — ${rule.counterplay}`, 'gold');
+    } else if (!initial) {
+      this.hooks.onToast(`ENTERING ${area.name} — ${area.combat}`, 'neutral');
+    }
+  }
+
+  /**
+   * After death the world turned. Prove it in the first seconds: killer with
+   * stolen steel, or anyone still carrying the player's weapon, walks on stage.
+   */
+  private spawnRunPayoff(player: Player): void {
+    const thief =
+      (this.lastKillerId ? this.mgr.byId(this.lastKillerId) : null) ??
+      this.mgr.living().find((n) => n.stolen.some((s) => s.kind === 'weapon')) ??
+      null;
+    if (!thief || !thief.alive) return;
+    if (this.activeNamed.has(thief.id) || this.resolvedThisRun.has(thief.id)) return;
+    if (this.activeNamed.size >= MAX_NAMED_ACTIVE) return;
+    const carrying = thief.stolen.find((s) => s.kind === 'weapon');
+    const isKiller = this.lastKillerId === thief.id;
+    if (!carrying && !isKiller) return;
+    this.spawnNamed(thief, player, true, undefined, undefined, { hunting: true });
+    // Toast lives on arrival / pendingWorldPayoff — spawning is the body change.
+    this.lastKillerId = null;
   }
 
   private populateArea(area: AreaDef, player: Player, initial: boolean): void {
@@ -266,19 +372,50 @@ export class World {
     }
   }
 
-  private maintainPopulation(player: Player): void {
+  /**
+   * Keep the area populated — but on a drip, not a tap.
+   *
+   * This used to refill to target every single frame, so clearing a group
+   * spawned the replacements the same instant. There was no lull, no "I won
+   * that fight" beat, and the arena felt like an endless conveyor. Now a
+   * reinforcement arrives at most every `RESPAWN_INTERVAL` seconds, and
+   * emptying the area buys a longer breath before the next one walks in.
+   */
+  private maintainPopulation(player: Player, dt: number): void {
+    if (this.respawnTimer > 0) this.respawnTimer -= dt;
     const alive = this.enemies.filter((e) => e.alive && !e.named).length;
     const target = Math.min(
       MAX_GRUNTS,
       Math.max(2, this.currentArea.population + Math.floor(this.mgr.age / 2) + this.gruntDelta())
     );
     if (alive >= target) return;
-    // Spawn just out of sight and let them walk in.
-    for (let i = alive; i < target; i++) {
+
+    // Entering an area (or starting a run) stocks it in one go — the drip is
+    // about not replacing the group you just beat, not about arriving in an
+    // empty world.
+    if (this.bulkFill) {
+      this.bulkFill = false;
+      for (let i = alive; i < target; i++) {
+        const pt = this.arena.spawnPoint(this.currentArea.id, this.rng, 0.35, 0.98);
+        if (Math.hypot(pt.x - player.position.x, pt.z - player.position.z) < 26) continue;
+        this.spawnGrunt(pt.x, pt.z);
+      }
+      this.respawnTimer = RESPAWN_INTERVAL;
+      return;
+    }
+
+    if (this.respawnTimer > 0) return;
+    // Clearing the field earns a real pause; topping a group up does not.
+    this.respawnTimer = alive === 0 ? RESPAWN_AFTER_CLEAR : RESPAWN_INTERVAL;
+
+    // One at a time — a whole group appearing at once is what made refills
+    // read as a spawn wave.
+    for (let attempt = 0; attempt < 6; attempt++) {
       const pt = this.arena.spawnPoint(this.currentArea.id, this.rng, 0.35, 0.98);
       const d = Math.hypot(pt.x - player.position.x, pt.z - player.position.z);
       if (d < 26) continue;
       this.spawnGrunt(pt.x, pt.z);
+      return;
     }
   }
 
@@ -304,6 +441,18 @@ export class World {
       const d = Math.hypot(e.position.x - player.position.x, e.position.z - player.position.z);
       if (d > DESPAWN_DISTANCE && !e.named) this.despawn(i);
     }
+  }
+
+  /**
+   * Pull a named enemy off the stage without running any death, escape or
+   * reward bookkeeping. For flows that rewrite the record directly
+   * (resurrection, debug) and must not have a leftover body react to it.
+   */
+  removeNamedFromStage(nemesisId: string): boolean {
+    const i = this.enemies.findIndex((e) => e.named && e.nemesis.id === nemesisId);
+    if (i < 0) return false;
+    this.despawn(i);
+    return true;
   }
 
   private despawn(index: number): void {
@@ -473,22 +622,36 @@ export class World {
     }
   }
 
-  private tryHunt(player: Player): void {
-    if (this.activeNamed.size >= MAX_NAMED_ACTIVE) return;
+  private tryHunt(player: Player): Nemesis | null {
+    if (this.activeNamed.size >= MAX_NAMED_ACTIVE) return null;
     const candidates = this.mgr
       .living()
       .filter((n) => !this.resolvedThisRun.has(n.id) && !this.activeNamed.has(n.id) && n.rank !== 'overlord');
-    if (!candidates.length) return;
+    if (!candidates.length) return null;
 
     const weights = candidates.map((n) => {
       const p = getPersonality(n.personality);
-      return 0.15 + p.hunt * 0.4 + n.revengeChance * 1.4 + n.playerRelationship * 0.008;
+      const stealBoost = n.stolen.some((s) => s.kind === 'weapon') ? 0.55 : 0;
+      const holderBoost = this.mgr.data.territories[this.currentArea.id] === n.id ? 0.35 : 0;
+      return 0.15 + p.hunt * 0.4 + n.revengeChance * 1.4 + n.playerRelationship * 0.008 + stealBoost + holderBoost;
     });
     const pick = this.rng.weighted(candidates, weights);
     const rate = this.mgr.mods.huntRate;
-    if (!this.rng.chance(Math.min(0.9, rate + pick.revengeChance * 0.4))) return;
+    if (!this.rng.chance(Math.min(0.9, rate + pick.revengeChance * 0.4))) return null;
 
     this.spawnNamed(pick, player, true, undefined, undefined, { hunting: true });
+    return pick;
+  }
+
+  /** Named hunter arrival copy — who + why, never generic heat alone. */
+  private huntToast(n: Nemesis): string {
+    const who = fullName(n).toUpperCase();
+    const steel = n.stolen.find((s) => s.kind === 'weapon');
+    if (steel) return `${who} — YOUR ${steel.name} BROUGHT THEM`;
+    if (n.killsAgainstPlayer > 0 || n.revengeChance > 0.45) return `${who} — GRUDGE`;
+    if (this.mgr.data.territories[this.currentArea.id] === n.id) return `${who} — HOLDER LAW`;
+    if (n.personality === 'hunter') return `${who} — HUNTING YOU`;
+    return `${who} — HEAT DREW THEM`;
   }
 
   /* ============================================================
@@ -538,7 +701,13 @@ export class World {
      ============================================================ */
 
   /** An enemy died in the arena. */
-  onEnemyKilled(e: Enemy, executed: boolean): void {
+  /**
+   * @param definite skip the fake-death roll entirely. Used by debug tools
+   *        and scripted deaths, where "kill this one" has to mean it — a
+   *        nondeterministic survive roll made those paths untestable and
+   *        left a walking corpse mutating the record afterwards.
+   */
+  onEnemyKilled(e: Enemy, executed: boolean, definite = false): void {
     const turn = this.mgr.turn;
     if (!e.named) {
       this.mgr.data.playerMeta.kills++;
@@ -552,10 +721,10 @@ export class World {
 
     // Some of them do not actually die.
     const p = getPersonality(n.personality);
-    let survive = 0.08 * p.survival + this.mgr.mods.resurrection * 0.25;
+    let survive = definite ? 0 : 0.08 * p.survival + this.mgr.mods.resurrection * 0.25;
     if (executed) survive *= 0.25;
-    if (n.personality === 'survivor') survive += 0.16;
-    if (rankIndex(n.rank) >= 3) survive += 0.06;
+    if (!definite && n.personality === 'survivor') survive += 0.16;
+    if (!definite && rankIndex(n.rank) >= 3) survive += 0.06;
     survive *= 1 - (n.fakeDeathPenalty ?? 0);
     if (this.run.blockFakeDeath) {
       survive = 0;
@@ -608,7 +777,12 @@ export class World {
   }
 
   /** The player was killed. Returns the killer's record, if named. */
-  onPlayerKilled(killer: Enemy | null, playerWeaponId: string, habits: Record<string, number>): Nemesis | null {
+  onPlayerKilled(
+    killer: Enemy | null,
+    playerWeaponId: string,
+    habits: Record<string, number>,
+    opts?: { forceSteal?: boolean }
+  ): Nemesis | null {
     const turn = this.mgr.turn;
     this.mgr.data.playerMeta.deaths++;
 
@@ -616,6 +790,7 @@ export class World {
     if (killer && killer.named) {
       const n = killer.nemesis;
       killerNemesis = n;
+      this.lastKillerId = n.id;
       n.killsAgainstPlayer++;
       remember(n, 'I_KILLED_PLAYER', turn);
       recomputeRevenge(n);
@@ -631,20 +806,27 @@ export class World {
 
       // Looting. This is what creates personal revenge objectives.
       const p = getPersonality(n.personality);
-      if (this.rng.chance(Math.min(0.85, 0.3 * p.steal + 0.2)) && playerWeaponId) {
-        const item = itemForWeapon(playerWeaponId);
-        if (item) {
-          n.stolen.push(item);
+      const meta = this.mgr.data.playerMeta;
+      const inst = equippedWeapon(meta.progress);
+      const notable = !!inst && (inst.rarity !== 'common' || inst.defId === 'sunspear' || inst.favorite);
+      const willSteal =
+        (opts?.forceSteal || inst?.defId === 'sunspear' || this.rng.chance(Math.min(0.85, 0.3 * p.steal + (notable ? 0.35 : 0.15)))) &&
+        (inst || playerWeaponId);
+      if (willSteal) {
+        const stolen = inst
+          ? this.takeInstance(n, inst)
+          : itemForWeapon(playerWeaponId);
+        if (stolen) {
+          n.stolen.push(stolen);
           remember(n, 'I_STOLE_PLAYER_WEAPON', turn);
-          this.mgr.data.playerMeta.lostWeapons.push(playerWeaponId);
-          const idx = this.mgr.data.playerMeta.weapons.indexOf(playerWeaponId);
-          if (idx >= 0) this.mgr.data.playerMeta.weapons.splice(idx, 1);
-          if (this.mgr.data.playerMeta.equipped === playerWeaponId) {
-            this.mgr.data.playerMeta.equipped = this.mgr.data.playerMeta.weapons[0] ?? 'sword';
-            if (!this.mgr.data.playerMeta.weapons.length) this.mgr.data.playerMeta.weapons.push('sword');
-          }
+          const wid = stolen.weaponId ?? playerWeaponId;
+          if (wid && !meta.lostWeapons.includes(wid)) meta.lostWeapons.push(wid);
           this.mgr.log(
-            makeEvent(turn, this.mgr.age, 'weapon_theft', `${fullName(n)} took ${item.name} from your body.`, [n.id], true, 'bad')
+            makeEvent(turn, this.mgr.age, 'weapon_theft', `${fullName(n)} took ${stolen.name} from your body.`, [n.id], true, 'bad', {
+              payload: { itemName: stolen.name, weaponId: wid, instanceId: stolen.instanceId },
+              known: true,
+              witnessed: true,
+            })
           );
         }
       }
@@ -675,22 +857,80 @@ export class World {
     return killerNemesis;
   }
 
+  /** Debug / tests: steal equipped gear without killing the player. */
+  forceStealFrom(n: Nemesis): StolenItem | null {
+    const inst = equippedWeapon(this.mgr.data.playerMeta.progress);
+    if (!inst) return null;
+    const stolen = this.takeInstance(n, inst);
+    n.stolen.push(stolen);
+    remember(n, 'I_STOLE_PLAYER_WEAPON', this.mgr.turn);
+    const wid = stolen.weaponId;
+    const meta = this.mgr.data.playerMeta;
+    if (wid && !meta.lostWeapons.includes(wid)) meta.lostWeapons.push(wid);
+    this.mgr.log(
+      makeEvent(this.mgr.turn, this.mgr.age, 'weapon_theft', `${fullName(n)} took ${stolen.name}.`, [n.id], true, 'bad', {
+        payload: { itemName: stolen.name, weaponId: wid, instanceId: stolen.instanceId },
+        known: true,
+        witnessed: true,
+      })
+    );
+    recomputePower(n);
+    return stolen;
+  }
+
+  private takeInstance(n: Nemesis, inst: ItemInstance): StolenItem {
+    const meta = this.mgr.data.playerMeta;
+    const prog = meta.progress;
+    prog.inventory = prog.inventory.filter((x) => x.id !== inst.id);
+    if (prog.loadout.weapon === inst.id) prog.loadout.weapon = null;
+    const remaining = prog.inventory.filter((x) => x.kind === 'weapon');
+    if (!remaining.length) {
+      const fallback = mint(prog, 'iron_sword');
+      prog.inventory.push(fallback);
+      prog.loadout.weapon = fallback.id;
+    } else if (!prog.loadout.weapon) {
+      prog.loadout.weapon = remaining[0].id;
+    }
+    inst.history.push({ type: 'stolen_by', nemesisId: n.id, nemesisName: n.name, turn: this.mgr.turn });
+    const weaponId = weaponIdFor(inst);
+    if (/spear/.test(weaponId)) n.weapon = 'spear';
+    syncLegacyWeapons(meta);
+    return {
+      name: inst.name,
+      kind: inst.kind === 'relic' ? 'relic' : 'weapon',
+      weaponId,
+      instanceId: inst.id,
+      instance: inst,
+    };
+  }
+
   /** Killing a nemesis who carries your weapon gives it back. */
   private recoverStolen(n: Nemesis): void {
     if (!n.stolen.length) return;
+    const meta = this.mgr.data.playerMeta;
+    const prog = meta.progress;
     for (const item of n.stolen) {
+      if (item.instance) {
+        markRecovered(item.instance, n.id, n.name, this.mgr.turn);
+        if (!prog.inventory.some((x) => x.id === item.instance!.id)) prog.inventory.push(item.instance);
+        prog.loadout.weapon = item.instance.id;
+      }
       if (item.weaponId) {
-        const meta = this.mgr.data.playerMeta;
         if (!meta.weapons.includes(item.weaponId)) meta.weapons.push(item.weaponId);
         const i = meta.lostWeapons.indexOf(item.weaponId);
         if (i >= 0) meta.lostWeapons.splice(i, 1);
-        this.hooks.onToast(`RECOVERED ${item.name}`, 'gold');
-        this.mgr.log(
-          makeEvent(this.mgr.turn, this.mgr.age, 'weapon_theft', `You took ${item.name} back.`, [n.id], true, 'good')
-        );
       }
+      this.hooks.onToast(`RECOVERED ${item.name}`, 'gold');
+      this.mgr.log(
+        makeEvent(this.mgr.turn, this.mgr.age, 'weapon_theft', `You took ${item.name} back.`, [n.id], true, 'good', {
+          payload: { itemName: item.name, weaponId: item.weaponId, recoveredFrom: n.name },
+          known: true,
+          witnessed: true,
+        })
+      );
     }
     n.stolen.length = 0;
+    syncLegacyWeapons(meta);
     recomputePower(n);
   }
 
@@ -723,6 +963,10 @@ export class World {
     for (const other of this.mgr.living()) {
       if (other.allies.includes(victim.id)) {
         remember(other, 'PLAYER_KILLED_MY_ALLY', this.mgr.turn, victim.id);
+        const live = this.activeNamed.get(other.id);
+        if (live && live.alive && signatureEventMatches(other, 'ally_fallen')) {
+          live.queueSignatureCue();
+        }
       }
     }
   }
@@ -764,16 +1008,19 @@ export class World {
   }
 
   private pulseHeat(player: Player, threshold: number): void {
-    this.hooks.onToast(`HEAT — ${heatLabel(this.run.heat)}`, 'hot');
-    this.run.lockedExits = threshold >= 85;
+    this.run.lockedExits = threshold >= 85 && !this.run.extractHeatImmune;
     if (threshold >= 100) {
       const ov = this.mgr.overlord();
       if (ov && !this.resolvedThisRun.has(ov.id) && !this.activeNamed.has(ov.id)) {
         this.spawnNamed(ov, player, true, undefined, undefined, { hunting: true });
+        this.hooks.onToast(`${fullName(ov).toUpperCase()} — THE CROWN ANSWERS HEAT`, 'hot');
+      } else {
+        this.hooks.onToast(this.heatFallbackToast(threshold, 'overlord'), 'hot');
       }
       return;
     }
     if (threshold >= 95) {
+      this.hooks.onToast(this.heatFallbackToast(threshold, 'reinforce'), 'hot');
       for (let i = 0; i < 2; i++) {
         const off = spawnSafeOffset(player.position.x, player.position.z, player.facing + i, false, HEAT.spawnMinDistance + 4);
         this.spawnGrunt(off.x, off.z);
@@ -782,14 +1029,62 @@ export class World {
     }
     if (threshold >= 75) {
       const named = this.mgr.living().filter((n) => n.rivalries.length && !this.activeNamed.has(n.id) && !this.resolvedThisRun.has(n.id));
-      if (named[0]) this.spawnNamed(named[0], player, true, undefined, undefined, { hunting: true });
+      if (named[0]) {
+        this.spawnNamed(named[0], player, true, undefined, undefined, { hunting: true });
+        this.hooks.onToast(this.huntToast(named[0]), 'hot');
+      } else {
+        const hunted = this.tryHunt(player);
+        this.hooks.onToast(hunted ? this.huntToast(hunted) : this.heatFallbackToast(threshold, 'pressure'), 'hot');
+      }
       return;
     }
-    if (threshold >= 60) this.tryHunt(player);
-    else if (threshold >= 40) {
+    if (threshold >= 60) {
+      const hunted = this.tryHunt(player);
+      this.hooks.onToast(hunted ? this.huntToast(hunted) : this.heatFallbackToast(threshold, 'hunt_miss'), 'hot');
+    } else if (threshold >= 40) {
+      this.hooks.onToast(this.heatFallbackToast(threshold, 'patrol'), 'hot');
       const off = spawnSafeOffset(player.position.x, player.position.z, player.facing, false, HEAT.spawnMinDistance);
       this.spawnGrunt(off.x, off.z);
+    } else {
+      this.hooks.onToast(this.heatFallbackToast(threshold, 'stir'), 'hot');
     }
+  }
+
+  /** When heat rises but no named hunter walks on stage — still name the consequence. */
+  private heatFallbackToast(
+    threshold: number,
+    kind: 'overlord' | 'reinforce' | 'pressure' | 'hunt_miss' | 'patrol' | 'stir'
+  ): string {
+    void threshold;
+    const label = heatLabel(this.run.heat);
+    const terr = this.territoryNow();
+    const holder =
+      terr.holderName !== 'UNCLAIMED' ? terr.holderName.toUpperCase() : null;
+    const rule = terr.rules[0] && terr.rules[0].id !== 'void_quiet' ? terr.rules[0].title : null;
+
+    if (kind === 'reinforce') {
+      return this.run.lockedExits
+        ? `EXITS LOCKED — REINFORCEMENTS CLOSING IN`
+        : `HEAT — ${label} · REINFORCEMENTS CLOSING IN`;
+    }
+    if (kind === 'overlord') {
+      return this.run.lockedExits
+        ? 'EXITS LOCKED — THE OVERLORD IS STIRRING'
+        : `HEAT PEAK — ${label} · THE OVERLORD IS STIRRING`;
+    }
+    if (kind === 'patrol') {
+      return holder && rule
+        ? `${holder} · ${rule} — PATROLS TIGHTEN`
+        : `HEAT — ${label} · PATROLS TIGHTEN`;
+    }
+    if (this.run.lockedExits) {
+      return 'EXITS LOCKED — HOLD THE GATE OR BREAK OUT';
+    }
+    if (kind === 'pressure' || kind === 'hunt_miss') {
+      if (holder && rule) return `${holder} · HOLDER LAW PRESSURE — ${rule}`;
+      return `HEAT — ${label} · THE AREA IS HUNTING YOU`;
+    }
+    return holder ? `HEAT — ${label} · ${holder}'S GROUND NOTICES YOU` : `HEAT — ${label} · KEEP MOVING`;
   }
 
   private refreshMultiRule(): void {
@@ -797,9 +1092,28 @@ export class World {
     const next = pickMultiRule(named);
     if (next && (!this.multiRule || this.multiRule.id !== next.id)) {
       this.multiRule = next;
+      this.stageTimer = STAGING_IGNORE_S;
+      this.stageResolved = false;
       this.hooks.onToast(`${next.title} — ${next.desc}`, 'gold');
     }
     if (named.length < 2) this.multiRule = null;
+  }
+
+  private tickStaging(dt: number, player: Player): void {
+    const inCombat = this.playerInCombat(player);
+    applyStagingPose(this.enemies, this.multiRule, player, inCombat);
+    if (!this.multiRule || inCombat || this.stageResolved) return;
+    this.stageTimer -= dt;
+    if (this.stageTimer > 0) return;
+    this.stageResolved = true;
+    const resolved = resolveIgnoredStaging(this.multiRule, this.enemies, this.mgr.turn, this.mgr.age);
+    if (!resolved) return;
+    this.hooks.onToast(resolved.toast, 'neutral');
+    for (const ev of resolved.events) this.mgr.log(ev);
+    if (this.multiRule.id === 'coward_alarm') {
+      const off = spawnSafeOffset(player.position.x, player.position.z, player.facing, false, HEAT.spawnMinDistance);
+      this.spawnGrunt(off.x, off.z);
+    }
   }
 
   private buildExtractSites(): void {
@@ -842,14 +1156,30 @@ export class World {
 
   tickExtraction(dt: number, player: Player): boolean {
     if (!this.run.extraction.active) return false;
+    const site = this.extractSites.find((s) => s.id === this.run.extraction.siteId);
+    if (!site) {
+      this.run.extraction.active = false;
+      return false;
+    }
+    const dist = Math.hypot(player.position.x - site.x, player.position.z - site.z);
+    if (dist > 5.2) {
+      this.cancelExtraction('LEFT THE GATE');
+      return false;
+    }
     this.run.extraction.progress += dt / EXTRACT.channelTime;
-    addHeat(this.run, HEAT.extractStart * dt * 0.08);
     if (this.run.extraction.progress >= 1) {
       this.run.extraction.active = false;
       return true;
     }
-    void player;
     return false;
+  }
+
+  cancelExtraction(reason?: string): void {
+    if (!this.run.extraction.active) return;
+    this.run.extraction.active = false;
+    this.run.extraction.progress = 0;
+    this.run.extraction.siteId = null;
+    if (reason) this.hooks.onToast(reason, 'hot');
   }
 }
 

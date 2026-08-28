@@ -11,6 +11,12 @@ import type { Arena } from '../world/Arena';
 
 const MIN_PITCH = -0.95;
 const MAX_PITCH = 0.72;
+/**
+ * Closest the lens may ever get to the player's chest or its look point.
+ * The near plane is 0.1, so anything under ~1.5m starts cutting the character
+ * open and filling the frame with the inside of a torso.
+ */
+const MIN_SEPARATION = 1.7;
 
 export class ThirdPersonCamera {
   readonly camera: THREE.PerspectiveCamera;
@@ -34,12 +40,14 @@ export class ThirdPersonCamera {
 
   shakeAmount = 0;
   shakeScale = 1;
+  private kickAmt = 0;
 
   private baseFov = 58;
   private fovPunch = 0;
   private emphasis = 0;
   private emphasisPoint = new THREE.Vector3();
   private storyFocus = 0;
+  private storyFocusTarget = 0;
   private storyFocusPoint = new THREE.Vector3();
   private storyHeld = false;
 
@@ -83,6 +91,15 @@ export class ThirdPersonCamera {
     return this.currentDistance;
   }
 
+  /** True lens-to-chest distance, including shake and every push-out. */
+  distanceToChest(target: THREE.Vector3): number {
+    return Math.hypot(
+      this.camera.position.x - target.x,
+      this.camera.position.y - (target.y + this.targetHeight),
+      this.camera.position.z - target.z
+    );
+  }
+
   resize(aspect: number): void {
     this.camera.aspect = aspect;
     this.camera.updateProjectionMatrix();
@@ -103,7 +120,15 @@ export class ThirdPersonCamera {
   }
 
   shake(amount: number): void {
-    this.shakeAmount = Math.min(1.6, this.shakeAmount + amount * this.shakeScale);
+    this.shakeAmount = Math.min(0.85, this.shakeAmount + amount * this.shakeScale);
+  }
+
+  /**
+   * Directed camera punch. Distinct from shake: one axis, fast decay.
+   * Light connects, heavies, and getting hit each use a different amount.
+   */
+  kick(amount: number): void {
+    this.kickAmt = Math.min(0.42, this.kickAmt + amount * this.shakeScale);
   }
 
   /** Brief FOV punch used by named-NPC intros. Auto-decays. */
@@ -123,12 +148,12 @@ export class ThirdPersonCamera {
    */
   setStoryFocus(x: number, y: number, z: number, amount = 1): void {
     this.storyFocusPoint.set(x, y, z);
-    this.storyFocus = Math.max(this.storyFocus, amount);
+    this.storyFocusTarget = Math.max(this.storyFocusTarget, amount);
     this.storyHeld = true;
   }
 
   clearStoryFocus(): void {
-    this.storyFocus = 0;
+    this.storyFocusTarget = 0;
     this.storyHeld = false;
   }
 
@@ -199,6 +224,11 @@ export class ThirdPersonCamera {
     }
 
     /* ---- named-NPC story focus ---- */
+    {
+      const focusEase = 1 - Math.pow(0.0006, rdt);
+      this.storyFocus += (this.storyFocusTarget - this.storyFocus) * focusEase;
+      if (!this.storyHeld) this.storyFocusTarget = Math.max(0, this.storyFocusTarget - rdt * 2.2);
+    }
     if (this.storyFocus > 0.001) {
       const t = this.storyFocus;
       const dx = this.storyFocusPoint.x - this.smoothTarget.x;
@@ -221,7 +251,7 @@ export class ThirdPersonCamera {
     /* ---- orbit position ---- */
     this.lookAt.set(this.smoothTarget.x, this.smoothTarget.y + this.targetHeight, this.smoothTarget.z);
     if (this.storyFocus > 0.001) {
-      this.lookAt.lerp(this.storyFocusPoint, 0.64 * this.storyFocus);
+      this.lookAt.lerp(this.storyFocusPoint, Math.min(1, 0.64 * this.storyFocus * rdt * 8));
     }
 
     const cp = Math.cos(this.pitch);
@@ -230,8 +260,11 @@ export class ThirdPersonCamera {
     let want = this.distance - this.storyFocus * 1.7;
     if (this.arena) want = this.probeDistance(this.lookAt, dir, this.distance);
     want = this.probeObstacles(this.lookAt, dir, want);
-    // Snap in fast when blocked, ease out when clear — avoids wall pop.
-    const k = want < this.currentDistance ? 1 : 1 - Math.pow(0.006, rdt);
+    // Pull in fast when blocked, ease out when clear — avoids wall pop. The
+    // pull-in used to be an instant snap (k = 1), which registered as a
+    // camera teleport whenever a body crossed the orbit ray; very fast is
+    // enough to stay out of geometry without reading as a cut.
+    const k = want < this.currentDistance ? 1 - Math.pow(0.0000012, rdt) : 1 - Math.pow(0.006, rdt);
     this.currentDistance += (want - this.currentDistance) * k;
 
     this.pos.copy(this.lookAt).addScaledVector(dir, this.currentDistance);
@@ -261,16 +294,37 @@ export class ThirdPersonCamera {
 
     /* ---- shake ---- */
     if (this.shakeAmount > 0.0005) {
-      const s = this.shakeAmount;
+      // Shake shrinks as the orbit shortens: at a wall, full-strength shake
+      // was what finally pushed the lens inside the character.
+      const s = this.shakeAmount * Math.min(1, this.currentDistance / 5);
       this.shakeOffset.set(
         (Math.random() - 0.5) * s,
-        (Math.random() - 0.5) * s,
+        (Math.random() - 0.5) * s * 0.65,
         (Math.random() - 0.5) * s
       );
       this.pos.add(this.shakeOffset);
       this.shakeAmount *= Math.pow(0.0009, rdt);
       if (this.shakeAmount < 0.0005) this.shakeAmount = 0;
     }
+
+    if (this.kickAmt > 0.0004) {
+      const k = this.kickAmt * Math.min(1, this.currentDistance / 5);
+      this.right(this.tmp);
+      this.pos.addScaledVector(this.tmp, k * 0.28);
+      this.pos.y += k * 0.16;
+      this.kickAmt *= Math.pow(0.00015, rdt);
+      if (this.kickAmt < 0.0004) this.kickAmt = 0;
+    }
+
+    // HARD FLOOR: whatever pushed the camera in — wall probe, floor guard,
+    // shake, a story focus dragging the look point onto someone else — the
+    // lens never sits closer than MIN_SEPARATION to the look point OR to the
+    // player's own chest. Below that the near plane (0.1) starts slicing the
+    // character open. Enforcing it against the look point alone was not
+    // enough: during a named arrival the look point IS the nemesis, so the
+    // camera could still swing through the player on its way there.
+    this.pushOut(this.lookAt.x, this.lookAt.y, this.lookAt.z);
+    this.pushOut(target.x, target.y + this.targetHeight, target.z);
 
     this.camera.position.copy(this.pos);
     this.camera.lookAt(this.lookAt);
@@ -287,6 +341,25 @@ export class ThirdPersonCamera {
     }
 
     void dt;
+  }
+
+  /**
+   * Shove the camera radially out until it is at least MIN_SEPARATION from
+   * the given world point. Radial, so the framing direction is preserved.
+   */
+  private pushOut(x: number, y: number, z: number): void {
+    const dx = this.pos.x - x;
+    const dy = this.pos.y - y;
+    const dz = this.pos.z - z;
+    const sep = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (sep >= MIN_SEPARATION) return;
+    if (sep < 0.0001) {
+      // Exactly coincident: back straight out along the current view axis.
+      this.pos.set(x + Math.sin(this.yaw) * MIN_SEPARATION, y + 0.4, z + Math.cos(this.yaw) * MIN_SEPARATION);
+      return;
+    }
+    const k = MIN_SEPARATION / sep;
+    this.pos.set(x + dx * k, y + dy * k, z + dz * k);
   }
 
   /**
@@ -334,7 +407,9 @@ export class ThirdPersonCamera {
         return d;
       }
     }
-    return this.minDistance;
+    // Every step was blocked: hug the player rather than teleporting 3.2m
+    // out into whatever is standing there.
+    return Math.max(1.6, want / steps);
   }
 
   snapBehind(target: THREE.Vector3, yaw: number): void {
@@ -348,6 +423,8 @@ export class ThirdPersonCamera {
     this.emphasis = 0;
     this.storyFocus = 0;
     this.storyHeld = false;
+    this.shakeAmount = 0;
+    this.kickAmt = 0;
     this.camera.fov = this.baseFov;
     this.camera.updateProjectionMatrix();
   }

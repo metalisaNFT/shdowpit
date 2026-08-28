@@ -8,7 +8,7 @@
 
 import { RNG, mixSeed, randomSeed } from '../core/RNG';
 import type { SaveData, SaveSystem } from '../core/SaveSystem';
-import { defaultPlayerMeta, defaultSettings, SAVE_VERSION } from '../core/SaveSystem';
+import { defaultGodHistory, defaultPlayerMeta, defaultSettings, SAVE_VERSION } from '../core/SaveSystem';
 import type { Bus } from '../core/Events';
 import { AREAS } from '../data/areas';
 import { rollAge, type AgeModifier, type AgeState } from '../data/ages';
@@ -76,6 +76,12 @@ export class NemesisManager {
       settings: this.data?.settings ?? defaultSettings(),
       run: null,
       territoryMods: {},
+      god: null,
+      // A new world does not erase the Book of Legends or what has been
+      // unlocked — that is the whole point of them surviving the reset.
+      legends: this.data?.legends ?? [],
+      godUnlocks: this.data?.godUnlocks ?? [],
+      godHistory: this.data?.godHistory ?? defaultGodHistory(),
     };
     this.ageState = rollAge(1, seed);
     this.data.ageName = this.ageState.name;
@@ -84,6 +90,38 @@ export class NemesisManager {
 
     this.seedRoster();
     this.log(makeEvent(1, 1, 'age_begins', `${this.ageState.name} begins.`, [], true, 'gold', { known: true }));
+    this.persist();
+  }
+
+  /**
+   * A new world for a new long game.
+   *
+   * The roster, the ground and the chronicle are replaced. The Book of
+   * Legends, the unlocks, the settings and everything the player has banked
+   * are not — that separation is the entire point of the roguelite reset, and
+   * it is why a legend's relic can turn up in a world that never met them.
+   * The Age carries forward, so each run's world is a little further along
+   * and a little stranger than the last.
+   */
+  reseedWorld(seed = randomSeed()): void {
+    const meta = this.data.playerMeta;
+    const settings = this.data.settings;
+    const legends = this.data.legends;
+    const unlocks = this.data.godUnlocks;
+    const history = this.data.godHistory;
+    const age = Math.max(1, (this.data.worldAge ?? 1) + 1);
+
+    this.newWorld(seed);
+
+    this.data.playerMeta = meta;
+    this.data.settings = settings;
+    this.data.legends = legends;
+    this.data.godUnlocks = unlocks;
+    this.data.godHistory = history;
+    this.data.worldAge = age;
+    this.ageState = rollAge(age, seed);
+    this.data.ageName = this.ageState.name;
+    this.data.ageModifiers = this.ageState.modifiers;
     this.persist();
   }
 

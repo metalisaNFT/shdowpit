@@ -157,11 +157,130 @@ export interface NemesisFacts {
   trigger: MythEventKind | null;
 }
 
+/**
+ * Read-only projection of a long-game moment. Built in `src/god/GodAI.ts`
+ * from simulation state; consumed only as prompt input. Nothing here is
+ * written back into `GodState`, `Beat`, `SimState`, or `Nemesis` mechanical
+ * fields.
+ */
+export interface GodFacts {
+  kind: 'dossier' | 'beat' | 'crisis' | 'recap' | 'legend' | 'aftermath' | 'situation';
+  run: number;
+  cycle: number;
+  act: string;
+  chaos: number;
+  /** names the model is allowed to mention */
+  names: string[];
+  actors: GodActorFact[];
+  headline?: string;
+  detail?: string[];
+  beatKind?: string;
+  priority?: string;
+  crisisTitle?: string;
+  crisisKind?: string;
+  crisisDescription?: string;
+  ending?: string;
+  highlights?: string[];
+  legendName?: string;
+  legendTitle?: string;
+  legendDeeds?: string[];
+  legendCause?: string;
+  legendEpitaph?: string;
+}
+
+/**
+ * Read-only projection of a pit-run story moment for AI polish.
+ * Built in `src/story/StoryAI.ts`; never written back to simulation state.
+ */
+export interface StoryFacts {
+  kind: 'recap_beat' | 'timeline' | 'journey' | 'arc' | 'encounter' | 'aftermath' | 'situation';
+  /** names the model may mention */
+  names: string[];
+  headline?: string;
+  line?: string;
+  detail?: string;
+  act?: string;
+  eventType?: string;
+  witnessed?: boolean;
+  known?: boolean;
+  /** arc-specific */
+  arcTitle?: string;
+  arcKind?: string;
+  arcState?: string;
+  arcNext?: string;
+  /** encounter-specific */
+  encounterKind?: string;
+  relationshipChip?: string;
+  /** journey-specific */
+  nemesisName?: string;
+  beatIndex?: number;
+  /** aftermath/situation */
+  linkLabel?: string;
+  linkText?: string;
+  cycle?: number;
+  intention?: string;
+}
+
+export interface GodActorFact {
+  id: string;
+  name: string;
+  title: string;
+  rank: string;
+  alive: boolean;
+  personality: string;
+  goal: string;
+  scars: string[];
+  stolen: string[];
+  returns: number;
+  kills: number;
+  deeds: string[];
+  killedPlayer: number;
+  strengths: string[];
+  heretic: boolean;
+  crisisBorn: boolean;
+}
+
 /* ============================================================
    requests
    ============================================================ */
 
-export type AIRequestKind = 'identity' | 'taunt' | 'chronicle' | 'portrait';
+export type AIRequestKind =
+  | 'identity'
+  | 'taunt'
+  | 'chronicle'
+  | 'portrait'
+  | 'dossier'
+  | 'beat'
+  | 'crisis'
+  | 'recap'
+  | 'legend'
+  | 'recap_beat'
+  | 'timeline'
+  | 'journey'
+  | 'arc'
+  | 'encounter'
+  | 'aftermath'
+  | 'situation';
+
+/** Long-game flavour kinds. Dropped when a run is abandoned, reset, or replaced. */
+export const GOD_AI_KINDS: ReadonlySet<AIRequestKind> = new Set([
+  'dossier',
+  'beat',
+  'crisis',
+  'recap',
+  'legend',
+  'aftermath',
+  'situation',
+]);
+
+/** Pit-run story polish kinds. */
+export const STORY_AI_KINDS: ReadonlySet<AIRequestKind> = new Set([
+  'recap_beat',
+  'timeline',
+  'journey',
+  'arc',
+  'encounter',
+]);
 
 export type AIRequestState = 'queued' | 'generating' | 'complete' | 'failed' | 'cached';
 

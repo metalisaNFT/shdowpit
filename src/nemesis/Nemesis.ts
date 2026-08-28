@@ -14,7 +14,13 @@ export function rankIndex(r: Rank): number {
   return RANK_ORDER.indexOf(r);
 }
 
-export type Archetype = 'fighter' | 'heavy' | 'archer';
+export type Archetype = 'fighter' | 'heavy' | 'archer' | 'duelist' | 'commander';
+
+export const ARCHETYPES: Archetype[] = ['fighter', 'heavy', 'archer', 'duelist', 'commander'];
+
+export function coerceArchetype(raw: unknown): Archetype {
+  return ARCHETYPES.includes(raw as Archetype) ? (raw as Archetype) : 'fighter';
+}
 
 export type PersonalityType =
   | 'coward'
@@ -73,7 +79,36 @@ export type MemoryType =
   | 'I_BETRAYED_ALLY'
   | 'I_WAS_BETRAYED'
   | 'I_RETURNED_FROM_DEATH'
-  | 'PLAYER_EXECUTED_ME';
+  | 'PLAYER_EXECUTED_ME'
+  /* --- NPC against NPC. The god layer writes these; they are what makes a
+     grudge between two characters behave differently from a grudge with
+     the player. --- */
+  | 'I_KILLED_NEMESIS'
+  | 'I_SPARED_NEMESIS'
+  | 'I_WAS_SPARED_BY'
+  | 'I_HUMILIATED_NEMESIS'
+  | 'I_WAS_HUMILIATED_BY'
+  | 'I_FLED_FROM'
+  | 'I_BEAT_A_STRONGER_FOE'
+  | 'I_LOST_TO_A_WEAKER_FOE'
+  | 'I_TOOK_TERRITORY_FROM'
+  | 'I_LOST_TERRITORY_TO'
+  | 'I_ROBBED_THEM'
+  | 'I_WAS_ROBBED_BY'
+  | 'I_SAVED_AN_ALLY'
+  | 'I_ABANDONED_AN_ALLY'
+  | 'MY_MASTER_FELL'
+  /* --- the god. `playerRelationship` doubles as how they feel about you. --- */
+  | 'GOD_BLESSED_ME'
+  | 'GOD_CURSED_ME'
+  | 'GOD_SAVED_ME'
+  | 'GOD_GIFTED_ME'
+  | 'GOD_RAISED_ME'
+  | 'GOD_MARKED_ME'
+  | 'GOD_EXPOSED_ME'
+  | 'GOD_TURNED_MINE_AGAINST_ME'
+  | 'I_WAS_CAGED_BY'
+  | 'I_SWORE_TO';
 
 export interface MemoryEvent {
   type: MemoryType;
@@ -87,9 +122,11 @@ export type RelationKind = 'friend' | 'ally' | 'neutral' | 'rival' | 'enemy' | '
 /** What the player was carrying that this nemesis walked off with. */
 export interface StolenItem {
   name: string;
-  kind: 'weapon' | 'relic';
+  kind: 'weapon' | 'relic' | 'armor';
   /** weapon id if kind === 'weapon' */
   weaponId?: string;
+  instanceId?: string;
+  instance?: import('../progress/Types').ItemInstance;
 }
 
 export interface Nemesis {
@@ -171,6 +208,20 @@ export interface Nemesis {
   stolenFromThem?: StolenItem[];
   /** extra chance their next apparent death is real */
   fakeDeathPenalty?: number;
+
+  /**
+   * Simulation-only namespace, added by the god layer. Holds the dimensions
+   * the record did not already carry — fear, confidence, ambition, loyalty,
+   * injury, goal, faction, deeds. Everything above is still the source of
+   * truth; nothing is duplicated in here. Presentation never reads it and
+   * `ai` never writes it. See src/god/GodTypes.ts.
+   */
+  sim?: import('../god/GodTypes').SimState;
+
+  /** One primary encounter signature. Derived from facts, never from AI. */
+  signatureId?: import('../data/signatures').SignatureId;
+  /** Player has witnessed the signature in a fight. */
+  signatureKnown?: boolean;
 }
 
 export function hasMemory(n: Nemesis, type: MemoryType): boolean {

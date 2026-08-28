@@ -18,8 +18,8 @@
  *   node tools/aitest.mjs
  */
 
-import { chromium } from 'playwright';
 import { fileURLToPath } from 'node:url';
+import { launchChromium } from './browser.mjs';
 import path from 'node:path';
 import fs from 'node:fs';
 
@@ -56,16 +56,7 @@ function lineMatchesMemory(enc) {
 async function main() {
   fs.mkdirSync(SHOTS, { recursive: true });
 
-  const browser = await chromium.launch({
-    executablePath: '/opt/pw-browsers/chromium',
-    args: [
-      '--use-gl=angle',
-      '--use-angle=swiftshader',
-      '--enable-unsafe-swiftshader',
-      '--disable-gpu-sandbox',
-      '--no-sandbox',
-    ],
-  });
+  const browser = await launchChromium();
   const page = await browser.newPage({ viewport: { width: 1400, height: 800 } });
 
   page.on('console', (m) => {
@@ -89,7 +80,8 @@ async function main() {
       if (s.mode === 'playing' && s.pointerLocked) return true;
       // Killing a captain-or-above opens the power offer, which pauses the
       // loop. Take the first option and move on.
-      if (s.mode === 'power') {
+      if (s.mode === 'power' || s.mode === 'choice') {
+        // 'choice' is a vendetta / nemesis-trophy offer; both pause the loop.
         await page.keyboard.press('Digit1');
         await page.waitForTimeout(900);
         continue;
@@ -115,7 +107,7 @@ async function main() {
   await page.reload({ waitUntil: 'load' });
   await page.waitForTimeout(2500);
 
-  await (await page.$('#title-screen button')).click();
+  await (await page.$('#title-descend')).click();
   await page.waitForTimeout(2500);
   check('game running', (await state()).mode === 'playing');
 
@@ -445,13 +437,22 @@ async function main() {
   check('a killed nemesis can return from death', /alive=true/.test(afterRevive) && /returns=[1-9]/.test(afterRevive), afterRevive.split('\n')[4]);
 
   await page.evaluate((id) => window.SHDOWPIT.__debug().summonNemesis(id), VARK);
-  await page.waitForTimeout(1200);
-  const encR = await page.evaluate(() => window.SHDOWPIT.__lastEncounter());
+  // An arrival presentation waits for a safe beat (with a hard deadline), so
+  // a fixed sleep races the deferral. Poll for the return to actually play.
+  let encR = null;
+  for (let i = 0; i < 60; i++) {
+    encR = await page.evaluate(() => window.SHDOWPIT.__lastEncounter());
+    if (encR?.kind === 'RESURRECTION_RETURN') break;
+    await page.waitForTimeout(150);
+  }
   check('resurrection is presented as a return', encR?.kind === 'RESURRECTION_RETURN', String(encR?.kind));
   const lineR = String(encR?.line ?? '').toLowerCase();
   check(
-    'resurrection line references death',
-    /die|dead|buried|certain|enough/.test(lineR),
+    // The whole authored return vocabulary, not just the word "dead":
+    // "You watched me die", "It did not take", "Nothing holds me down",
+    // "You looked disappointed when I stood up", "I came back".
+    'resurrection line references death or the return',
+    /die|died|dead|death|buried|certain|enough|came back|stood up|did not take|holds me down/.test(lineR),
     encR?.line
   );
   check(
@@ -469,7 +470,7 @@ async function main() {
   await page.keyboard.press('Tab');
   await page.waitForTimeout(900);
   await page.$$eval('#hierarchy-screen .tab', (els) => {
-    els.find((e) => e.textContent.trim() === 'BOOK OF ENEMIES')?.click();
+    els.find((e) => /^BOOK/.test(e.textContent.trim()))?.click();
   });
   await page.waitForTimeout(600);
   await page.$$eval(

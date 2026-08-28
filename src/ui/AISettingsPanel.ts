@@ -218,7 +218,7 @@ export class AISettingsPanel {
     const cats: Array<[keyof AISettings, string]> = [
       ['names', 'NAMES & TITLES'],
       ['dialogue', 'DIALOGUE'],
-      ['chronicles', 'CHRONICLES'],
+  ['chronicles', 'STORY & CHRONICLES'],
       ['portraits', 'PORTRAITS'],
     ];
     for (const [k, label] of cats) {

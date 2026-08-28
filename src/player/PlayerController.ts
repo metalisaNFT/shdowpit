@@ -9,13 +9,14 @@ import type { ThirdPersonCamera } from '../camera/ThirdPersonCamera';
 import type { Arena } from '../world/Arena';
 import { DODGE_DURATION, type PlayerCombat } from './PlayerCombat';
 import { turnToward, wrapAngle } from '../combat/Hitbox';
+import { PLAYER } from '../data/balance';
 
-const WALK_SPEED = 7.4;
-const SPRINT_SPEED = 11.6;
-const ACCEL = 78;
-const FRICTION = 16;
+const WALK_SPEED = PLAYER.walkSpeed;
+const SPRINT_SPEED = PLAYER.walkSpeed * PLAYER.sprintMultiplier;
+const ACCEL = PLAYER.acceleration;
+const FRICTION = PLAYER.deceleration;
 const DODGE_SPEED = 19;
-const BLINK_DISTANCE = 7.5;
+const BLINK_DISTANCE = PLAYER.dodgeDistance;
 const TURN_RATE = 15;
 
 export class PlayerController {
@@ -46,7 +47,8 @@ export class PlayerController {
     lockPoint: THREE.Vector3 | null,
     setFacing: (yaw: number) => void,
     currentFacing: number,
-    blink: boolean
+    blink: boolean,
+    phaseDodge = false
   ): void {
     camera.forward(this.fwd);
     camera.right(this.rgt);
@@ -143,12 +145,16 @@ export class PlayerController {
     /* ---------------- integrate + collide ---------------- */
     const nx = position.x + this.velocity.x * dt;
     const nz = position.z + this.velocity.z * dt;
-    arena.resolve(nx, nz, radius, this.tmp);
-    // If we were pushed, kill the velocity into the wall so we slide instead of jitter.
-    if (Math.abs(this.tmp.x - nx) > 1e-4) this.velocity.x *= 0.1;
-    if (Math.abs(this.tmp.z - nz) > 1e-4) this.velocity.z *= 0.1;
-    position.x = this.tmp.x;
-    position.z = this.tmp.z;
+    if (phaseDodge && combat.action === 'dodge') {
+      position.x = nx;
+      position.z = nz;
+    } else {
+      arena.resolve(nx, nz, radius, this.tmp);
+      if (Math.abs(this.tmp.x - nx) > 1e-4) this.velocity.x *= 0.1;
+      if (Math.abs(this.tmp.z - nz) > 1e-4) this.velocity.z *= 0.1;
+      position.x = this.tmp.x;
+      position.z = this.tmp.z;
+    }
 
     const speed = Math.hypot(this.velocity.x, this.velocity.z);
     this.moveAmount = Math.min(1, speed / WALK_SPEED);

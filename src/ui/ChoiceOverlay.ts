@@ -41,6 +41,9 @@ export class ChoiceOverlay {
     this.h1.textContent = title;
     this.subEl.textContent = subtitle;
     clear(this.grid);
+    // Seven-option screens (THEIR FATE) must fit a 720p frame without the
+    // last card clipping at the screen edge.
+    this.grid.classList.toggle('dense', cards.length > 5);
     cards.forEach((p, i) => {
       const c = div('power-card');
       if (p.disabled) c.style.opacity = '0.45';

@@ -13,8 +13,8 @@
  *   node tools/aisuccess.mjs
  */
 
-import { chromium } from 'playwright';
 import { fileURLToPath } from 'node:url';
+import { launchChromium } from './browser.mjs';
 import path from 'node:path';
 import fs from 'node:fs';
 
@@ -40,16 +40,7 @@ async function main() {
   const probe = await fetch('http://localhost:4173/api/ai/status').then((r) => r.json());
   void probe;
 
-  const browser = await chromium.launch({
-    executablePath: '/opt/pw-browsers/chromium',
-    args: [
-      '--use-gl=angle',
-      '--use-angle=swiftshader',
-      '--enable-unsafe-swiftshader',
-      '--disable-gpu-sandbox',
-      '--no-sandbox',
-    ],
-  });
+  const browser = await launchChromium();
   const page = await browser.newPage({ viewport: { width: 1400, height: 800 } });
   page.on('pageerror', (e) => errors.push('PAGEERROR: ' + e.message));
   page.on('console', (m) => {
@@ -67,7 +58,7 @@ async function main() {
   await page.evaluate(() => indexedDB.deleteDatabase('shdowpit-ai'));
   await page.reload({ waitUntil: 'load' });
   await page.waitForTimeout(2500);
-  await (await page.$('#title-screen button')).click();
+  await (await page.$('#title-descend')).click();
   await page.waitForTimeout(2500);
   check('game running', (await state()).mode === 'playing');
 
@@ -197,7 +188,7 @@ async function main() {
   await page.keyboard.press('Tab');
   await page.waitForTimeout(900);
   await page.$$eval('#hierarchy-screen .tab', (els) => {
-    els.find((e) => e.textContent.trim() === 'BOOK OF ENEMIES')?.click();
+    els.find((e) => /^BOOK/.test(e.textContent.trim()))?.click();
   });
   await page.waitForTimeout(700);
   const shortName = (name ?? '').replace(/^† /, '').split(' ')[0].toUpperCase();

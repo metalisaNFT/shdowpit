@@ -49,7 +49,7 @@ export function beatsFor(kind: EncounterKind, shortened: boolean): EncounterBeat
         { t: 0.32, action: 'show_name' },
         { t: 0.7, action: 'show_line' },
         { t: 0.95, action: 'show_portrait' },
-        { t: 1.55, action: 'resume' },
+        { t: 1.95, action: 'resume' },
       ];
     case 'RETURNING_RIVAL':
       return [
@@ -62,7 +62,7 @@ export function beatsFor(kind: EncounterKind, shortened: boolean): EncounterBeat
         { t: 0.4, action: 'show_chip' },
         { t: 0.65, action: 'show_line' },
         { t: 0.9, action: 'show_portrait' },
-        { t: 1.55, action: 'resume' },
+        { t: 1.95, action: 'resume' },
       ];
     case 'REVENGE_ENCOUNTER':
       return [
@@ -76,7 +76,7 @@ export function beatsFor(kind: EncounterKind, shortened: boolean): EncounterBeat
         { t: 0.4, action: 'show_chip' },
         { t: 0.65, action: 'show_line' },
         { t: 0.9, action: 'show_portrait' },
-        { t: 1.55, action: 'resume' },
+        { t: 1.95, action: 'resume' },
       ];
     case 'AMBUSH':
       return [
@@ -107,7 +107,7 @@ export function beatsFor(kind: EncounterKind, shortened: boolean): EncounterBeat
         { t: 0.42, action: 'show_chip' },
         { t: 0.7, action: 'show_line' },
         { t: 0.95, action: 'show_portrait' },
-        { t: 1.65, action: 'resume' },
+        { t: 2.0, action: 'resume' },
       ];
     case 'OVERLORD_ENCOUNTER':
       return [
@@ -120,7 +120,7 @@ export function beatsFor(kind: EncounterKind, shortened: boolean): EncounterBeat
         { t: 0.4, action: 'show_name' },
         { t: 0.75, action: 'show_line' },
         { t: 1.0, action: 'show_portrait' },
-        { t: 1.9, action: 'resume' },
+        { t: 2.2, action: 'resume' },
       ];
     case 'RESURRECTION_RETURN':
       return [

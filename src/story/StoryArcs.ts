@@ -38,6 +38,9 @@ export function recogniseArcs(data: SaveData): StoryArc[] {
     returnedArc(arcs, n, log);
     hunterArc(arcs, n);
     escapeArc(arcs, n);
+    imprisonmentArc(arcs, n, byId);
+    ransomArc(arcs, n);
+    recruitmentArc(arcs, n, byId);
   }
 
   betrayalArcs(arcs, log, byId);
@@ -333,6 +336,60 @@ function successionArc(arcs: StoryArc[], log: WorldEvent[], data: SaveData): voi
 
 function byName(data: SaveData, id: string): string {
   return data.nemeses.find((n) => n.id === id)?.name ?? id;
+}
+
+function imprisonmentArc(arcs: StoryArc[], n: Nemesis, byId: Map<string, Nemesis>): void {
+  const cage = n.memory.find((m) => m.type === 'I_WAS_CAGED_BY');
+  if (!cage?.subject) return;
+  const jailer = byId.get(cage.subject);
+  if (!jailer) return;
+  arcs.push({
+    id: `cage-${n.id}`,
+    kind: 'imprisonment',
+    title: `${n.name.toUpperCase()} IN CHAINS`,
+    characters: [n.id, cage.subject],
+    developments: [`${jailer.name} caged ${n.name}.`],
+    state: n.alive ? `${n.name} still lives under ${jailer.name}'s shadow.` : `${n.name} is dead, but the cage is remembered.`,
+    next: n.alive ? `Break ${jailer.name} and ${n.name} may crawl free.` : `Watch whether ${jailer.name} keeps the leverage.`,
+    unresolved: n.alive,
+    importance: 38,
+  });
+}
+
+function ransomArc(arcs: StoryArc[], n: Nemesis): void {
+  const held = n.stolen[0];
+  const robbed = n.memory.some((m) => m.type === 'I_WAS_ROBBED_BY');
+  if (!held || !robbed) return;
+  const thief = n.memory.find((m) => m.type === 'I_WAS_ROBBED_BY')?.subject;
+  arcs.push({
+    id: `ransom-${n.id}`,
+    kind: 'ransom',
+    title: held ? `${held.name.toUpperCase()} HELD OVER ${n.name.toUpperCase()}` : 'A DEBT UNPAID',
+    characters: [n.id, thief ?? PLAYER_ID].filter((v, i, a) => a.indexOf(v) === i),
+    developments: [`${n.name} still carries the grudge of what was taken.`],
+    state: `${n.name} wants ${held.name} back.`,
+    next: `Force the holder's hand — or let the leverage rot.`,
+    unresolved: n.alive && !!held,
+    importance: 44,
+  });
+}
+
+function recruitmentArc(arcs: StoryArc[], n: Nemesis, byId: Map<string, Nemesis>): void {
+  const oath = n.memory.find((m) => m.type === 'I_SWORE_TO');
+  if (!oath?.subject || !n.master) return;
+  const master = byId.get(n.master);
+  if (!master) return;
+  arcs.push({
+    id: `recruit-${n.id}`,
+    kind: 'recruitment',
+    title: `${n.name.toUpperCase()} SWORE TO ${master.name.toUpperCase()}`,
+    characters: [n.id, master.id],
+    developments: [`${n.name} bent the knee.`],
+    state: `${n.name} serves ${master.name}.`,
+    next: `Kill ${master.name} and the oath breaks.`,
+    unresolved: n.alive && master.alive,
+    importance: 36,
+  });
 }
 
 export function reopenReturnedArcs(arcs: StoryArc[], n: Nemesis): StoryArc[] {

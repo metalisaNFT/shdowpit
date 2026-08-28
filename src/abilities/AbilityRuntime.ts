@@ -7,6 +7,7 @@ import {
   cooldownFloor,
   DEFAULT_LOADOUT,
   getSkill,
+  isUltimateSkill,
   STARTING_SKILLS,
   type SkillDef,
   type SkillId,
@@ -62,6 +63,7 @@ export interface SkillHudState {
 
 export class AbilityRuntime {
   loadout: [SkillId, SkillId] = [...DEFAULT_LOADOUT];
+  ultimate: SkillId = 'pit_eruption';
   unlocked: SkillId[] = [...STARTING_SKILLS];
   freeze = false;
   speed = 1;
@@ -98,9 +100,13 @@ export class AbilityRuntime {
     const first = this.unlocked.includes(a) ? a : DEFAULT_LOADOUT[0];
     let second = this.unlocked.includes(b) ? b : DEFAULT_LOADOUT[1];
     if (second === first) {
-      second = this.unlocked.find((id) => id !== first && id !== 'pit_eruption') ?? DEFAULT_LOADOUT[1];
+      second = this.unlocked.find((id) => id !== first && !isUltimateSkill(id)) ?? DEFAULT_LOADOUT[1];
     }
     this.loadout = [first, second];
+  }
+
+  equipUltimate(id: SkillId): void {
+    if (isUltimateSkill(id) && (this.unlocked.includes(id) || id === 'pit_eruption')) this.ultimate = id;
   }
 
   unlock(id: SkillId): boolean {
@@ -111,7 +117,7 @@ export class AbilityRuntime {
   }
 
   skillIn(slot: SkillSlot): SkillId | null {
-    if (slot === 'ultimate') return 'pit_eruption';
+    if (slot === 'ultimate') return this.ultimate;
     return slot === 'skill1' ? this.loadout[0] : this.loadout[1];
   }
 
@@ -168,14 +174,22 @@ export class AbilityRuntime {
     const committed =
       (combat.action === 'attack' && combat.phase === 'windup') ||
       (combat.action === 'dodge' && combat.t < 0.22);
-    if (def.id === 'ground_rupture' || def.id === 'pit_eruption' || def.id === 'void_grasp') {
+    const committedSkill =
+      def.id === 'ground_rupture' ||
+      def.id === 'pit_eruption' ||
+      def.id === 'void_grasp' ||
+      def.id === 'shadow_snare' ||
+      def.id === 'hunters_brand' ||
+      def.id === 'living_weapon' ||
+      def.id === 'last_defiance';
+    if (committedSkill) {
       if (combat.action === 'attack' && combat.phase === 'windup') return this.fail(slot, 'windup', def);
       if (combat.action === 'dodge') return this.fail(slot, 'busy', def);
     }
-    if (def.id === 'shadow_step' && combat.action === 'attack' && combat.phase === 'windup') {
+    if ((def.id === 'shadow_step' || def.id === 'spectral_guard') && combat.action === 'attack' && combat.phase === 'windup') {
       return this.fail(slot, 'windup', def);
     }
-    if (committed && def.id !== 'shadow_step') return this.fail(slot, 'busy', def);
+    if (committed && def.id !== 'shadow_step' && def.id !== 'spectral_guard') return this.fail(slot, 'busy', def);
 
     if (!this.ready(id)) return this.fail(slot, 'cooldown', def);
 
@@ -191,7 +205,7 @@ export class AbilityRuntime {
       }
     }
 
-    const started = combat.trySkill(def.id === 'pit_eruption' ? 'ultimate' : 'skill', def.id);
+    const started = combat.trySkill(isUltimateSkill(def.id) ? 'ultimate' : 'skill', def.id);
     if (!started) return this.fail(slot, 'busy', def);
 
     this.startCooldown(id);
@@ -257,7 +271,7 @@ export class AbilityRuntime {
   }
 
   private slotOf(id: SkillId): SkillSlot | null {
-    if (id === 'pit_eruption') return 'ultimate';
+    if (isUltimateSkill(id) && this.ultimate === id) return 'ultimate';
     if (this.loadout[0] === id) return 'skill1';
     if (this.loadout[1] === id) return 'skill2';
     return null;
