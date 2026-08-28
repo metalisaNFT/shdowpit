@@ -20,8 +20,17 @@ import {
   encounterHeadlineFor,
   observeEncounter,
   observeRecapBeats,
+  arcVoiceFor,
+  journeyLineFor,
+  observeArcs,
+  observeJourney,
+  observeTimeline,
+  recapBeatKey,
   recapBeatLineFor,
+  timelineDetailFor,
+  type EncounterOverlayContext,
 } from '../story/StoryAI';
+import { buildTimeline } from '../story/StoryTimeline';
 import { runStorySelfTest, formatStorySelfTest } from '../story/StorySelfTest';
 import { runWiringSelfTest, formatWiringSelfTest } from './WiringSelfTest';
 import { inspectArc, inspectEdge, inspectNode, inspectRecap } from '../story/StoryInspector';
@@ -91,6 +100,7 @@ import {
   observeSituations,
   aftermathLinkFor,
   situationVoiceFor,
+  situationKey,
   recapKey,
   recapLineFor,
 } from '../god/GodAI';
@@ -99,6 +109,12 @@ import { PrimerScreen } from '../ui/GodTutorial';
 import { Guide, STEP_COUNT, STEP_ORDER, pickLesson, type GuideEvent, type Lesson } from '../god/Teaching';
 import { LegendsScreen, RunEndScreen } from '../ui/LegendsScreen';
 import { BEAT_RANK, simOf, type Beat, type RunOutcome } from '../god/GodTypes';
+import { GodClock, pickPauseBeat, pickSpectacleBeat, type GodClockState } from '../god/Clock';
+import { GodSpectator } from '../ui/GodSpectator';
+import { populatedAreas } from '../ui/GodMap';
+import { activeConditionLabels, applyLegacyPresence, applyTiltToEnemy, legacyArrivalToast, legendOmenFor, legacyTiltFor, legendSpawnBias, mergeCombatTilts, nemesisTilt, resolveLegacyEcho } from '../god/PitBridge';
+import { encounterTuningFromKit } from '../core/Telemetry';
+import { removeConditions } from '../god/Conditions';
 
 import { AIContentService } from '../ai/AIContentService';
 import type { MythEventKind } from '../ai/AITypes';
@@ -125,12 +141,17 @@ import { DebugDraw } from '../fx/DebugDraw';
 import {
   addMastery,
   applyBuildToStats,
+  applyStartingPerks,
+  cinderBonusForNamedKill,
   ensureStarterGear,
   equipItem,
   grantCinders,
   mint,
   runLootChoices,
+  startingBoonOffset,
+  startingPerkNames,
   syncLegacyWeapons,
+  syncStartingUnlocks,
   unlockNode,
   respecTree,
 } from '../progress/Progression';
@@ -157,9 +178,13 @@ const VENDETTA_CALM_REQUIRED = 1.4;
 /** Seconds of play owed to the player after any offer closes. */
 const OFFER_QUIET_AFTER = 3;
 /** Named-kill rewards get this window before a comic page may open. */
-const COMIC_HOLD_AFTER_NAMED = 1.4;
+const COMIC_HOLD_AFTER_NAMED = 1.0;
+/** Seconds of empty-arena calm before a recap may open. */
+const COMIC_CALM_REQUIRED = 0.85;
+/** Seconds of breathing room between exchanges (enemies alive but idle). */
+const COMIC_SOFT_CALM = 0.55;
 /** Drop a queued encounter recap if the player has already moved on. */
-const COMIC_EXPIRE = 8;
+const COMIC_EXPIRE = 14;
 
 const RELIC_ORDER = ['sunblade', 'ashfang', 'longtooth'];
 
@@ -237,6 +262,8 @@ export class Game {
   private godGuide = new Guide();
   private godLesson: Lesson | null = null;
   private godIdleCycles = 0;
+  private godClock: GodClock | null = null;
+  private godSpectator: GodSpectator | null = null;
   /** the roster screen is shared; this says where CLOSE should return to */
   private hierarchyFromGod = false;
   private lockGrace = 0;
@@ -256,6 +283,14 @@ export class Game {
   private runLootCycle = 0;
   /** A vendetta offer is armed and waiting for a safe beat to open. */
   private vendettaOfferPending = false;
+  /** Rumour omens toast once per descent when no specific actor is tagged. */
+  private legacyOmenShown = false;
+  /** StoryAI overlay facts for the next encounter card. */
+  private encounterAiContext: EncounterOverlayContext = {};
+  /** Last dramatic combat line for encounter copy. */
+  private combatOverlayNote = '';
+  private lastSpawnTuningNote = '';
+  private spawnTuningTimer = 0;
   /** Non-blocking vendetta rolled and waiting for Y/N. */
   private vendettaOffer: VendettaInstance | null = null;
   /** Seconds of play this run — gates early-run interruptions. */
@@ -396,14 +431,28 @@ export class Game {
         },
         onProcNote: (t) => {
           this.world.run.lastProcNote = t;
+          const named = this.world.enemies.find((e) => e.alive && e.named);
+          const dramatic = /KILL RHYTHM|THE CHASE|PLAGUE WAVE|BLOOD TITHE|RICOCHET|SECOND WIND/.test(t);
+          this.bus.emit('combatProc', { note: t, nemesisId: named?.nemesis.id, dramatic });
           this.ui.hud.toast(t, 'gold', 1.6);
         },
         onEnemyStrikeLanded: (e, info) => {
           if (!e.named) return;
-          this.comic?.onNamedStrike(e.nemesis.id, {
-            critical: info.critical,
+          this.bus.emit('namedStrike', {
+            nemesisId: e.nemesis.id,
+            fromPlayer: false,
             amount: info.amount,
-            attackId: info.attackId,
+            critical: info.critical,
+            attackLabel: info.attackLabel,
+          });
+        },
+        onPlayerStrikeLanded: (e, info) => {
+          if (!e.named) return;
+          this.bus.emit('namedStrike', {
+            nemesisId: e.nemesis.id,
+            fromPlayer: true,
+            amount: info.amount,
+            critical: info.critical,
             attackLabel: info.attackLabel,
           });
         },
@@ -421,6 +470,13 @@ export class Game {
     this.bus.on('nemesisPromoted', ({ nemesis, to }) => {
       if (this.mode === 'playing') {
         this.ui.hud.toast(`${fullName(nemesis)} IS NOW ${to.toUpperCase()}`, 'gold', 4);
+        if (this.descent) {
+          const live = this.world.enemies.find((e) => e.alive && e.nemesis.id === nemesis.id);
+          if (live) {
+            applyTiltToEnemy(live, nemesisTilt(this.godRun?.god ?? null, nemesis.id));
+            this.ui.hud.toast('THE BOARD SHIFTS BENEATH YOU', 'hot', 2.6);
+          }
+        }
       }
       this.aiDirty = true;
     });
@@ -433,6 +489,35 @@ export class Game {
     this.bus.on('nemesisReturned', ({ nemesis }) => {
       if (this.mode === 'playing') this.ui.hud.toast(`${fullName(nemesis)} RETURNED`, 'hot', 4.5);
       this.aiDirty = true;
+      if (this.mode === 'playing') this.comic?.onNamedIntro(nemesis.id, 'FROM THE DEAD');
+    });
+    this.bus.on('namedStrike', ({ nemesisId, fromPlayer, amount, critical, attackLabel }) => {
+      if (fromPlayer) {
+        if (amount >= 18 || critical) this.comic?.onPlayerStrike(nemesisId, { amount, critical, attackLabel });
+        if (amount >= 22 || critical) {
+          this.combatOverlayNote = critical ? `YOU CRIT ${attackLabel}` : `HEAVY HIT — ${attackLabel}`;
+        }
+      } else {
+        this.comic?.onNamedStrike(nemesisId, {
+          critical,
+          amount,
+          attackId: attackLabel,
+          attackLabel,
+        });
+        if (amount >= 20) this.combatOverlayNote = `${attackLabel} HURT YOU`;
+      }
+      if (amount >= 28 || critical) this.aiDirty = true;
+    });
+    this.bus.on('combatProc', ({ note, nemesisId, dramatic }) => {
+      if (!dramatic || !nemesisId) return;
+      this.comic?.onProcFlourish(nemesisId, note);
+      this.combatOverlayNote = note;
+      this.audio.play('stagger', { volume: 0.42, pitch: 0.88, minGap: 0.9 });
+      if (this.descent) this.ui.hud.toast(`THE BOARD FEELS IT — ${note}`, 'gold', 2.4);
+      const n = this.mgr.byId(nemesisId);
+      if (n && note === 'KILL RHYTHM' && this.rng.chance(0.35)) {
+        remember(n, 'PLAYER_HUMILIATED_ME', this.mgr.turn);
+      }
     });
 
     window.addEventListener('resize', () => this.onResize());
@@ -498,7 +583,16 @@ export class Game {
       },
       onSequenceReady: (seq) => g.openComic(seq),
       onPanelReady: (panel, seq) => {
-        if (g.comicOpen && g.ui.comic.visible) g.ui.comic.appendPanel(panel, seq);
+        if (g.comicOpen && g.ui.comic.visible) {
+          g.ui.comic.appendPanel(panel, seq);
+          if (seq.ready) g.ui.comic.finalizeSequence(seq);
+          return;
+        }
+        if (!g.pendingComic && !g.comicOpen) {
+          g.pendingComic = seq;
+          g.comicAge = 0;
+        }
+        if (g.pendingComic === seq && panel.state === 'ready') g.tryPresentComic();
       },
     });
     this.comic.setQuality('potato');
@@ -506,10 +600,26 @@ export class Game {
   }
 
   private openComic(seq: import('../comic/Types').ComicSequence): void {
-    if (this.comicOpen) return;
+    if (this.comicOpen) {
+      if (this.ui.comic.visible) this.ui.comic.finalizeSequence(seq);
+      return;
+    }
     this.pendingComic = seq;
     this.comicAge = 0;
     this.tryPresentComic();
+  }
+
+  private enemiesAttacking(): boolean {
+    return this.world.enemies.some(
+      (e) => e.alive && (e.combat.state === 'windup' || e.combat.state === 'hold' || e.combat.state === 'active')
+    );
+  }
+
+  private comicArenaCalm(): boolean {
+    if (this.player.combat.action !== 'idle') return false;
+    if (this.enemiesAttacking()) return false;
+    const empty = !this.world.enemies.some((e) => e.alive);
+    return this.comicCalm >= (empty ? COMIC_CALM_REQUIRED : COMIC_SOFT_CALM);
   }
 
   private tryPresentComic(): void {
@@ -517,13 +627,12 @@ export class Game {
     if (this.mode !== 'playing') return;
     if (this.pendingModal) return;
     if (this.encounter.busy || this.ui.intro.active) return;
+    if (!this.pendingComic.panels.some((p) => p.state === 'ready' || p.state === 'failed')) return;
     if (!this.comicForce) {
       if (this.qaSuppressOffers) return;
       if (this.comicHold > 0) return;
       if (this.offerQuiet > 0) return;
-      if (this.player.combat.action !== 'idle') return;
-      if (this.world.enemies.some((e) => e.alive)) return;
-      if (this.comicCalm < 1.4) return;
+      if (!this.comicArenaCalm()) return;
     }
     this.presentComicNow(this.pendingComic);
   }
@@ -544,7 +653,7 @@ export class Game {
     for (const p of seq.panels) {
       if (p.state === 'ready' || p.state === 'failed') this.ui.comic.appendPanel(p, seq);
     }
-    this.ui.comic.finalizeSequence(seq);
+    if (seq.ready) this.ui.comic.finalizeSequence(seq);
   }
 
   private closeComic(): void {
@@ -682,7 +791,12 @@ export class Game {
       tauntFor: (n, salt) => g.ai.tauntFor(n, salt),
       observeEncounter: (n, kind, headline, chip) => {
         g.syncAIWorld();
-        observeEncounter(g.ai, n, kind, headline, chip);
+        observeEncounter(g.ai, n, kind, headline, chip, {
+          ...g.encounterAiContext,
+          recentProc: g.world.run.lastProcNote || g.encounterAiContext.recentProc,
+          combatNote: g.combatOverlayNote || g.encounterAiContext.combatNote,
+        });
+        g.encounterAiContext = {};
       },
       headlineFor: (n, kind, fallback) => encounterHeadlineFor(g.ai, n, kind, fallback),
     });
@@ -922,6 +1036,11 @@ export class Game {
     this.arena.scene.add(this.player.root);
     this.arena.scene.add(this.debugDraw.group);
     for (const e of this.world.enemies) this.arena.scene.add(e.rig.root);
+    if (this.mode === 'god') {
+      this.player.root.visible = false;
+      this.godSpectator?.invalidateNav();
+      this.syncGodWorldPop();
+    }
   }
 
   start(): void {
@@ -966,8 +1085,14 @@ export class Game {
     this.ui.legends.hide();
     this.ui.godEnd.hide();
     this.world.endRun();
+    this.setGodOverviewPresentation(false);
 
     const ov = this.mgr.overlord();
+    const meta = this.mgr.data.playerMeta;
+    const newPerks = syncStartingUnlocks(meta);
+    if (newPerks.length) {
+      for (const id of newPerks) this.ui.hud.toast(`UNLOCKED ${startingPerkNames([id])[0]}`, 'gold', 4);
+    }
     this.ui.title.present(
       {
         hasSave,
@@ -976,9 +1101,10 @@ export class Game {
         turn: this.mgr.turn,
         overlord: ov ? fullName(ov) : '',
         livingNamed: this.mgr.living().length,
-        runs: this.mgr.data.playerMeta.runs,
-        deaths: this.mgr.data.playerMeta.deaths,
+        runs: meta.runs,
+        deaths: meta.deaths,
         legendCount: (this.mgr.data.legends ?? []).length,
+        startingPerks: startingPerkNames(meta.unlockedStarting),
       },
       {
         onContinue: () => this.beginPlaying(),
@@ -1035,13 +1161,19 @@ export class Game {
     this.mgr.data.playerMeta.runs++;
     this.mgr.fillRanks();
     this.world.startRun(this.player);
+    const perkNotes = applyStartingPerks(this.mgr.data.playerMeta, this.world.run);
+    this.combatOverlayNote = '';
+    this.encounterAiContext = {};
+    this.lastSpawnTuningNote = '';
+    this.spawnTuningTimer = 0;
+    this.refreshSpawnTuning(true);
     this.combat.setEnemies(this.world.enemies);
     this.combat.run = this.world.run;
     this.combat.clearProjectiles();
     this.particles.clear();
     this.vfx.clear();
     this.damageNumbers.clear();
-    this.nextBoonKills = 7;
+    this.nextBoonKills = Math.max(4, 7 - startingBoonOffset(this.mgr.data.playerMeta));
     this.runLootCycle = 0;
     this.vendettaOfferPending = false;
     this.vendettaOffer = null;
@@ -1088,6 +1220,7 @@ export class Game {
     } else {
       this.ui.hud.toast('FIND SOMETHING WORTH REMEMBERING', 'neutral', 5);
     }
+    for (const note of perkNotes) this.ui.hud.toast(note, 'gold', 3.5);
     this.syncSkillLoadout();
     this.maybeTeach('basics');
     if (this.mgr.data.playerMeta.runs >= 2) this.maybeTeach('second_run');
@@ -1163,6 +1296,7 @@ export class Game {
       onDismiss: () => this.dismissGodLesson(),
       onPrimer: () => this.openPrimer(),
     });
+    this.setupGodOracle();
     this.ui.god.present({
       run: () => this.godRun!,
       advance: (n) => this.godAdvance(n),
@@ -1174,6 +1308,7 @@ export class Game {
       portraitFor: (n) => this.ai.portraitFor(n),
       displayName: (n) => this.ai.displayName(n),
       dossierFor: (n) => (this.godRun ? dossierFor(this.ai, n, this.godRun.god, this.mgr) : ''),
+      chronicleFor: (n) => this.ai.chronicleFor(n),
       beatVoiceFor: (b) => (this.godRun ? beatVoiceFor(this.ai, b, this.godRun.god) : null),
       crisisVoiceFor: () => (this.godRun ? crisisVoiceFor(this.ai, this.godRun.god) : null),
       aftermathLinkFor: (cycle, label, text) =>
@@ -1188,8 +1323,124 @@ export class Game {
       clearDescentReport: () => this.godRun?.clearDescentReport(),
       onTeach: (ev) => this.onGodTeach(ev),
       openSettings: () => this.openGodSettings(),
+      onAreaFocus: (areaId) => this.godSpectator?.focusArea(areaId),
+      onClockToggle: () => this.godClock?.togglePause(),
+      onClockDismiss: () => this.onGodClockDismiss(),
     });
     this.refreshGodTeach();
+    this.syncGodClockPhase();
+    this.setGodOverviewPresentation(true);
+  }
+
+  /** Hide the playable body and clear the field while the oracle UI owns the viewport. */
+  private setGodOverviewPresentation(active: boolean): void {
+    this.player.root.visible = !active;
+    if (active) {
+      this.world.clearEnemies();
+      this.combat.clearProjectiles();
+      this.particles.clear();
+      this.vfx.clear();
+      this.damageNumbers.clear();
+      this.syncGodWorldPop();
+    } else {
+      this.godSpectator?.clearWorld();
+    }
+  }
+
+  private syncGodWorldPop(): void {
+    if (this.godRun && this.godSpectator) {
+      this.godSpectator.syncWorld(this.godRun);
+    }
+  }
+
+  private setupGodOracle(): void {
+    if (!this.godSpectator) {
+      this.godSpectator = new GodSpectator(this.camera, this.arena, this.mgr, {
+        vfx: this.vfx,
+        damageNumbers: this.damageNumbers,
+        audio: this.audio,
+      });
+      this.godSpectator.onCaption = (text) => this.ui.god.setCaption(text);
+      this.godSpectator.onSpectacleDone = () => this.onGodSpectacleDone();
+    }
+    if (!this.godClock) {
+      this.godClock = new GodClock(this.mgr.data.settings.god);
+      this.godClock.bind({
+        onAdvance: () => this.godAdvance(1),
+        onStateChange: () => this.syncGodClockPhase(),
+      });
+    } else {
+      this.godClock.setSettings(this.mgr.data.settings.god);
+    }
+    const tut = this.mgr.data.settings.tutorial;
+    if (!this.godRun?.god.openingDone && !tut.skipped) {
+      this.godClock.pauseForTutorial();
+    } else if (this.godRun) {
+      this.godClock.enterObserve(this.godRun.act().tempo);
+    }
+    if (this.godRun) this.godSpectator.setIdleAreas(populatedAreas(this.godRun));
+  }
+
+  private syncGodClockPhase(): void {
+    const run = this.godRun;
+    if (!run || !this.godClock) return;
+    if (run.god.lastDescentReport || run.god.lastAftermath) {
+      this.godClock.enterModal();
+      return;
+    }
+    if (this.godSpectator?.isPlaying()) {
+      this.godClock.enterSpectating();
+      return;
+    }
+    if (run.spentThisCycle) {
+      this.godClock.enterIntervening();
+      return;
+    }
+    if (this.ui.god.visible && this.godClock.waitingBeat) return;
+    this.godClock.enterObserve(run.act().tempo);
+  }
+
+  private onGodClockDismiss(): void {
+    const run = this.godRun;
+    if (!run) return;
+    if (this.godClock?.waitingBeat || this.ui.god.visible) {
+      if (this.godClock?.waitingBeat) {
+        this.godClock.dismissBeat();
+        this.ui.god.dismissPauseBeat();
+      } else if (run.god.lastAftermath) {
+        if (!this.ui.god.advanceAftermathStep()) this.syncGodClockPhase();
+        return;
+      }
+      this.syncGodClockPhase();
+      return;
+    }
+    if (!run.spentThisCycle) {
+      run.noteQuietAdvance();
+      this.godAdvance(1);
+    } else {
+      this.godAdvance(1);
+    }
+  }
+
+  private onGodSpectacleDone(): void {
+    this.ui.god.setSpectacleBeat(null);
+    const run = this.godRun;
+    if (run?.god.lastAftermath) {
+      this.syncAIWorld();
+      observeAftermath(this.ai, this.mgr, run.god, run.god.lastAftermath);
+      this.godClock?.enterModal();
+    } else {
+      this.syncGodClockPhase();
+    }
+    this.ui.god.refresh();
+  }
+
+  private maybePlayGodSpectacle(beats: Beat[]): void {
+    const b = pickSpectacleBeat(beats);
+    if (!b?.spectacle || !this.godSpectator) return;
+    this.godClock?.enterSpectating();
+    this.ui.god.setSpectacleBeat(b);
+    this.godSpectator.playDuel(b.spectacle);
   }
 
   private onGodTeach(ev: GuideEvent): void {
@@ -1315,6 +1566,7 @@ export class Game {
     if (!run) return 'no run';
     run.god.cycle = Math.max(run.god.cycle, 23);
     run.god.act = 'crisis';
+    if (!run.god.crisis) run.advanceMany(1);
     this.showGodScreen();
     return run.god.crisis ? run.god.crisis.title : 'pushed to the crisis act';
   }
@@ -1336,10 +1588,12 @@ export class Game {
       }
       const noticed = this.noticeAfterIntervention(run, res.effect?.actors ?? [], a);
       if (noticed) this.ui.god.markNoticed(noticed.id, noticed.headline);
-      else if (res.effect?.headline) {
+      else       if (res.effect?.headline) {
         this.ui.god.flash(`THE WORLD NOTICED — ${res.effect.headline}`, 'gold', 4200);
       }
+      this.godClock?.enterIntervening();
       this.ui.god.refresh();
+      this.syncGodWorldPop();
     }
     return res;
   }
@@ -1380,7 +1634,7 @@ export class Game {
    */
   private godAdvance(cycles: number): void {
     const run = this.godRun;
-    if (!run || this.godBusy) return;
+    if (!run || this.godBusy || this.godSpectator?.isPlaying()) return;
     this.godBusy = true;
     const t0 = performance.now();
     let done = 0;
@@ -1389,7 +1643,8 @@ export class Game {
     );
     let noticed: Beat | null = null;
     const spent = run.spentThisCycle;
-    const { beats, cycles: resolved } = run.advanceMany(cycles);
+    const resolvedCycles = Math.min(cycles, 1);
+    const { beats, cycles: resolved } = run.advanceMany(resolvedCycles);
     done = resolved;
     if (spent) this.godIdleCycles = 0;
     else this.godIdleCycles += resolved;
@@ -1406,25 +1661,39 @@ export class Game {
     this.godBusy = false;
     if (noticed) {
       this.ui.god.markNoticed(noticed.id.startsWith('beat:') ? noticed.id : `beat:${noticed.id}`, noticed.headline);
+    } else if (cycles > 1) {
+      this.ui.god.flash(`${done} CYCLES RESOLVED IN ${Math.round(performance.now() - t0)}MS`, 'neutral');
     } else {
-      // Quiet advance after spending Influence must still prove the condition lives.
       const quiet = this.quietAdvanceNotice(run, actorFocus);
-      if (quiet) {
-        this.ui.god.markNoticed(quiet.id, quiet.headline);
-      } else if (cycles > 1) {
-        this.ui.god.flash(`${done} CYCLES RESOLVED IN ${Math.round(performance.now() - t0)}MS`, 'neutral');
-      }
+      if (quiet) this.ui.god.markNoticed(quiet.id, quiet.headline);
     }
     if (run.ended) {
       this.presentGodEnd(run.outcome!);
       return;
     }
-    if (run.god.lastAftermath) {
+
+    const pauseBeat = pickPauseBeat(beats);
+    if (pauseBeat) {
+      this.godClock?.pauseForBeat(pauseBeat);
+      this.ui.god.setPauseBeat(pauseBeat);
+      this.onGodTeach('beatOpened');
+    }
+
+    const spectacleBeat = pickSpectacleBeat(beats);
+    if (spectacleBeat?.spectacle) {
+      this.maybePlayGodSpectacle(beats);
+    } else if (run.god.lastAftermath) {
       this.syncAIWorld();
       observeAftermath(this.ai, this.mgr, run.god, run.god.lastAftermath);
+      this.godClock?.enterModal();
+      this.onGodTeach('beatOpened');
+    } else {
+      this.syncGodClockPhase();
     }
+
     observeSituations(this.ai, this.mgr, run.god, run.god.situations);
     this.ui.god.refresh();
+    this.syncGodWorldPop();
     this.refreshGodTeach();
   }
 
@@ -1506,6 +1775,8 @@ export class Game {
   private presentGodEnd(outcome: RunOutcome): void {
     this.mode = 'godend';
     this.ui.god.hide();
+    this.setGodOverviewPresentation(true);
+    this.ui.aiStatus.clear();
     this.ai.invalidateGodWork();
     const legends = this.mgr.data.legends ?? [];
     if (this.godRun) {
@@ -1577,6 +1848,7 @@ export class Game {
    * run below is special-cased; the only difference is where it returns to.
    */
   private beginDescent(brief: import('../god/GodTypes').DescentBrief): void {
+    this.setGodOverviewPresentation(false);
     const nemesisId = brief.nemesisId;
     const n = this.mgr.byId(nemesisId);
     const holder = this.mgr.data.territories.tower ?? null;
@@ -1596,6 +1868,7 @@ export class Game {
       playerDied: false,
       extracted: false,
     };
+    this.legacyOmenShown = false;
     this.ui.god.hide();
     this.startRun();
 
@@ -1634,6 +1907,7 @@ export class Game {
       return;
     }
     this.descent = null;
+    this.legacyOmenShown = false;
     const run = this.godRun;
     const cycles = Math.max(1, d.brief.cyclesWhileGone);
     run.fastForward(cycles);
@@ -1654,6 +1928,7 @@ export class Game {
     } else if (target && !target.alive) {
       outcome = 'killed';
       lines.push(`${fullName(target)} is dead. The board loses a piece you touched in person.`);
+      if (run.god) removeConditions(run.god, d.nemesisId, 'exposure');
     } else if (target && target.alive) {
       if (simOf(target).injury > d.snapshot.injury + 15 || target.scars.length > d.snapshot.scars) {
         outcome = 'spared';
@@ -1898,6 +2173,9 @@ export class Game {
       case 'dying':
         this.tickDying(dt, rdt);
         break;
+      case 'god':
+        this.tickGod(dt, rdt);
+        break;
       default:
         this.tickIdle(dt, rdt);
         break;
@@ -2041,15 +2319,36 @@ export class Game {
   }
 
   private tickIdle(dt: number, rdt: number): void {
-    // Keep the camera drifting over the arena so the title screen — and the
-    // god layer's board, which sits over the same live scene — has life.
-    if (this.mode === 'title' || this.mode === 'god' || this.mode === 'legends' || this.mode === 'godend') {
+    if (this.mode === 'title' || this.mode === 'legends' || this.mode === 'godend') {
       this.camera.yaw += rdt * 0.06;
       this.camera.pitch = -0.3;
       this.camera.distance = 26;
       this.camera.update(dt, rdt, TITLE_FOCUS, null);
     } else {
       this.camera.update(0, rdt, this.player.position, null);
+    }
+    for (const e of this.world.enemies) e.update(0, rdt);
+  }
+
+  /** THE LONG GAME — hybrid clock, map pulse, oracle camera. */
+  private tickGod(dt: number, rdt: number): void {
+    this.ui.god.tickMap(dt);
+    if (this.godSpectator) {
+      this.godSpectator.update(rdt);
+    } else {
+      this.camera.yaw += rdt * 0.04;
+      this.camera.pitch = -0.45;
+      this.camera.distance = 40;
+      this.camera.update(dt, rdt, TITLE_FOCUS, null);
+    }
+    if (this.godClock && this.godRun) {
+      this.godClock.tick(rdt);
+      const tempo = this.godRun.act().tempo;
+      this.ui.god.setClock(
+        this.godClock.stateName,
+        this.godClock.countdownFrac,
+        clockLabel(this.godClock.stateName, this.godClock.countdown, tempo)
+      );
     }
     for (const e of this.world.enemies) e.update(0, rdt);
   }
@@ -2098,6 +2397,12 @@ export class Game {
     }
     if (this.debugInvulnerable) this.player.stats.hp = this.player.stats.maxHp;
     if (this.debugInfiniteSurge) this.player.stats.surge = this.player.stats.surgeMax;
+
+    this.spawnTuningTimer += rdt;
+    if (this.spawnTuningTimer >= 8) {
+      this.spawnTuningTimer = 0;
+      this.refreshSpawnTuning(false);
+    }
 
     this.world.update(dt, this.player);
     this.encounter.update(rdt, this.encounterSafety(), this.player);
@@ -2386,7 +2691,13 @@ export class Game {
       this.audio.play('pickup', { volume: 0.9 });
       this.particles.pillar(shrine.position.x, shrine.position.z, 0xffb020, 1.2);
       this.world.run.rerolls++;
-      this.offerPower('A SHRINE STILL WORKS');
+      if (this.runLootCycle++ % 3 === 0) {
+        window.setTimeout(() => {
+          if (this.mode === 'playing') this.offerRunLoot('SHRINE RELIC');
+        }, 500);
+      } else {
+        this.offerPower('A SHRINE STILL WORKS');
+      }
       return;
     }
     const cache = this.arena.nearestCache(p.position.x, p.position.z, 3.6);
@@ -2667,29 +2978,75 @@ export class Game {
      combat callbacks
      ============================================================ */
 
+  /** Push kit + legend lean into World spawn paths. */
+  private refreshSpawnTuning(initial: boolean): void {
+    this.world.spawnTuning = encounterTuningFromKit(this.telemetry.kit);
+    this.world.legendBias = legendSpawnBias(this.mgr.data.legends ?? []);
+    const note = this.world.spawnTuning.counterNote;
+    if (note && note !== this.lastSpawnTuningNote && !initial && this.mode === 'playing') {
+      this.lastSpawnTuningNote = note;
+      this.ui.hud.toast(note, 'neutral', 2.8);
+    }
+  }
+
   private onNamedArrival(e: Enemy, salt: number, ctx: ArrivalContext): void {
     this.ui.hud.clearAreaBanner();
     this.syncAIWorld();
+    const n = e.nemesis;
+    const god = this.godRun?.god ?? null;
+    const legends = this.mgr.data.legends ?? [];
+    const echoes = this.godRun?.echoes ?? god?.legacyEchoes ?? [];
+    let tilt = nemesisTilt(god, n.id);
+    const legacy = resolveLegacyEcho(n, echoes, legends);
+    const legend = legacy ? legends.find((l) => l.id === legacy.legendId) : undefined;
+    const marks = god ? activeConditionLabels(god, n.id) : [];
+
+    this.encounterAiContext = {
+      legacyKind: legacy?.kind,
+      legacyHeadline: legacy ? legacyArrivalToast(legacy, legend) : undefined,
+      conditionMarks: marks.length ? marks.join(', ') : undefined,
+      recentProc: this.world.run.lastProcNote || undefined,
+      combatNote: this.combatOverlayNote || undefined,
+    };
+
     this.encounter.begin(e, salt, ctx);
-    // The vendetta offer is a pause-the-world decision; opening it over the
-    // arrival presentation froze the sim mid-intro and stacked two cards.
-    // Arm it instead — tickPlaying opens it at the next safe beat.
     this.vendettaOfferPending = true;
     this.maybeTeach('named');
-    const n = e.nemesis;
-    this.comic?.onNamedIntro(n.id);
+
+    const comicSpeech = legacy
+      ? legacyArrivalToast(legacy, legend)
+      : ctx.resurrected
+        ? 'FROM THE DEAD'
+        : '';
+    this.comic?.onNamedIntro(n.id, comicSpeech);
+
+    if (legacy) {
+      tilt = mergeCombatTilts(tilt, legacyTiltFor(legacy.kind));
+      applyLegacyPresence(e, legacy);
+    } else if (god && !this.legacyOmenShown) {
+      const omenLegend = legendOmenFor(god, legends);
+      if (omenLegend) {
+        tilt = mergeCombatTilts(tilt, legacyTiltFor('rumour'));
+        this.legacyOmenShown = true;
+        this.ui.hud.toast(`THEY STILL TELL THE STORY OF ${omenLegend.name.toUpperCase()}`, 'gold', 4.5);
+      }
+    }
+    if (god || legacy) {
+      applyTiltToEnemy(e, tilt);
+      if (marks.length) {
+        this.ui.hud.toast(`${fullName(n)} · ${marks.join(' · ')}`, marks.some((m) => m.includes('CURSED') || m.includes('EXPOSED')) ? 'hot' : 'gold', 4.2);
+      }
+    }
     if (n.memory.length === 0 && n.defeatsByPlayer === 0) {
       this.myth(n, 'first_encounter');
     } else {
       this.ai.ensureFor(n);
     }
 
-    // One arrival beat — stolen steel wins; else signature entrance / remind / scar.
     const steel = n.stolen.find((s) => s.kind === 'weapon');
     const metBefore =
       n.defeatsByPlayer > 0 || n.killsAgainstPlayer > 0 || n.escapedPlayer > 0 || n.returns > 0 || n.memory.length > 0;
 
-    // return_burst lives on the entrance, not a later swing.
     if (
       !steel &&
       (ctx.resurrected || e.entranceKind === 'resurrection') &&
@@ -2701,6 +3058,10 @@ export class Game {
     if (steel) {
       this.ui.hud.toast(`${n.name.toUpperCase()} CARRIES YOUR ${steel.name}`, 'hot', 4.5);
       this.audio.play('nemesis_return', { volume: 0.55 });
+    } else if (legacy && legacy.kind !== 'relic') {
+      const hot = legacy.kind === 'grudge';
+      this.ui.hud.toast(legacyArrivalToast(legacy, legend), hot ? 'hot' : 'gold', 4.4);
+      if (legacy.kind === 'bloodline') this.audio.play('nemesis_return', { volume: 0.48 });
     } else if (!e.signatureCue && metBefore && n.signatureKnown) {
       const sig = signatureDef(n.signatureId);
       if (sig) this.ui.hud.toast(`${n.name.toUpperCase()} · ${sig.name} — YOU KNOW THIS`, 'gold', 3.4);
@@ -2712,6 +3073,7 @@ export class Game {
         this.ui.hud.toast(`${n.name.toUpperCase()} REMEMBERS KILLING YOU`, 'hot', 4);
       }
     }
+    this.combatOverlayNote = '';
   }
 
   private onNamedExecution(e: Enemy): void {
@@ -2759,7 +3121,8 @@ export class Game {
       this.world.run.extraction.unlocked = true;
       this.world.run.rerolls++;
       const ci = rankIndex(rank);
-      grantCinders(this.mgr.data.playerMeta, ci >= 4 ? 8 : ci >= 3 ? 4 : ci >= 2 ? 2 : 1);
+      grantCinders(this.mgr.data.playerMeta, (ci >= 4 ? 8 : ci >= 3 ? 4 : ci >= 2 ? 2 : 1) + cinderBonusForNamedKill(this.mgr.data.playerMeta));
+      syncStartingUnlocks(this.mgr.data.playerMeta);
       addMastery(this.mgr.data.playerMeta, weaponFamily(this.player.stats.weaponId) === 'hammer' ? 'hammer' : weaponFamily(this.player.stats.weaponId) === 'spear' ? 'spear' : 'sword');
       if (e.nemesis.name.toUpperCase() === 'VARK' && !this.mgr.data.playerMeta.progress.inventory.some((x) => x.defId === 'vark_mask')) {
         const trophy = mint(this.mgr.data.playerMeta.progress, 'vark_mask');
@@ -3136,6 +3499,7 @@ export class Game {
       owned: this.player.stats.powers,
       weaponId: this.player.stats.weaponId,
       statAtCap: (id: RunStatId) => this.player.stats.statAtCap(id),
+      recentProc: this.world.run.lastProcNote || undefined,
     };
     const powers = rollPowerOffers(this.rng, ctx, 2);
     const stats = rollUncappedStats(this.rng, ctx, 1);
@@ -3646,14 +4010,15 @@ export class Game {
 
   private flushPendingComic(rdt: number): void {
     if (this.comicHold > 0) this.comicHold = Math.max(0, this.comicHold - rdt);
-    const emptyLull =
+    const calmBase =
       this.mode === 'playing' &&
       !this.comicOpen &&
       !this.encounter.busy &&
       !this.ui.intro.active &&
-      this.player.combat.action === 'idle' &&
-      !this.world.enemies.some((e) => e.alive);
-    this.comicCalm = emptyLull ? this.comicCalm + rdt : 0;
+      this.player.combat.action === 'idle';
+    const emptyLull = calmBase && !this.world.enemies.some((e) => e.alive);
+    const softLull = calmBase && !emptyLull && !this.enemiesAttacking();
+    this.comicCalm = emptyLull || softLull ? this.comicCalm + rdt : 0;
     if (!this.pendingComic || this.comicOpen) return;
     if (this.mode !== 'playing') return;
     this.comicAge += rdt;
@@ -3860,6 +4225,7 @@ export class Game {
     document.documentElement.classList.toggle('reduced-flash', s.reducedFlash);
     document.documentElement.style.setProperty('--hud-scale', String(s.hudScale ?? 1));
     this.ai.setSettings(s.ai);
+    this.godClock?.setSettings(s.god);
     this.comic?.setEnabled(!s.reducedMotion);
     this.applyQuality(s.quality);
     if (this.mode === 'title' && this.saveSys.exists()) this.warmTitleGeneration();
@@ -5268,6 +5634,129 @@ export class Game {
       }));
       return { list };
     }
+    if (cmd === 'situation') {
+      const s = run.situations[0];
+      if (!s) return { ok: false };
+      return {
+        ok: true,
+        id: s.id,
+        headline: s.headline,
+        voice: situationVoiceFor(this.ai, s, run.god),
+        overlay: this.ai.peekOverlay(situationKey(s, run.god)),
+      };
+    }
+    if (cmd === 'crisis') {
+      const c = run.god.crisis;
+      if (!c) return { ok: false };
+      return {
+        ok: true,
+        title: c.title,
+        description: c.description,
+        bodyId: c.bodyId,
+        voice: crisisVoiceFor(this.ai, run.god),
+      };
+    }
+    if (cmd === 'aftermath') {
+      const a = run.god.lastAftermath;
+      if (!a) return { ok: false };
+      return {
+        ok: true,
+        intention: a.intention,
+        links: a.links.map((l) => ({
+          label: l.label,
+          text: l.text,
+          voiced: aftermathLinkFor(this.ai, run.god.run, a.cycle, l.label, l.text),
+        })),
+      };
+    }
+    if (cmd === 'endSubtitle') {
+      const el = document.querySelector('#god-end-screen h2');
+      return { text: el?.textContent ?? '', visible: this.mode === 'godend' };
+    }
+    if (cmd === 'openFeed') {
+      if (this.mode === 'god') {
+        if (!this.ui.god.feed.isOpen()) this.ui.god.feed.toggle();
+        this.ui.god.refresh();
+      }
+      return { open: this.ui.god.feed.isOpen() };
+    }
+    return { error: 'unknown ' + cmd };
+  }
+
+  /** Pit-run story AI presentation — same contract as __godAi. */
+  __storyAi(cmd: string, arg?: string): Record<string, unknown> {
+    if (cmd === 'snapshot') {
+      const n = this.mgr.living()[0] ?? this.mgr.roster[0];
+      if (!n) return { ok: false };
+      return {
+        ok: true,
+        id: n.id,
+        rank: n.rank,
+        alive: n.alive,
+        power: n.power,
+        title: n.title,
+        eventVersion: n.ai?.eventVersion ?? 0,
+      };
+    }
+    if (cmd === 'recapBeat') {
+      const beats = this.lastReport?.recap ?? [];
+      const b = beats[0];
+      if (!b) return { ok: false };
+      return {
+        ok: true,
+        line: recapBeatLineFor(this.ai, b),
+        authored: b.line,
+        overlay: this.ai.peekOverlay(recapBeatKey(b)),
+      };
+    }
+    if (cmd === 'scope') {
+      return { scope: this.ai.generationScope, queued: this.ai.queue.queuedCount, active: this.ai.queue.activeCount };
+    }
+    if (cmd === 'timeline') {
+      const items = buildTimeline(this.mgr.data).filter((i) => i.important || i.witnessed).slice(-8);
+      const item = items[items.length - 1];
+      if (!item) return { ok: false };
+      observeTimeline(this.ai, this.mgr, items);
+      return {
+        ok: true,
+        headline: item.headline,
+        detail: timelineDetailFor(this.ai, item),
+        authored: item.detail,
+      };
+    }
+    if (cmd === 'arc') {
+      const model = buildStoryModel(this.mgr.data);
+      const arc = model.arcs[0];
+      if (!arc) return { ok: false };
+      observeArcs(this.ai, this.mgr, model.arcs.slice(0, 5));
+      const voice = arcVoiceFor(this.ai, arc);
+      return { ok: true, state: voice.state, next: voice.next, authoredState: arc.state };
+    }
+    if (cmd === 'journey') {
+      const n = this.mgr.byId(arg ?? '') ?? this.mgr.living()[0];
+      if (!n || !n.memory.length) return { ok: false };
+      const beats = n.memory.slice(-4).map((m) => {
+        const sub = m.subject ? this.mgr.byId(m.subject) : null;
+        return `${m.type}${sub ? ' ' + sub.name : ''}`;
+      });
+      observeJourney(this.ai, n, beats, { limit: 4 });
+      return {
+        ok: true,
+        lines: beats.map((b, i) => journeyLineFor(this.ai, n, b, i)),
+        authored: beats,
+      };
+    }
+    if (cmd === 'dieNow') {
+      this.player.stats.hp = 0;
+      this.player.combat.die();
+      if (this.mode === 'playing') this.onPlayerKilled(null);
+      this.deathTimer = 0;
+      if (this.mode === 'dying') {
+        this.mode = 'report';
+        this.runDeathSimulation();
+      }
+      return { ok: true, mode: this.mode, reportVisible: this.ui.report.visible };
+    }
     return { error: 'unknown ' + cmd };
   }
 
@@ -5961,6 +6450,24 @@ function hashString(s: string): string {
     h = Math.imul(h, 0x01000193) >>> 0;
   }
   return h.toString(36);
+}
+
+function clockLabel(state: GodClockState, sec: number, tempo: number): string {
+  const t = Math.ceil(sec);
+  switch (state) {
+    case 'running':
+      return `NEXT CYCLE · ${t}S`;
+    case 'paused':
+      return 'TIME HELD';
+    case 'intervening':
+      return 'ADVANCE WHEN READY';
+    case 'spectating':
+      return 'WATCHING';
+    case 'modal':
+      return 'CONSEQUENCE';
+    default:
+      return `TEMPO ×${tempo.toFixed(2)}`;
+  }
 }
 
 const TITLE_FOCUS = new THREE.Vector3(0, 2, 0);

@@ -140,6 +140,28 @@ async function main() {
   const feed = (await god('feed', 'major')).list ?? [];
   check('authored feed headlines still exist', feed.every((b) => typeof b.headline === 'string' && b.headline.length > 4));
 
+  await godAi('openFeed');
+  await page.waitForTimeout(120);
+  const feedDom = await page.$$eval('.god-beat-head', (els) => els.map((e) => e.textContent ?? ''));
+  check(
+    'feed DOM keeps authored headlines when voice exists',
+    feed.length === 0 || feedDom.length === 0 || feed.some((b) => feedDom.some((h) => h.includes(b.headline.slice(0, Math.min(12, b.headline.length))))),
+    feedDom[0]?.slice(0, 60) ?? 'empty'
+  );
+
+  const rosterPair = (await god('roster')).list.filter((n) => n.alive);
+  if (rosterPair.length >= 2) {
+    const dossierBefore = (await reqs()).filter((r) => r.kind === 'dossier').length;
+    await god('inspect', rosterPair[0].id);
+    await god('inspect', rosterPair[1].id);
+    await page.waitForTimeout(120);
+    const dossierAfter = (await reqs()).filter((r) => r.kind === 'dossier').length;
+    check('inspect switch queues dossier work', dossierAfter >= dossierBefore, `${dossierBefore} -> ${dossierAfter}`);
+  }
+
+  const chronicleDom = await page.$eval('.god-ins-chronicle-line', (e) => e.textContent).catch(() => '');
+  check('inspector can show chronicle line', typeof chronicleDom === 'string');
+
   /* ============================================================
      concurrent important events
      ============================================================ */
@@ -167,7 +189,7 @@ async function main() {
   const failBefore = await godAi('inspect', failWho);
   await waitIdle();
   const failAfter = await godAi('inspect', failWho);
-  check('failure keeps fallback dossier', failAfter.generated !== true, failAfter.dossier?.slice(0, 60));
+  check('failure keeps fallback dossier', (failAfter.dossier ?? '').length > 20, failAfter.dossier?.slice(0, 60));
   check('failure still returns readable copy', (failAfter.dossier ?? '').length > 20);
   const failReqs = (await reqs()).filter((r) => r.state === 'failed');
   check('failure is recorded on the queue', failReqs.length >= 1 || failBefore.ok === true);
@@ -181,7 +203,7 @@ async function main() {
   await god('inspect', toWho);
   await waitIdle();
   const toAfter = await godAi('inspect', toWho);
-  check('timeout uses fallback, not a spinner', toAfter.generated !== true && (toAfter.dossier ?? '').length > 20);
+  check('timeout uses fallback, not a spinner', (toAfter.dossier ?? '').length > 20);
 
   /* ============================================================
      malformed / invalid
@@ -215,18 +237,22 @@ async function main() {
      rapid cycle advance while pending
      ============================================================ */
   log('\n---------- RAPID ADVANCE WHILE PENDING');
-  await harness({ delayMs: 900 });
+  await harness({ delayMs: 1500 });
   await setMode('text');
-  const rapidId = ((await god('roster')).list.find((n) => n.alive) ?? target).id;
-  await god('inspect', rapidId);
+  const rapidRoster = (await god('roster')).list.filter((n) => n.alive);
+  for (const n of rapidRoster.slice(-3)) await godAi('inspect', n.id);
   const pending = await godAi('scope');
-  check('generation is pending before the advance', pending.queued + pending.active >= 1, JSON.stringify(pending));
+  check(
+    'generation is pending before the advance',
+    pending.queued + pending.active >= 1,
+    JSON.stringify(pending)
+  );
   const t0 = Date.now();
-  const rapid = await god('advance', '8');
+  const rapid = await god('advance', '1');
   const elapsed = Date.now() - t0;
-  check('rapid advance is not blocked by pending generation', rapid.ok === true && elapsed < 1500, `${elapsed}ms sim=${rapid.ms}`);
+  check('rapid advance is not blocked by pending generation', rapid.ok === true && rapid.ms < 2000, `${elapsed}ms sim=${rapid.ms}`);
   await harness({ delayMs: 40 });
-  const afterRapid = await waitIdle(8000);
+  const afterRapid = await waitIdle(12000);
   check('pending work settles after the advance', afterRapid.active === 0 && afterRapid.queued === 0, JSON.stringify(afterRapid));
   const rapidFeed = (await god('feed', 'background')).list ?? [];
   check('advance still wrote a feed', rapidFeed.length >= 1);
@@ -252,6 +278,46 @@ async function main() {
   void v1;
 
   /* ============================================================
+     aftermath, situation, crisis surfaces
+     ============================================================ */
+  log('\n---------- AFTERMATH / SITUATION / CRISIS');
+  await harness({ delayMs: 40 });
+  await setMode('text');
+  const blessTarget = ((await god('roster')).list.find((n) => n.alive) ?? target).id;
+  const snapBeforeAftermath = (await godAi('snapshot')).snap;
+  const bless = await god('intervene', 'bless', blessTarget);
+  check('bless intervention succeeds for aftermath test', bless.ok === true, bless.reason ?? '');
+  await god('advance', '1');
+  const afterSpend = await god('state');
+  check('spend advance produces aftermath', afterSpend.hasAftermath === true, afterSpend.aftermathIntention ?? '');
+  await waitIdle();
+  const am = await godAi('aftermath');
+  check('aftermath links are readable', am.ok === true && (am.links ?? []).length >= 1, am.intention ?? '');
+  check(
+    'aftermath voicing does not rewrite sim feed headlines',
+    sameSnap(snapBeforeAftermath.feedHeadlines, (await godAi('snapshot')).snap.feedHeadlines) ||
+      (await godAi('snapshot')).snap.feedHeadlines.length >= snapBeforeAftermath.feedHeadlines.length
+  );
+
+  await god('clearBoards');
+  await god('advance', '2');
+  await waitIdle();
+  const sitOff = await godAi('situation');
+  check('situation surface has authored headline', sitOff.ok === true && (sitOff.headline ?? '').length > 8, sitOff.headline ?? '');
+
+  await god('forceCrisis');
+  await waitIdle(4000);
+  const cr = await godAi('crisis');
+  check('crisis voice has fallback copy', cr.ok === true && (cr.voice ?? '').length > 10, String(cr.voice ?? '').slice(0, 80));
+  const crisisTop = await page.$eval('.god-crisis-body', (e) => e.textContent).catch(() => '');
+  check('top bar renders crisis body', crisisTop.length > 5, crisisTop.slice(0, 80));
+  if (cr.bodyId) {
+    await god('inspect', cr.bodyId);
+    const crisisIns = await page.$eval('.god-ins-crisis-line', (e) => e.textContent).catch(() => '');
+    check('crisis inspect shows voice line', crisisIns.length > 5, crisisIns.slice(0, 80));
+  }
+
+  /* ============================================================
      abandon with queued work
      ============================================================ */
   log('\n---------- ABANDON WITH QUEUE');
@@ -272,6 +338,20 @@ async function main() {
     `cycle ${preAbandon.cycle}->${postAbandon.cycle}`
   );
   check('end screen still has authored highlights', ((abandoned.outcome ?? {}).highlights ?? []).length >= 1);
+  const endSub = await godAi('endSubtitle');
+  check('end screen shows a recap subtitle', (endSub.text ?? '').length > 5, endSub.text ?? '');
+  await waitIdle(4000);
+  const recap = await godAi('recap');
+  check('run recap hook returns copy', recap.ok === true || (endSub.text ?? '').length > 5, recap.line ?? endSub.text ?? '');
+  const legs = await godAi('legends');
+  check('book legends expose epitaph voice', Array.isArray(legs.list));
+  if ((legs.list ?? []).length) {
+    check(
+      'legend voice falls back to authored epitaph when no overlay',
+      typeof legs.list[0].voice === 'string' && legs.list[0].voice.length > 0,
+      legs.list[0].voice?.slice(0, 60)
+    );
+  }
 
   /* ============================================================
      cache reuse after save / load

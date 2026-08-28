@@ -244,6 +244,22 @@ export function fullName(n: Nemesis): string {
   return n.title ? `${n.name} ${n.title}` : n.name;
 }
 
+const RABBLE_LABELS = ['A SOLDIER', 'A THRALL', 'A BRAWLER', 'A CUTTHROAT', 'A MARAUDER', 'A HUNTER'] as const;
+
+/** Readable label for roster entries and throwaway rabble alike. */
+export function displayName(n: Nemesis): string {
+  if (n.name) return fullName(n);
+  if (n.persistent === false) {
+    const h = n.appearanceSeed >>> 0;
+    return RABBLE_LABELS[h % RABBLE_LABELS.length] ?? 'A SOLDIER';
+  }
+  return n.name || 'UNKNOWN';
+}
+
+export function isNamed(n: Nemesis): boolean {
+  return n.persistent !== false && !!n.name;
+}
+
 export function hasScar(n: Nemesis, id: ScarId): boolean {
   return n.scars.some((s) => s.id === id);
 }

@@ -9,20 +9,21 @@
  */
 
 import type { RNG } from '../core/RNG';
+import { mixSeed } from '../core/RNG';
 import type { AgeModifier } from '../data/ages';
 import { getPersonality } from '../data/personalities';
 import { chooseTitle } from '../data/names';
 import { makeEvent, type WorldEvent, type WorldEventType } from '../world/WorldEvent';
 import type { NemesisManager } from '../nemesis/NemesisManager';
 import { fullName, rankIndex, type MemoryType, type Nemesis, type ScarId } from '../nemesis/Nemesis';
-import { recomputePower } from '../nemesis/NemesisGenerator';
+import { generateNemesis, recomputePower } from '../nemesis/NemesisGenerator';
 import { applyScar, remember } from '../nemesis/NemesisMemory';
 import { makeRivals, purgeReferences, setMaster } from '../nemesis/NemesisRelationships';
 import { addCondition, ConditionIndex } from './Conditions';
 import { factionFor, shakeFaction } from './Factions';
 import { makeFighter } from './Combatant';
 import { resolveDuel, type DuelResult } from './Duel';
-import { simOf, type ActDef, type Beat, type BeatPriority, type Decision, type GodState } from './GodTypes';
+import { BEAT_RANK, simOf, type ActDef, type Beat, type BeatPriority, type Decision, type DuelSpectacle, type GodState } from './GodTypes';
 
 const SCARS: ScarId[] = [
   'burn',
@@ -81,6 +82,8 @@ export class GodContext {
   blessedLosers: string[] = [];
   /** ids that already acted this cycle, so nobody acts twice */
   acted = new Set<string>();
+  /** Rabble fights are bloodier and less merciful. */
+  skirmishMode = false;
 
   constructor(mgr: NemesisManager, god: GodState, rng: RNG, age: AgeModifier, act: ActDef) {
     this.mgr = mgr;
@@ -159,6 +162,33 @@ export class GodContext {
     this.god.feed.push(b);
     if (this.god.feed.length > 400) this.god.feed.splice(0, this.god.feed.length - 400);
     return b;
+  }
+
+  /** Fight beat with optional 3D spectacle replay for notable+ fights. */
+  emitFight(
+    beatKind: string,
+    priority: BeatPriority,
+    res: FightOutcome,
+    a: Nemesis,
+    b: Nemesis,
+    fightKind: string,
+    actors: string[],
+    tone: Beat['tone'] = 'neutral',
+    headline?: string,
+    extraDetail: string[] = []
+  ): Beat {
+    const beat = this.emit(
+      beatKind,
+      priority,
+      headline ?? res.headline,
+      extraDetail.length ? [...extraDetail, ...res.detail] : res.detail,
+      actors,
+      tone
+    );
+    if (BEAT_RANK[priority] >= BEAT_RANK.notable) {
+      beat.spectacle = fightSpectacle(a, b, fightKind, res.duel);
+    }
+    return beat;
   }
 
   /** Also write it into the chronicle the rest of the game already reads. */
@@ -284,6 +314,8 @@ export class GodContext {
     const fw = factionFor(this.god, winner);
     const fl = factionFor(this.god, loser);
     if (fw && fl && fw.id === fl.id) kill -= 0.3;
+    if (this.skirmishMode) kill += 0.24;
+    if (!loser.persistent && !winner.persistent) kill += 0.2;
     kill = Math.max(0.03, Math.min(0.9, kill));
 
     if (this.rng.chance(kill)) {
@@ -538,6 +570,51 @@ export class GodContext {
     this.mgr.data.nemeses = this.mgr.data.nemeses.filter((x) => x.id !== n.id);
   }
 
+  /** A rabble killer inherits the name, rank and ground of who they cut down. */
+  elevateRabble(grunt: Nemesis, slain: Nemesis): Nemesis {
+    const id = this.mgr.nextId();
+    const seed = mixSeed(mixSeed(grunt.appearanceSeed, slain.appearanceSeed), this.god.cycle) >>> 0;
+    const rank = rankIndex(slain.rank) >= rankIndex('elite') ? slain.rank : 'elite';
+    const n = generateNemesis({
+      id,
+      seed,
+      rank,
+      turn: this.mgr.turn,
+      age: this.mgr.mods,
+      taken: this.mgr.takenNames(),
+      territory: slain.territory,
+      archetype: grunt.archetype,
+      personality: grunt.personality,
+      persistent: true,
+    });
+    n.appearanceSeed = grunt.appearanceSeed;
+    n.weapon = grunt.weapon;
+    this.mgr.data.nemeses.push(n);
+    recomputePower(n);
+
+    const s = simOf(n);
+    s.confidence = 62;
+    s.reputation = 14 + rankIndex(slain.rank) * 6;
+    s.ambition = 72;
+
+    remember(n, 'I_KILLED_NEMESIS', this.mgr.turn, slain.id);
+    this.deed(n, `came out of the rabble and killed ${fullName(slain)}`, 4 + rankIndex(slain.rank));
+
+    if (this.mgr.data.territories[slain.territory] === slain.id) {
+      this.mgr.data.territories[slain.territory] = n.id;
+    }
+
+    this.mgr.assignTerritories();
+    this.chronicle(
+      'promotion',
+      `${fullName(n)} rose from the rabble over ${fullName(slain)}'s body.`,
+      [n.id, slain.id],
+      rankIndex(slain.rank) >= 2,
+      'bad'
+    );
+    return n;
+  }
+
   rememberBetween(a: Nemesis, type: MemoryType, b: Nemesis): void {
     remember(a, type, this.mgr.turn, b.id);
   }
@@ -554,4 +631,40 @@ function trimRivalries(n: Nemesis): void {
 
 function cap(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+export function fightSpectacle(a: Nemesis, b: Nemesis, fightKind: string, duel: DuelResult): DuelSpectacle {
+  const beats = expandSpectacleBeats(duel.beats, a.id, b.id);
+  return {
+    kind: 'duel',
+    areaId: a.territory || b.territory || 'pit',
+    aId: a.id,
+    bId: b.id,
+    fightKind,
+    beats: beats.map((x) => ({ t: x.t, text: x.text, actorId: x.actorId, kind: x.kind })),
+    duration: duel.duration,
+  };
+}
+
+/** Pad curated duel beats with exchange moments so the viewport stays active. */
+function expandSpectacleBeats(
+  beats: DuelResult['beats'],
+  aId: string,
+  bId: string
+): DuelResult['beats'] {
+  if (beats.length <= 2) return beats;
+  const out: DuelResult['beats'] = [];
+  for (let i = 0; i < beats.length; i++) {
+    const b = beats[i]!;
+    out.push(b);
+    const next = beats[i + 1];
+    if (!next || b.kind === 'finish' || b.kind === 'flee' || b.kind === 'stand') continue;
+    out.push({
+      t: b.t + 0.01,
+      text: '',
+      actorId: b.actorId === aId ? bId : aId,
+      kind: i % 2 === 0 ? 'turn' : 'crush',
+    });
+  }
+  return out;
 }

@@ -47,9 +47,9 @@ export const GUIDE: Record<StepId, GuideStep> = {
     id: 'select',
     title: 'YOU ARE NOT IN THIS WORLD',
     body: [
-      'Nobody here is yours. The left column is what is about to matter — click a situation to see who is in it and what you could nudge.',
+      'Nobody here is yours. The NOW card shows one situation about to matter — who is in it and what you could nudge. The map on the left is their ground.',
     ],
-    hint: 'CLICK ANY SITUATION ON THE LEFT',
+    hint: 'READ THE NOW CARD · CLICK THE MAP TO FOCUS',
   },
   spend: {
     id: 'spend',
@@ -58,25 +58,25 @@ export const GUIDE: Record<StepId, GuideStep> = {
       'You can only change what it costs them. A price on a head does not kill anyone — it makes killing them worth doing, to the sort of person who was already inclined that way.',
       'Spend some Influence. It does not much matter which one you pick.',
     ],
-    hint: 'CLICK AN INTERVENTION YOU CAN AFFORD',
+    hint: 'PRESS INTERFERE ▸ · PICK A MARK YOU CAN AFFORD',
   },
   run: {
     id: 'run',
     title: 'THAT IS ALL YOU DID',
     body: [
       'Nobody has agreed to anything. You have left a condition lying in the world, and it will sit there until somebody decides to pick it up — or until it expires and nobody ever does.',
-      'Now let time pass. Everyone alive will weigh everything they could do, and do the one thing that wins.',
+      'The clock waits. Everyone alive will weigh everything they could do, and do the one thing that wins.',
     ],
-    hint: 'PRESS ADVANCE ▸',
+    hint: 'PRESS ADVANCE ▸ IN THE STRIP',
   },
   open: {
     id: 'open',
     title: 'WHAT CAME OF IT',
     body: [
-      'The right column is the story, in four levels of loudness. Most of what happened is MINOR and you are meant to ignore it.',
-      'Any line will open. Underneath is what actually changed and why it will matter later.',
+      'Aftermath lands on the NOW card — one link at a time. Major beats pause the clock until you dismiss them.',
+      'The full timeline lives in OPEN FEED, at four levels of loudness. Most of what happened is MINOR and you are meant to ignore it.',
     ],
-    hint: 'CLICK A LINE IN THE FEED',
+    hint: 'PRESS CONTINUE ON THE NOW CARD · OR OPEN FEED',
   },
   why: {
     id: 'why',
@@ -85,7 +85,7 @@ export const GUIDE: Record<StepId, GuideStep> = {
       'Every consequence can account for itself. WHY opens the actual reasoning the character used — their nature, what they remember, what it would have cost them, and what you had left lying around.',
       'This is the part worth learning. It is how you stop guessing.',
     ],
-    hint: 'OPEN A FEED LINE, THEN PRESS WHY',
+    hint: 'OPEN FEED OR A PAUSED BEAT · PRESS WHY',
   },
   cost: {
     id: 'cost',
@@ -224,7 +224,7 @@ export const LESSONS: Lesson[] = [
       'That was not a coin flip between two power numbers. It was an exchange, blow by blow, using the same weapons, attack tables and traits the third-person game uses.',
       'Which is why a heavy with a club and a duelist with a spear can be worth the same on paper and still not be a fair fight.',
     ],
-    footnote: 'OPEN THE LINE TO SEE HOW IT WENT',
+    footnote: 'OPEN FEED · EXPAND THE LINE TO SEE HOW IT WENT',
     when: (w) => beatKinds(w).has('duel'),
   },
   {
@@ -399,10 +399,10 @@ export function primer(god: GodState | null): PrimerSection[] {
     {
       title: 'A CYCLE',
       lines: [
-        'OBSERVE — the board shows what is about to matter, not everything that is true.',
-        'INTERFERE — spend Influence. You may spend none.',
+        'OBSERVE — the NOW card shows one load-bearing situation; the map and drawers hold the rest.',
+        'INTERFERE — spend Influence from the strip. The clock waits until you advance. You may spend none.',
         'SIMULATE — everyone alive weighs every option they have and takes the best one.',
-        'CONSEQUENCES — the feed, at four levels of loudness.',
+        'CONSEQUENCES — aftermath on the NOW card; OPEN FEED holds the full timeline at four levels of loudness.',
         'Then the act clock advances, chaos bleeds off a little, and influence comes back.',
       ],
     },
@@ -411,7 +411,7 @@ export function primer(god: GodState | null): PrimerSection[] {
       lines: [
         'Each character scores every option out of the same eight things: their nature, what they are to the target, what they remember, what they need, what it would cost them to be wrong, what openings exist, how hard they are being pushed, and the mood they are in.',
         'There is no story director. If a coward hides, it is because hiding scored highest for a coward — not because cowards hide.',
-        'Any consequence in the feed will show you its own arithmetic. Open the line and press WHY.',
+        'Any decision beat will show you its own arithmetic. Expand it in OPEN FEED or on a paused NOW card, then press WHY.',
       ],
     },
     {

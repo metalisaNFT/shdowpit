@@ -211,6 +211,12 @@ export interface StoryFacts {
   /** encounter-specific */
   encounterKind?: string;
   relationshipChip?: string;
+  /** live pit overlay — proc, legacy, god marks */
+  legacyKind?: string;
+  legacyHeadline?: string;
+  conditionMarks?: string;
+  recentProc?: string;
+  combatNote?: string;
   /** journey-specific */
   nemesisName?: string;
   beatIndex?: number;

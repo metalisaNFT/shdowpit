@@ -114,6 +114,26 @@ export function addImpactBeat(
   return b;
 }
 
+/** Player landed a meaningful hit on a named foe. */
+export function addPlayerImpactBeat(
+  story: EncounterStory,
+  opts: { damage: number; critical: boolean; playerHpFrac: number; enemyHpFrac: number; attackLabel?: string; narration?: string }
+): StoryBeat {
+  const b = baseBeat(story, 'impact', {
+    importance: opts.critical ? 88 : 68,
+    critical: opts.critical,
+    damage: opts.damage,
+    playerHpFrac: opts.playerHpFrac,
+    enemyHpFrac: opts.enemyHpFrac,
+    attackLabel: opts.attackLabel || '',
+    narration: opts.narration || (opts.critical ? 'YOUR BLADE BREAKS THEIR GUARD' : 'YOU FIND AN OPENING'),
+    sfx: opts.critical ? 'CRIT!' : 'CLANG',
+    preferredShot: 'over_shoulder',
+  });
+  story.beats.push(b);
+  return b;
+}
+
 export function addOutcomeBeat(
   story: EncounterStory,
   outcome: ComicOutcomeKind,

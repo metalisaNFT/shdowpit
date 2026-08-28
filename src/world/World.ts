@@ -10,6 +10,7 @@
 
 import * as THREE from 'three';
 import { RNG, mixSeed, randomSeed } from '../core/RNG';
+import type { EncounterTuning } from '../core/Telemetry';
 import type { Bus } from '../core/Events';
 import { AREAS, areaAt, getArea, nearestArea, type AreaDef } from '../data/areas';
 import { getPersonality } from '../data/personalities';
@@ -39,6 +40,7 @@ import { snapshotOccupancy, type OccupancyMap } from './WorldOccupancy';
 import { pickMultiRule, type MultiRule } from '../nemesis/MultiEncounter';
 import { applyStagingPose, resolveIgnoredStaging, STAGING_IGNORE_S } from '../nemesis/Staging';
 import type { ExtractSite } from './Extraction';
+import { mergeArchetypeWeights, type LegendSpawnBias } from '../god/PitBridge';
 import { signatureEventMatches } from '../data/signatures';
 
 const MAX_GRUNTS = 16;
@@ -80,6 +82,10 @@ export class World {
   /** HUD label: area name, or the road between areas. */
   locationLabel = 'THE PIT';
   vendettaCounters = { posture: 0, interrupts: 0, parries: 0, weakness: false, adapted: false, loyalistSeparated: false };
+
+  /** Kit + legend lean for grunt spawns — set by Game each tick. */
+  spawnTuning: EncounterTuning | null = null;
+  legendBias: LegendSpawnBias | null = null;
 
   resetVendettaCounters(): void {
     this.vendettaCounters = { posture: 0, interrupts: 0, parries: 0, weakness: false, adapted: false, loyalistSeparated: false };
@@ -469,8 +475,17 @@ export class World {
 
   spawnGrunt(x: number, z: number): Enemy {
     const seed = mixSeed(this.mgr.data.worldSeed, this.gruntSeed++ * 2654435761);
-    const level = 1 + Math.floor(this.mgr.age * 1.2) + this.rng.int(0, 2) + Math.floor(this.currentArea.danger * 0.8);
-    const n = generateGrunt(seed, level, this.mgr.mods, this.currentArea.id);
+    let level = 1 + Math.floor(this.mgr.age * 1.2) + this.rng.int(0, 2) + Math.floor(this.currentArea.danger * 0.8);
+    const tuning = this.spawnTuning;
+    if (tuning) level = Math.max(1, level + tuning.gruntLevelDelta);
+    let weights: number[] | undefined;
+    if (tuning || this.legendBias) {
+      const kitW = tuning?.archetypeWeights;
+      const legW = this.legendBias?.archetypeWeights;
+      if (kitW && legW) weights = mergeArchetypeWeights(kitW, legW);
+      else weights = kitW ?? legW;
+    }
+    const n = generateGrunt(seed, level, this.mgr.mods, this.currentArea.id, weights ? { archetypeWeights: weights } : undefined);
     const e = new Enemy(n, this.mgr.mods);
     e.spawn(x, z, this.rng.range(-Math.PI, Math.PI));
     this.scene.add(e.rig.root);
@@ -633,7 +648,8 @@ export class World {
       const p = getPersonality(n.personality);
       const stealBoost = n.stolen.some((s) => s.kind === 'weapon') ? 0.55 : 0;
       const holderBoost = this.mgr.data.territories[this.currentArea.id] === n.id ? 0.35 : 0;
-      return 0.15 + p.hunt * 0.4 + n.revengeChance * 1.4 + n.playerRelationship * 0.008 + stealBoost + holderBoost;
+      const legendBoost = this.legendBias?.huntWeight(n) ?? 0;
+      return 0.15 + p.hunt * 0.4 + n.revengeChance * 1.4 + n.playerRelationship * 0.008 + stealBoost + holderBoost + legendBoost;
     });
     const pick = this.rng.weighted(candidates, weights);
     const rate = this.mgr.mods.huntRate;
@@ -998,7 +1014,7 @@ export class World {
 
   private gruntDelta(): number {
     const p = this.territoryNow();
-    let d = 0;
+    let d = this.spawnTuning?.gruntPopDelta ?? 0;
     if (p.liberation?.kind === 'fewer_patrols') d -= 3;
     if (p.rules.some((r) => r.id === 'elevated_archers' || r.id === 'tracking_patrols')) d += 2;
     if (p.rules.some((r) => r.id === 'armored_gate')) d += 1;

@@ -84,6 +84,14 @@ export function encounterKey(n: Nemesis, kind: string, headline: string): string
   return hashKey('story', 'encounter', n.id, n.ai?.eventVersion ?? 0, kind, headline);
 }
 
+export interface EncounterOverlayContext {
+  legacyKind?: string;
+  legacyHeadline?: string;
+  conditionMarks?: string;
+  recentProc?: string;
+  combatNote?: string;
+}
+
 function express(
   ai: AIContentService,
   facts: StoryFacts,
@@ -229,7 +237,8 @@ export function observeEncounter(
   n: Nemesis,
   kind: string,
   fallbackHeadline: string,
-  relationshipChip?: string
+  relationshipChip?: string,
+  overlay?: EncounterOverlayContext
 ): void {
   const facts: StoryFacts = {
     kind: 'encounter',
@@ -237,6 +246,11 @@ export function observeEncounter(
     headline: fallbackHeadline,
     encounterKind: kind,
     relationshipChip,
+    legacyKind: overlay?.legacyKind,
+    legacyHeadline: overlay?.legacyHeadline,
+    conditionMarks: overlay?.conditionMarks,
+    recentProc: overlay?.recentProc,
+    combatNote: overlay?.combatNote,
   };
   express(
     ai,

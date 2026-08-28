@@ -96,36 +96,29 @@ early during recovery or a stagger still comes out.
 
 ## The long game
 
-1. **OBSERVE.** The board shows the handful of things about to matter — a grudge that has been
-   held long enough to act on, a house one bad cycle from coming apart, somebody climbing faster
-   than they should be able to. Not the simulation; the parts of it that are load-bearing.
-2. **INTERFERE.** Spend Influence. Twelve interventions, and every one of them writes a
-   *condition* rather than a result: `BLESS`, `CURSE`, `PUT STEEL IN THEIR HAND`, `WHISPER`,
-   `PRICE THEIR HEAD`, `REVEAL`, `PROVOKE`, `MEND`, `RAISE`, `CALAMITY`, `DESCEND`, and two more
-   you unlock. A bounty makes killing somebody worth doing; it does not make anyone go, and it
-   certainly does not make them win.
-3. **SIMULATE.** Every living character scores every option it has out of the same eight
-   components — personality, relationships, memory, needs, danger, opportunity, ambition, and a
-   noise term that widens with Chaos — and does the one that wins. Fights resolve blow by blow
-   using the real weapon, attack and trait tables.
-4. **CONSEQUENCES.** The feed turns it into sentences, at four priority levels so a cycle that
-   produced twelve things does not shout twelve times.
-5. **ESCALATE.** Four acts. By the last one something in the world has grown past it — a warlord,
-   a legend nobody can kill, a thing out of the ground, a war that cannot end, or somebody who has
-   worked out that they are being handled. You cannot touch it. You have to arrange for someone
-   who can.
-6. **RUN END.** Up to three characters go into the **Book of Legends** with their deeds, their
-   scars, what killed them and what they thought of you — and each leaves one thing behind in the
-   next world: a relic, a descendant, a rumour, an inherited grudge, or a title somebody else is
-   now wearing. Unlocks are new verbs and new starting worlds, never bigger numbers.
+The board is an **oracle view** over the live 3D world: a territory minimap, one
+**NOW** card at a time, and a **hybrid clock** that auto-advances cycles unless you
+pause, intervene, or a major beat stops time. Major fights replay in the viewport
+from afar while captions land on the NOW card.
 
-**Learning it.** The first run walks you through one cycle in six steps, each waiting on something
-you actually do rather than on a timer, and it ends by pointing out that your intervention may not
-have worked. After that, one short lesson at most per cycle, the first time a thing becomes real —
-what chaos costs, why a grudge gets louder, what it means when somebody you were propping up loses
-anyway. And permanently, on every consequence in the feed: **WHY**, which opens the actual reasoning
-the character used, including which of your own marks were sitting on the table. `THE PRIMER` on the
-title screen is the same rules on one page. `SKIP TUTORIALS` in the pause menu switches all of it off.
+1. **OBSERVE.** One load-bearing situation at a time — a grudge about to act, a house
+   coming apart, someone climbing too fast. The full board and feed live in drawers.
+2. **INTERFERE.** Spend Influence. Twelve interventions write *conditions*, not
+   outcomes (`BLESS`, `CURSE`, `WHISPER`, `PRICE THEIR HEAD`, `DESCEND`, …). The clock
+   waits until you advance after a spend.
+3. **SIMULATE.** Characters score every option from personality, relationships,
+   memory, needs, danger, opportunity, ambition, and chaos-widened noise — then act.
+   Fights use the real weapon and attack tables.
+4. **CONSEQUENCES.** One aftermath link at a time on the NOW card; the feed drawer
+   holds the full timeline. Major beats pause the clock until dismissed.
+5. **ESCALATE.** Four acts toward a crisis you cannot touch directly — only arrange
+   for someone who can.
+6. **RUN END.** Up to three characters enter the **Book of Legends** and leave
+   something in the next world. Unlocks add verbs and starting worlds, not bigger numbers.
+
+**Learning it.** The first run walks six guided steps. After that, at most one short
+lesson per cycle. **WHY** on decision beats opens the arithmetic. `THE PRIMER` on the
+title screen is the rules on one page.
 
 `docs/GOD_LAYER.md` is the map of `src/god/`.
 

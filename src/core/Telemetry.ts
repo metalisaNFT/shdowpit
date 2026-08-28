@@ -279,3 +279,89 @@ function emptyKit(): KitCounters {
     ultimateUses: 0,
   };
 }
+
+/** Presentation-free spawn lean derived from how the player is actually fighting. */
+export interface EncounterTuning {
+  gruntLevelDelta: number;
+  gruntPopDelta: number;
+  /** Same order as ARCHETYPES: fighter, heavy, archer, duelist, commander */
+  archetypeWeights: number[];
+  counterNote?: string;
+}
+
+const BASE_ARCHETYPE_WEIGHTS = [0.4, 0.2, 0.16, 0.14, 0.1];
+
+/** Skill id → grunt archetype the pit should send to counter overuse. */
+const SKILL_COUNTER_ARCHETYPE: Record<string, number> = {
+  shadow_step: 2,
+  hunters_brand: 2,
+  shadow_snare: 2,
+  ground_rupture: 3,
+  pit_eruption: 3,
+  living_weapon: 3,
+  void_grasp: 1,
+  spectral_guard: 1,
+  last_defiance: 4,
+};
+
+const ARCHETYPE_NAMES = ['fighter', 'heavy', 'archer', 'duelist', 'commander'];
+
+function topSkill(kit: KitCounters): string | null {
+  let best: string | null = null;
+  let score = 0;
+  for (const [id, uses] of Object.entries(kit.skillUses)) {
+    const hits = kit.skillHits[id] ?? 0;
+    const s = uses * 2 + hits;
+    if (s > score) {
+      score = s;
+      best = id;
+    }
+  }
+  return score >= 3 ? best : null;
+}
+
+/** Kit counters → subtle spawn difficulty and archetype counter-pressure. */
+export function encounterTuningFromKit(kit: KitCounters): EncounterTuning {
+  const weights = BASE_ARCHETYPE_WEIGHTS.slice();
+  let gruntLevelDelta = 0;
+  let gruntPopDelta = 0;
+  let counterNote: string | undefined;
+
+  const namedTtk = kit.ttk.filter((t) => t.named).slice(-4);
+  if (namedTtk.length >= 2) {
+    const avg = namedTtk.reduce((s, t) => s + t.seconds, 0) / namedTtk.length;
+    if (avg < 7) {
+      gruntLevelDelta += 1;
+      gruntPopDelta += 1;
+      counterNote = 'FAST KILLS — THE PIT SENDS MORE';
+    } else if (avg > 22) {
+      gruntLevelDelta -= 1;
+      counterNote = 'LONG FIGHTS — PRESSURE EASES';
+    }
+  }
+
+  const fails = Object.values(kit.failReasons).reduce((a, b) => a + b, 0);
+  if (fails >= 6 && kit.idleCombatSeconds > 12) {
+    gruntLevelDelta -= 1;
+    gruntPopDelta -= 1;
+    counterNote = counterNote ?? 'STALLED COMBAT — FEWER GRUNTS';
+  }
+
+  const skill = topSkill(kit);
+  if (skill) {
+    const idx = SKILL_COUNTER_ARCHETYPE[skill];
+    if (idx !== undefined) {
+      weights[idx] *= 1.55;
+      counterNote = counterNote ?? `COUNTERS YOUR ${skill.replace(/_/g, ' ').toUpperCase()}`;
+    }
+  }
+
+  if (kit.ultimateUses >= 2) {
+    weights[1] *= 1.25;
+    weights[4] *= 1.2;
+  }
+
+  return { gruntLevelDelta, gruntPopDelta, archetypeWeights: weights, counterNote };
+}
+
+export { ARCHETYPE_NAMES as TUNING_ARCHETYPE_ORDER };

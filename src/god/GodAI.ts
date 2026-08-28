@@ -537,7 +537,7 @@ export function beatVoiceFor(ai: AIContentService, b: Beat, god: GodState): stri
 
 export function crisisVoiceFor(ai: AIContentService, god: GodState): string | null {
   if (!god.crisis) return null;
-  return ai.peekOverlay(crisisKey(god.crisis, god)) ?? null;
+  return ai.peekOverlay(crisisKey(god.crisis, god)) ?? fallbackCrisisVoice(god.crisis);
 }
 
 export function recapLineFor(ai: AIContentService, outcome: RunOutcome, run: number): string {

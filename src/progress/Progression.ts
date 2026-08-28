@@ -5,16 +5,19 @@
 
 import type { PlayerMeta } from '../core/SaveSystem';
 import type { PowerId } from '../data/abilities';
-import { ITEM_DEFS, ITEM_MAP, AFFIX_MAP, SET_BONUSES, weaponIdFor, RUN_ITEM_IDS, type ItemDef } from '../data/equipment';
+import { REMNANT } from '../data/balance';
+import { ITEM_DEFS, ITEM_MAP, AFFIX_MAP, SET_BONUSES, weaponIdFor, RUN_ITEM_IDS, POWER_TRIGGER, type ItemDef } from '../data/equipment';
+import type { EffectTrigger } from './Types';
 import { SKILL_NODE_MAP, SKILL_NODES, canUnlock, respecRefund, type SkillNodeDef } from '../data/skillTree';
 import type { PlayerStats } from '../player/PlayerStats';
+import type { RunState } from '../run/RunState';
 import type { ItemHistory, ItemInstance, Loadout, PlayerProgress, SynergyTag, WeaponFamilyId } from './Types';
 import { emptyProgress } from './Types';
 
 export function migrateProgress(raw: Partial<PlayerProgress> | undefined): PlayerProgress {
   const d = emptyProgress();
   if (!raw) return d;
-  return {
+  const merged: PlayerProgress = {
     cinders: typeof raw.cinders === 'number' ? raw.cinders : 5,
     skillNodes: Array.isArray(raw.skillNodes) ? raw.skillNodes.filter((id) => SKILL_NODE_MAP.has(id)) : [],
     inventory: Array.isArray(raw.inventory) ? raw.inventory.map(migrateItem) : [],
@@ -24,6 +27,8 @@ export function migrateProgress(raw: Partial<PlayerProgress> | undefined): Playe
     favorites: Array.isArray(raw.favorites) ? raw.favorites : [],
     nextItemId: raw.nextItemId ?? 1,
   };
+  syncFavoriteFlags(merged);
+  return merged;
 }
 
 function migrateItem(it: ItemInstance): ItemInstance {
@@ -206,6 +211,15 @@ export function applyBuildToStats(meta: PlayerMeta, stats: PlayerStats, runItems
     if (!stats.powers.has(id)) stats.addPower(id);
   }
 
+  const triggers = new Map<EffectTrigger, PowerId[]>();
+  for (const id of unique) {
+    const t = POWER_TRIGGER[id];
+    if (!t) continue;
+    const list = triggers.get(t) ?? [];
+    list.push(id);
+    triggers.set(t, list);
+  }
+
   const w = equippedWeapon(p);
   if (w) stats.weaponId = weaponIdFor(w);
 
@@ -222,7 +236,7 @@ export function applyBuildToStats(meta: PlayerMeta, stats: PlayerStats, runItems
   const syn: string[] = [];
   for (const [t, c] of tags) if (c >= 2) syn.push(`${t} ×${c}`);
 
-  return { powers: unique, notes, synergy: syn, tags };
+  return { powers: unique, notes, synergy: syn, tags, triggers };
 }
 
 function applyItem(
@@ -259,6 +273,7 @@ export interface CompiledBuild {
   notes: string[];
   synergy: string[];
   tags: Map<SynergyTag, number>;
+  triggers: Map<EffectTrigger, PowerId[]>;
 }
 
 export function historyLine(h: ItemHistory): string {
@@ -309,4 +324,84 @@ export function nodePreview(id: string): SkillNodeDef | undefined {
 
 export function treeCostRemaining(owned: string[]): number {
   return SKILL_NODES.filter((n) => !owned.includes(n.id)).reduce((s, n) => s + n.cost, 0);
+}
+
+export function isFavorite(p: PlayerProgress, itemId: string): boolean {
+  return p.favorites.includes(itemId);
+}
+
+/** Keep item.favorite flags and progress.favorites in sync. */
+export function syncFavoriteFlags(p: PlayerProgress): void {
+  const fav = new Set(p.favorites);
+  for (const it of allItems(p)) {
+    if (it.favorite) fav.add(it.id);
+    it.favorite = fav.has(it.id);
+  }
+  p.favorites = Array.from(fav);
+}
+
+export function toggleFavorite(p: PlayerProgress, itemId: string): void {
+  const it = findItem(p, itemId);
+  if (!it) return;
+  const i = p.favorites.indexOf(itemId);
+  if (i >= 0) {
+    p.favorites.splice(i, 1);
+    it.favorite = false;
+  } else {
+    p.favorites.push(itemId);
+    it.favorite = true;
+  }
+}
+
+export interface StartingPerkDef {
+  id: string;
+  name: string;
+  desc: string;
+  unlock?: { runs?: number; deaths?: number; namedKills?: number };
+}
+
+export const STARTING_PERKS: StartingPerkDef[] = [
+  { id: 'stocked', name: 'STOCKED', desc: 'Begin with +1 remnant.', unlock: { deaths: 2 } },
+  { id: 'hardened', name: 'HARDENED', desc: 'First boon arrives sooner.', unlock: { runs: 5 } },
+  { id: 'hunter', name: 'HUNTER', desc: '+2 cinders when a named foe dies.', unlock: { namedKills: 1 } },
+];
+
+const STARTING_PERK_MAP = new Map(STARTING_PERKS.map((p) => [p.id, p]));
+
+/** Award pit starting perks from lifetime milestones. Returns newly unlocked ids. */
+export function syncStartingUnlocks(meta: PlayerMeta): string[] {
+  const u = meta.unlockedStarting;
+  const added: string[] = [];
+  for (const perk of STARTING_PERKS) {
+    if (u.includes(perk.id) || !perk.unlock) continue;
+    if (perk.unlock.runs && meta.runs < perk.unlock.runs) continue;
+    if (perk.unlock.deaths && meta.deaths < perk.unlock.deaths) continue;
+    if (perk.unlock.namedKills && meta.namedKills < perk.unlock.namedKills) continue;
+    u.push(perk.id);
+    added.push(perk.id);
+  }
+  return added;
+}
+
+export function startingPerkNames(ids: readonly string[]): string[] {
+  return ids.map((id) => STARTING_PERK_MAP.get(id)?.name ?? id.toUpperCase());
+}
+
+export function applyStartingPerks(meta: PlayerMeta, run: RunState): string[] {
+  const notes: string[] = [];
+  for (const id of meta.unlockedStarting) {
+    if (id === 'stocked') {
+      run.remnants = Math.min(REMNANT.maxCarry, run.remnants + 1);
+      notes.push('STOCKED +1 REMNANT');
+    }
+  }
+  return notes;
+}
+
+export function startingBoonOffset(meta: PlayerMeta): number {
+  return meta.unlockedStarting.includes('hardened') ? 2 : 0;
+}
+
+export function cinderBonusForNamedKill(meta: PlayerMeta): number {
+  return meta.unlockedStarting.includes('hunter') ? 2 : 0;
 }

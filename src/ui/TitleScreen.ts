@@ -18,6 +18,8 @@ export interface TitleInfo {
   runs: number;
   deaths: number;
   legendCount?: number;
+  /** Permanent pit starting perks unlocked across runs */
+  startingPerks?: string[];
 }
 
 export interface TitleHandlers {
@@ -115,11 +117,15 @@ export class TitleScreen {
     );
 
     if (info.hasSave) {
+      const perks =
+        info.startingPerks && info.startingPerks.length
+          ? `<br>STARTING PERKS <b>${esc(info.startingPerks.join(' · '))}</b>`
+          : '';
       this.worldEl.innerHTML =
         `AGE <b>${info.age}</b> — <b>${esc(info.ageName)}</b><br>` +
         `WORLD TURN <b>${info.turn}</b> &nbsp; NAMED ENEMIES <b>${info.livingNamed}</b><br>` +
         `OVERLORD <b>${esc(info.overlord || '—')}</b><br>` +
-        `RUNS <b>${info.runs}</b> &nbsp; DEATHS <b>${info.deaths}</b>`;
+        `RUNS <b>${info.runs}</b> &nbsp; DEATHS <b>${info.deaths}</b>${perks}`;
     } else {
       this.worldEl.innerHTML = 'NO WORLD EXISTS YET.<br>THE LONG GAME WILL MAKE ONE.';
     }

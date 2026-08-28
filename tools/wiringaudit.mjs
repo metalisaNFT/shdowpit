@@ -140,6 +140,13 @@ function main() {
     'gap'
   );
   check(
+    'EffectTrigger dispatched in combat',
+    grepFiles(/effects\.trigger\s*\(/).some((f) => f === 'combat/CombatSystem.ts'),
+    'EffectBus.trigger never called from CombatSystem',
+    'gap'
+  );
+
+  check(
     'unlockedStarting read outside SaveSystem',
     fieldUsed('unlockedStarting', ['core/SaveSystem.ts']).length > 0,
     'save field never used in gameplay',

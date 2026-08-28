@@ -7,6 +7,12 @@ import type { EffectTrigger } from './Types';
 
 const MAX_CHAIN = 3;
 
+export interface TriggerOpts {
+  scope?: string;
+  cooldown?: number;
+  onceKey?: string;
+}
+
 export class EffectBus {
   chain = 0;
   private last = new Map<string, number>();
@@ -14,6 +20,19 @@ export class EffectBus {
 
   beginEvent(): void {
     this.chain = 0;
+  }
+
+  /**
+   * Semantic combat trigger — cooldown guard keyed by trigger kind.
+   * Returns false when the proc chain is saturated or still on cooldown.
+   */
+  trigger(kind: EffectTrigger, now: number, opts: TriggerOpts = {}): boolean {
+    const scope = opts.scope ?? '';
+    const key = scope ? `trigger:${kind}:${scope}` : `trigger:${kind}`;
+    const onceKey = opts.onceKey ?? (scope ? `${kind}:${scope}` : undefined);
+    if (!this.allow(key, now, opts.cooldown ?? 0.12, onceKey)) return false;
+    this.note(`TRIGGER ${kind}${scope ? ' ' + scope : ''}`);
+    return true;
   }
 
   /** Returns false if this proc is on cooldown, already used this hit, or too deep. */
@@ -44,5 +63,3 @@ export class EffectBus {
     return this.log.length ? this.log.join('\n') : '(no procs)';
   }
 }
-
-void (0 as unknown as EffectTrigger);

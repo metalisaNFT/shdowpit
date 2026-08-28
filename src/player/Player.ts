@@ -15,6 +15,7 @@
 import * as THREE from 'three';
 import type { Combatant, DamageInfo, DamageResult } from '../combat/Types';
 import { emptyResult } from '../combat/Types';
+import { hasTriggeredPower } from '../data/equipment';
 import { Enemy } from '../enemy/Enemy';
 import { PlayerStats } from './PlayerStats';
 import { PlayerCombat, RANGED_THROW_TIME } from './PlayerCombat';
@@ -421,14 +422,15 @@ export class Player implements Combatant {
     const armored = this.combat.skillArmor > 0 && !info.unblockable;
 
     let amount = info.amount * this.stats.defenceMultiplier();
-    if (this.stats.powers.has('momentum')) this.stats.momentum = 0;
+    if (hasTriggeredPower(this.stats.powers.ids(), 'momentum')) this.stats.momentum = 0;
 
     amount = Math.max(1, amount);
 
-    if (this.stats.hp - amount <= 0 && this.stats.powers.has('second_wind') && !this.stats.secondWindUsed) {
+    if (this.stats.hp - amount <= 0 && hasTriggeredPower(this.stats.powers.ids(), 'second_wind') && !this.stats.secondWindUsed) {
       this.stats.secondWindUsed = true;
       this.stats.hp = Math.max(12, Math.round(this.stats.maxHp * 0.22));
       res.applied = amount;
+      res.secondWind = true;
       this.hurtFlash = 1;
       return res;
     }
@@ -509,8 +511,8 @@ export class Player implements Combatant {
           this.facing = y;
         },
         this.facing,
-        this.stats.powers.has('blink'),
-        this.stats.powers.has('phase_step') && this.combat.action === 'dodge'
+        hasTriggeredPower(this.stats.powers.ids(), 'blink'),
+        hasTriggeredPower(this.stats.powers.ids(), 'phase_step') && this.combat.action === 'dodge'
       );
     } else {
       this.controller.stop();

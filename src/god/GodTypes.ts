@@ -304,6 +304,17 @@ export const BEAT_RANK: Record<BeatPriority, number> = {
   legendary: 3,
 };
 
+/** Presentation-only replay payload for the oracle viewport. Never sim state. */
+export interface DuelSpectacle {
+  kind: 'duel';
+  areaId: string;
+  aId: string;
+  bId: string;
+  fightKind: string;
+  beats: Array<{ t: number; text: string; actorId: string; kind: string }>;
+  duration: number;
+}
+
 export interface Beat {
   id: string;
   cycle: number;
@@ -317,6 +328,8 @@ export interface Beat {
   kind: string;
   /** present on beats produced by a character's decision */
   why?: BeatWhy;
+  /** optional 3D replay for major+ fights */
+  spectacle?: DuelSpectacle;
 }
 
 /* ============================================================
@@ -427,6 +440,15 @@ export interface LegendRecord {
 
 /** How a legend reaches forward into later runs. */
 export type LegacyKind = 'relic' | 'bloodline' | 'rumour' | 'grudge' | 'title';
+
+/** A legend's echo in the living world — who inherited what, and why. */
+export interface LegacyEcho {
+  legendId: string;
+  kind: LegacyKind;
+  headline: string;
+  detail: string;
+  actorId: string | null;
+}
 
 /* ============================================================
    run summary retained per cycle (small, for the dev panel + recap)
@@ -547,6 +569,9 @@ export interface GodState {
   scenarioFlags: ScenarioFlags;
 
   history: CycleSummary[];
+
+  /** Who inherited each recent legend — used when descending into the pit. */
+  legacyEchoes: LegacyEcho[];
 
   ended: boolean;
   outcome: RunOutcome | null;

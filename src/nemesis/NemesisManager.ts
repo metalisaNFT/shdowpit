@@ -161,6 +161,11 @@ export class NemesisManager {
     return this.data.nemeses.filter((n) => n.alive);
   }
 
+  /** Tracked characters — excludes throwaway rabble. */
+  namedLiving(): Nemesis[] {
+    return this.living().filter((n) => n.persistent !== false && !!n.name);
+  }
+
   dead(): Nemesis[] {
     return this.data.nemeses.filter((n) => !n.alive);
   }

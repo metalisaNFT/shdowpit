@@ -7,6 +7,7 @@ import { PowerSet, type PowerId } from '../data/abilities';
 import type { PlayerHabits } from '../core/SaveSystem';
 import { PLAYER, RANGED, HEAL_ECON } from '../data/balance';
 import { RUN_STATS, RUN_STAT_MAP, statValue, formatStat, STAT_TIPS, type RunStatId, type RunStatDef } from '../data/stats';
+import { hasTriggeredPower } from '../data/equipment';
 import type { RunState } from '../run/RunState';
 
 export const BASE_MAX_HP = 100;
@@ -207,7 +208,7 @@ export class PlayerStats {
   damageMultiplier(): number {
     let m = 1;
     if (this.powers.has('glass')) m *= 1.55;
-    if (this.powers.has('momentum')) m *= 1 + this.momentum * 0.05;
+    if (hasTriggeredPower(this.powers.ids(), 'momentum')) m *= 1 + this.momentum * 0.05;
     for (const t of this.stolenTraits) {
       if (t === 'brutal') m *= 1.12;
       if (t === 'blood_fury') m *= 1.08;

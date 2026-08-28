@@ -23,7 +23,7 @@ import { recomputePower } from '../nemesis/NemesisGenerator';
 import type { NemesisManager } from '../nemesis/NemesisManager';
 import type { GodContext } from './Context';
 import { factionFor } from './Factions';
-import { simOf, type GodState, type LegacyKind, type LegendRecord, type RunOutcome } from './GodTypes';
+import { simOf, type GodState, type LegacyEcho, type LegacyKind, type LegendRecord, type RunOutcome } from './GodTypes';
 
 export const MAX_LEGENDS = 40;
 
@@ -136,14 +136,6 @@ export function recordLegends(store: LegendRecord[], made: LegendRecord[]): Lege
    the reach forward
    ============================================================ */
 
-export interface LegacyEcho {
-  legendId: string;
-  kind: LegacyKind;
-  headline: string;
-  detail: string;
-  actorId: string | null;
-}
-
 /**
  * Seed a fresh world with what the last runs left in it. Called once, at the
  * start of a run, after the roster exists.
@@ -252,6 +244,59 @@ export function applyLegacies(
     }
   }
   return echoes;
+}
+
+/** Reconstruct a legacy echo from roster state when echoes were not persisted. */
+export function inferLegacyEcho(n: Nemesis, legends: readonly LegendRecord[]): LegacyEcho | null {
+  for (const l of legends.slice(-3)) {
+    switch (l.legacy) {
+      case 'relic': {
+        const steel = n.stolen.some((s) => s.kind === 'weapon' && s.name.includes(l.name.toUpperCase()));
+        if (!steel) break;
+        return {
+          legendId: l.id,
+          kind: 'relic',
+          headline: `${n.name.toUpperCase()} IS CARRYING SOMETHING THAT USED TO BE ${l.name.toUpperCase()}'S.`,
+          detail: `${l.name} ${l.title} died in run ${l.run}. The steel did not.`,
+          actorId: n.id,
+        };
+      }
+      case 'bloodline':
+        if (n.name === l.name && n.title === 'THE YOUNGER') {
+          return {
+            legendId: l.id,
+            kind: 'bloodline',
+            headline: `SOMEONE CALLING THEMSELVES ${l.name.toUpperCase()} IS HERE AGAIN.`,
+            detail: `${l.name} ${l.title} was a legend of run ${l.run}. This one intends to be one too.`,
+            actorId: n.id,
+          };
+        }
+        break;
+      case 'title':
+        if (l.title && n.title === l.title && n.name !== l.name) {
+          return {
+            legendId: l.id,
+            kind: 'title',
+            headline: `${n.name.toUpperCase()} IS CALLING THEMSELVES ${l.title}.`,
+            detail: `That was ${l.name}'s name in run ${l.run}. They have not earned it yet.`,
+            actorId: n.id,
+          };
+        }
+        break;
+      case 'grudge': {
+        const floor = Math.min(120, Math.abs(l.standing));
+        if (n.playerRelationship < floor - 2) break;
+        return {
+          legendId: l.id,
+          kind: 'grudge',
+          headline: `${n.name.toUpperCase()} INHERITED SOMEBODY ELSE'S OPINION OF YOU.`,
+          detail: `${l.name} ${l.title} worked out what you were, in run ${l.run}. That did not die with them.`,
+          actorId: n.id,
+        };
+      }
+    }
+  }
+  return null;
 }
 
 export function describeLegend(l: LegendRecord): string[] {

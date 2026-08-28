@@ -135,7 +135,7 @@ export const ACTIONS: ActionDef[] = [
     perform(ctx, actor, target) {
       const n = target.nemesis!;
       const res = ctx.fight(actor, n, 'challenge');
-      ctx.emit('duel', res.aftermath === 'killed' ? 'major' : 'notable', res.headline, res.detail, [actor.id, n.id], res.aftermath === 'killed' ? 'bad' : 'neutral');
+      ctx.emitFight('duel', res.aftermath === 'killed' ? 'major' : 'notable', res, actor, n, 'challenge', [actor.id, n.id], res.aftermath === 'killed' ? 'bad' : 'neutral');
       ctx.chronicle('duel', res.headline, [res.winner.id, res.loser.id], rankIndex(res.winner.rank) >= 2);
       if (res.winner.alive && res.loser !== res.winner) climbAfterWin(ctx, res.winner, res.loser, res.duel.margin);
     },
@@ -169,7 +169,7 @@ export const ACTIONS: ActionDef[] = [
     perform(ctx, actor, target) {
       const n = target.nemesis!;
       const res = ctx.fight(actor, n, 'duel');
-      ctx.emit('duel', res.aftermath === 'killed' ? 'major' : 'notable', res.headline, res.detail, [actor.id, n.id], res.aftermath === 'killed' ? 'bad' : 'neutral');
+      ctx.emitFight('duel', res.aftermath === 'killed' ? 'major' : 'notable', res, actor, n, 'duel', [actor.id, n.id], res.aftermath === 'killed' ? 'bad' : 'neutral');
       ctx.chronicle('duel', res.headline, [res.winner.id, res.loser.id], rankIndex(res.winner.rank) >= 2);
       if (res.winner.alive) climbAfterWin(ctx, res.winner, res.loser, res.duel.margin);
     },
@@ -211,13 +211,17 @@ export const ACTIONS: ActionDef[] = [
       const returning = s.escapedFrom.includes(n.id);
       const res = ctx.fight(actor, n, 'hunt');
       const extra = returning ? [`${fullName(actor)} ran from ${fullName(n)} once. Not this time.`] : [];
-      ctx.emit(
+      ctx.emitFight(
         'revenge',
         res.aftermath === 'killed' ? 'legendary' : 'major',
-        res.headline,
-        [...extra, ...res.detail],
+        res,
+        actor,
+        n,
+        'hunt',
         [actor.id, n.id],
-        res.winner.id === actor.id ? 'good' : 'bad'
+        res.winner.id === actor.id ? 'good' : 'bad',
+        res.headline,
+        extra
       );
       ctx.chronicle('revenge', res.headline, [res.winner.id, res.loser.id], true, 'bad');
       if (res.winner.id === actor.id) {
@@ -262,9 +266,20 @@ export const ACTIONS: ActionDef[] = [
       const n = target.nemesis!;
       const bounty = ctx.cond.weight(n.id, 'bounty');
       const res = ctx.fight(actor, n, 'hunt');
-      const detail = [...res.detail];
-      if (bounty > 0) detail.unshift(`There was a price on ${fullName(n)}, and ${fullName(actor)} wanted it.`);
-      ctx.emit('hunt', res.aftermath === 'killed' ? 'major' : 'notable', res.headline, detail, [actor.id, n.id], 'bad');
+      const extra =
+        bounty > 0 ? [`There was a price on ${fullName(n)}, and ${fullName(actor)} wanted it.`] : [];
+      ctx.emitFight(
+        'hunt',
+        res.aftermath === 'killed' ? 'major' : 'notable',
+        res,
+        actor,
+        n,
+        'hunt',
+        [actor.id, n.id],
+        'bad',
+        res.headline,
+        extra
+      );
       ctx.chronicle('duel', res.headline, [res.winner.id, res.loser.id], true);
       if (res.winner.id === actor.id && bounty > 0 && res.aftermath === 'killed') {
         actor.level = Math.min(30, actor.level + 1);
@@ -320,13 +335,16 @@ export const ACTIONS: ActionDef[] = [
       ctx.deed(actor, `turned on ${fullName(n)}`, 3);
 
       const res = ctx.fight(actor, n, 'betrayal');
-      ctx.emit(
+      ctx.emitFight(
         'betrayal',
         res.aftermath === 'killed' ? 'legendary' : 'major',
-        `${fullName(actor)} TURNED ON ${fullName(n)}.`.toUpperCase(),
-        [res.headline, ...res.detail],
+        res,
+        actor,
+        n,
+        'betrayal',
         [actor.id, n.id],
-        'bad'
+        'bad',
+        `${fullName(actor)} TURNED ON ${fullName(n)}.`.toUpperCase()
       );
       ctx.chronicle('betrayal', `${fullName(actor)} turned on ${fullName(n)}.`, [actor.id, n.id], true, 'bad');
       if (res.winner.alive) climbAfterWin(ctx, res.winner, res.loser, res.duel.margin);
@@ -497,7 +515,7 @@ export const ACTIONS: ActionDef[] = [
       const caught = ctx.rng.chance(0.45 + (n.power / Math.max(20, actor.power) - 1) * 0.2);
       if (caught) {
         const res = ctx.fight(actor, n, 'duel');
-        ctx.emit('theft', 'notable', `${fullName(actor)} WAS CAUGHT GOING THROUGH ${fullName(n)}'S THINGS.`, [res.headline, ...res.detail], [actor.id, n.id], 'bad');
+        ctx.emitFight('theft', 'notable', res, actor, n, 'duel', [actor.id, n.id], 'bad', `${fullName(actor)} WAS CAUGHT GOING THROUGH ${fullName(n)}'S THINGS.`);
         makeRivals(actor, n);
         if (res.winner.alive) climbAfterWin(ctx, res.winner, res.loser, res.duel.margin);
         return;
@@ -786,13 +804,16 @@ export const ACTIONS: ActionDef[] = [
           ctx.deed(actor, `took ${item.name} back off ${fullName(n)}`, 3);
         }
       }
-      ctx.emit(
+      ctx.emitFight(
         'reclaim',
         'major',
-        recovered ? `${fullName(actor)} TOOK ${recovered.toUpperCase()} BACK.` : res.headline,
-        [res.headline, ...res.detail],
+        res,
+        actor,
+        n,
+        'hunt',
         [actor.id, n.id],
-        recovered ? 'gold' : 'neutral'
+        recovered ? 'gold' : 'neutral',
+        recovered ? `${fullName(actor)} TOOK ${recovered.toUpperCase()} BACK.` : res.headline
       );
       if (res.winner.alive) climbAfterWin(ctx, res.winner, res.loser, res.duel.margin);
     },

@@ -12,9 +12,12 @@ import {
   equipItem,
   findItem,
   historyLine,
+  isFavorite,
   nodePreview,
   respecTree,
   salvageItem,
+  syncFavoriteFlags,
+  toggleFavorite,
   treeCostRemaining,
   unlockNode,
 } from '../progress/Progression';
@@ -58,6 +61,7 @@ export class BuildScreen {
     this.stats = stats;
     this.handlers = handlers;
     this.runNotes = runNotes;
+    syncFavoriteFlags(meta.progress);
     this.render();
     show(this.root, true);
   }
@@ -226,8 +230,11 @@ export class BuildScreen {
   private renderPack(): void {
     const meta = this.meta!;
     const p = meta.progress;
+    this.body.append(div('kicker', `FAVOURITES  ${p.favorites.length}`));
     const sort = [...p.inventory].sort((a, b) => {
-      if (a.favorite !== b.favorite) return a.favorite ? -1 : 1;
+      const af = isFavorite(p, a.id);
+      const bf = isFavorite(p, b.id);
+      if (af !== bf) return af ? -1 : 1;
       return a.name.localeCompare(b.name);
     });
     const list = div('pack-list');
@@ -251,7 +258,8 @@ export class BuildScreen {
       );
       row.append(
         button(it.favorite ? 'UNFAV' : 'FAV', () => {
-          it.favorite = !it.favorite;
+          toggleFavorite(p, it.id);
+          this.handlers?.onChanged();
           this.render();
         })
       );

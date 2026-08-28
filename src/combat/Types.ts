@@ -81,6 +81,8 @@ export interface DamageResult {
   critical: boolean;
   /** this hit pushed poison past the threshold */
   poisoned: boolean;
+  /** fatal blow was cancelled by Second Wind */
+  secondWind?: boolean;
 }
 
 export function emptyResult(): DamageResult {

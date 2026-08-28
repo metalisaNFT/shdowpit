@@ -28,6 +28,7 @@ import { POSTURE, TELEGRAPH, STAGGER, POISON, BODY } from '../data/balance';
 import { SIGNAL, NEON } from '../data/palette';
 import { CLIPS } from '../anim/ClipLibrary';
 import type { EnemyAttackDef } from '../data/attacks';
+import { neutralTilt, type CombatTilt } from '../god/Combatant';
 
 export type EnemyState =
   | 'idle'
@@ -118,6 +119,8 @@ export class Enemy implements Combatant {
   displayName: string;
 
   mods: TraitMods;
+  /** God-layer condition lean — mirrors headless duel tilts when descending. */
+  tilt: CombatTilt = neutralTilt();
   weapon: WeaponDef;
   damage: number;
   speed: number;
@@ -496,7 +499,7 @@ export class Enemy implements Combatant {
       }
     }
 
-    let mul = this.mods.armour;
+    let mul = this.mods.armour * this.tilt.armour;
     switch (info.source) {
       case 'light':
         mul *= this.mods.vsLight;

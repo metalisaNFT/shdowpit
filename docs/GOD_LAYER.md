@@ -52,9 +52,40 @@ A run is 25–32 cycles and takes a few minutes at ×20. Endings are roughly
 | `GodRun.ts` | the run controller: phases, resources, the ending |
 | `Explain.ts` | turns a decision's arithmetic back into sentences — the WHY panel |
 | `Teaching.ts` | the guided first cycle, the lesson catalogue, and the primer |
-| `../ui/GodScreen.ts` | one screen: board, interventions, feed, inspector |
+| `Clock.ts` | hybrid world clock — auto-advance, pause on major beats, intervention hold |
+| `../ui/GodScreen.ts` | oracle UI orchestrator: NOW card, clock, map rail, drawers |
+| `../ui/GodMap.ts` | territory minimap over the six areas |
+| `../ui/GodSpectator.ts` | distant 3D camera + duel replay on the main viewport |
+| `../ui/GodNowCard.ts` | single-focus narrative card |
+| `../ui/GodActionStrip.ts` | collapsible intervention strip |
+| `../ui/GodFeedDrawer.ts` | consequence timeline drawer |
+| `../ui/GodInspectDrawer.ts` | character inspect slide-over |
 | `../ui/LegendsScreen.ts` | the Book and the end-of-run report |
 | `../ui/GodTutorial.ts` | the teaching rail, the WHY panel, the primer screen |
+
+## 2b. Oracle UI + clock
+
+THE LONG GAME no longer dumps three columns at once. The live `#viewport` stays
+visible behind semi-transparent panels while you play:
+
+```
+top bar     run · cycle · act · influence · chaos · world clock
+left rail   territory minimap (click a region to focus)
+center      the 3D world — camera flies to urgent ground; major fights replay here
+bottom      NOW card — one situation, beat, or consequence link at a time
+strip       interventions (collapsed until you click INTERFERE)
+drawers     full feed timeline · character inspect
+```
+
+**Hybrid clock** (`Clock.ts`, settings in `SaveSystem.settings.god`):
+
+- By default the world **auto-advances one cycle** when the timer reaches zero.
+- Spending Influence **pauses** the clock until you advance manually.
+- **Major and legendary beats pause** until you dismiss the NOW card.
+- **3D duel replays** pause during spectacle; aftermath opens after.
+- Opening tutorial keeps the clock off until the first lesson completes.
+
+AI remains presentation-only: it words the NOW card and dossiers, never sim state.
 
 ## 3. The scoring engine
 
@@ -236,14 +267,37 @@ If a pattern stops occurring, improve the simulation — not the presentation.
 `AIContentService` is the only talker. THE LONG GAME uses the same queue,
 cache, validation, and fallbacks as the 3D game. `GodAI.ts` decides which
 moments are worth a request (named characters, major/legendary beats,
-crises, endings, legends) and projects them into `GodFacts`. The service
-never awaits on a cycle, a click, a save, or a screen change.
+crises, endings, legends, aftermath links, situation stakes) and projects
+them into `GodFacts` / `StoryFacts`. The service never awaits on a cycle,
+a click, a save, or a screen change.
+
+**Oracle UI surfaces (presentation only):**
+
+| Surface | Authored source | AI overlay |
+|---------|-----------------|------------|
+| NOW card — situation | `Situation.headline` / `detail` | `situationVoiceFor` in headline slot |
+| NOW card — beat pause | `Beat.headline` | voice caption under headline |
+| NOW card — aftermath | `AftermathReport` links | `aftermathLinkFor` in body |
+| Top bar — crisis | `Crisis.title` | `crisisVoiceFor` as body line |
+| Inspect drawer | dossier fallback, memory, thread | portrait, display name, dossier, chronicle, crisis block |
+| Feed drawer | `Beat.headline` always | voice caption when expanded or legendary |
+| Run end | `ENDING_SUB` / highlights | `recapLineFor` subtitle |
+| Book of Legends | `describeLegend` epitaph | `legendVoiceFor` replaces last line |
+
+The 3D run uses the same contract via `StoryAI.ts` (recap beats, timeline,
+journey, arcs, encounters) in the hierarchy and death report.
 
 A generation scope is bumped when a run begins, is abandoned, or is replaced.
 In-flight results with a stale scope are discarded. Overlay keys include the
 facts that produced them, so a promotion or a death does not inherit the
 previous wording.
 
-`npm run test:god-ai` covers enabled, disabled, failure, timeout, malformed
-copy, fallback parity, cache-after-reload, rapid advance, abandon-with-queue,
-stale apply, concurrent events, and the proof that AI cannot change sim state.
+**Tests:**
+
+- `npm run test:god-ai` — enabled, disabled, failure, timeout, malformed copy,
+  fallback parity, cache-after-reload, rapid advance, abandon-with-queue, stale
+  apply, concurrent events, aftermath/situation/crisis/end/legend surfaces,
+  feed headline hierarchy, inspect re-queue, and proof that AI cannot change
+  sim state.
+- `npm run test:story-ai` — pit-run recap/timeline/arc/journey overlays with
+  the same failure and cache contract.

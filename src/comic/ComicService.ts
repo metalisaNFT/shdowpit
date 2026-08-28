@@ -22,6 +22,7 @@ import {
   addImpactBeat,
   addIntroBeat,
   addOutcomeBeat,
+  addPlayerImpactBeat,
   buildForceSliceStory,
   createStory,
   type StorySeed,
@@ -159,6 +160,50 @@ export class ComicService {
         attackLabel: info.attackLabel,
       });
     }
+    this.enqueueMissingPanels(seq);
+  }
+
+  /** Player landed a heavy hit on a named nemesis. */
+  onPlayerStrike(nemesisId: string, info: { amount: number; critical: boolean; attackLabel: string }): void {
+    if (!this.enabled || info.amount < 12) return;
+    let seq = this.active;
+    if (!seq || seq.story.nemesisId !== nemesisId) {
+      const seed = this.opts.world.getSeed(nemesisId);
+      if (!seed) return;
+      const story = createStory(seed);
+      if (!story.beats.some((b) => b.role === 'intro')) addIntroBeat(story);
+      this.beginSequence(story, false);
+      seq = this.active!;
+    }
+    const hp = this.opts.world.hpFracs(nemesisId);
+    addPlayerImpactBeat(seq.story, {
+      damage: info.amount,
+      critical: info.critical,
+      playerHpFrac: hp.player,
+      enemyHpFrac: hp.enemy,
+      attackLabel: info.attackLabel,
+    });
+    this.enqueueMissingPanels(seq);
+  }
+
+  /** Dramatic proc during a named fight — a sudden panel beat. */
+  onProcFlourish(nemesisId: string, note: string): void {
+    if (!this.enabled) return;
+    let seq = this.active;
+    if (!seq || seq.story.nemesisId !== nemesisId) {
+      const seed = this.opts.world.getSeed(nemesisId);
+      if (!seed) return;
+      this.beginSequence(createStory(seed), false);
+      seq = this.active!;
+    }
+    const hp = this.opts.world.hpFracs(nemesisId);
+    addPlayerImpactBeat(seq.story, {
+      damage: 0,
+      critical: true,
+      playerHpFrac: hp.player,
+      enemyHpFrac: hp.enemy,
+      narration: note,
+    });
     this.enqueueMissingPanels(seq);
   }
 

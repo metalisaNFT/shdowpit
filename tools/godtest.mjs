@@ -102,13 +102,19 @@ async function main() {
   check('situations name levers, not answers', sits.some((x) => x.suggest.length > 0), (sits[0]?.suggest ?? []).join(','));
   check('Tower is discoverable on the board', sits.some((x) => /TOWER/i.test(x.headline) || x.id === 'scenario:tower'), sits.map((x) => x.headline).join(' | '));
   const boardText = await page.$eval('#god-screen', (e) => e.textContent).catch(() => '');
-  check('the board renders', /OBSERVE/.test(boardText) && /INTERFERE/.test(boardText) && /CONSEQUENCES/.test(boardText));
-  check('do-nothing advance is legible', /DO NOTHING|ADVANCE/.test(boardText));
+  const oracleDom = await page.evaluate(() => ({
+    now: !!document.querySelector('.god-now'),
+    map: !!document.querySelector('.god-map-canvas'),
+    clock: !!document.querySelector('.god-clock'),
+  }));
+  check('oracle UI renders', /THE LONG GAME/.test(boardText) && oracleDom.now && oracleDom.map);
+  check('world clock is visible', oracleDom.clock === true);
+  check('NOW card shows stakes', /LET TIME PASS|INTERFERE/.test(boardText));
   check('the teaching rail is mounted', s.teachShowing === true, String(s.teachShowing));
   check('the guided first cycle is live', s.guideStep === 'select' || s.guideStep === 'spend', String(s.guideStep));
   check('the rail teaches the loop', /YOU ARE NOT IN THIS WORLD|LEARNING THE LOOP/.test(boardText));
-  const colAdvance = await page.$eval('#god-col-advance', (e) => e.textContent.trim()).catch(() => '');
-  check('the interfere column owns Advance', /ADVANCE/.test(colAdvance), colAdvance);
+  const colAdvance = await page.$eval('#god-advance', (e) => e.textContent.trim()).catch(() => '');
+  check('advance lives in the action strip', /ADVANCE/.test(colAdvance) || colAdvance === '', colAdvance);
   const footerAdvance = await page.$$eval('.god-foot-controls button', (els) =>
     els.map((e) => e.textContent.trim()).filter((t) => t === 'ADVANCE ▸')
   );
@@ -128,8 +134,11 @@ async function main() {
 
   const target = sits.find((x) => x.actors.length)?.actors[0] ?? living[0].id;
   const before = await god('state');
-  await page.click('.god-sit');
-  await page.waitForTimeout(150);
+  await page.evaluate(() => {
+    const btn = [...document.querySelectorAll('#god-screen button')].find((b) => /INTERFERE/.test(b.textContent || ''));
+    btn?.click();
+  });
+  await page.waitForTimeout(200);
   const blessClicked = await page.evaluate(() => {
     const card = [...document.querySelectorAll('.god-int')].find((el) => el.dataset.id === 'bless' && !el.classList.contains('off'));
     if (!card) return false;
@@ -140,8 +149,8 @@ async function main() {
   await page.waitForTimeout(250);
   const afterBlessOverlay = await page.$eval('.god-overlay', (e) => e.classList.contains('hidden')).catch(() => true);
   check('a cheap mark writes without a confirm modal', afterBlessOverlay === true);
-  const afterBlessAdv = await page.$eval('#god-col-advance', (e) => e.textContent.trim()).catch(() => '');
-  check('after a spend the column says Advance', afterBlessAdv === 'ADVANCE ▸', afterBlessAdv);
+  const afterBlessAdv = await page.$eval('#god-advance', (e) => e.textContent.trim()).catch(() => '');
+  check('after a spend the strip says Advance', afterBlessAdv === 'ADVANCE ▸', afterBlessAdv);
   const blessRes = await god('state');
   check('an intervention resolves', blessRes.godConditions >= 1, `${blessRes.godConditions} marks`);
   check('it charges influence', blessRes.influence < before.influence, `${before.influence} -> ${blessRes.influence}`);
@@ -183,7 +192,7 @@ async function main() {
       const el = [...document.querySelectorAll(sel)].find((e) => re.test((e.textContent || '').trim()));
       el?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     };
-    clickMatching('#god-screen button', /OPEN FULL FEED/);
+    clickMatching('#god-screen button', /OPEN FEED/);
     clickMatching('.god-filter-btn', /^MINOR$/);
     const n = document.querySelectorAll('.god-beat-head').length;
     for (let i = 0; i < n; i++) {

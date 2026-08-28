@@ -21,6 +21,7 @@ import { addCondition, expireConditions } from './Conditions';
 import type { GodContext } from './Context';
 import { declareWar, livingFactions, reconcileFactions, reformHouses, settleFactions } from './Factions';
 import { simOf, type Decision, type ScoreBreakdown } from './GodTypes';
+import { simulateSkirmishes } from './Skirmish';
 import { sumParts, type TermCtx } from './Utility';
 
 /** Actions that consume the cycle's appetite for violence. */
@@ -33,6 +34,7 @@ export interface CycleResult {
   deaths: string[];
   decisions: Decision[];
   fights: number;
+  skirmishes: number;
   /** the god's own investments that lost a fight this cycle */
   blessedLosers: string[];
 }
@@ -62,8 +64,9 @@ export function simulateCycle(ctx: GodContext): CycleResult {
   /* ---- 2. everyone decides ---- */
   const actors = orderOfPlay(ctx, rng);
   const decisions: Decision[] = [];
-  let fightBudget = Math.max(2, Math.round(actors.length * 0.34 * ctx.act.tempo));
+  let fightBudget = Math.max(4, Math.round(actors.length * 0.62 * ctx.act.tempo));
   let fights = 0;
+  let skirmishes = 0;
 
   for (const actor of actors) {
     if (!actor.alive) continue;
@@ -150,6 +153,9 @@ export function simulateCycle(ctx: GodContext): CycleResult {
     term.cond = ctx.cond;
   }
 
+  /* ---- 2b. the war on the ground ---- */
+  skirmishes = simulateSkirmishes(ctx);
+
   /* ---- 3. the dead get their chance ---- */
   rollReturns(ctx);
 
@@ -180,7 +186,7 @@ export function simulateCycle(ctx: GodContext): CycleResult {
   for (const n of ctx.mgr.roster) recomputePower(n);
 
   god.rngState = rng.state;
-  return { cycle: god.cycle, deaths: ctx.deaths.slice(), decisions, fights, blessedLosers: ctx.blessedLosers.slice() };
+  return { cycle: god.cycle, deaths: ctx.deaths.slice(), decisions, fights, skirmishes, blessedLosers: ctx.blessedLosers.slice() };
 }
 
 /* ============================================================

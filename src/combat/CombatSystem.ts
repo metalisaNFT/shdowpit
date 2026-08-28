@@ -28,6 +28,7 @@ import type { Telemetry } from '../core/Telemetry';
 import { canProc, withChannel } from './ProcRules';
 import type { RunState } from '../run/RunState';
 import { hasReaction } from '../abilities/Reactions';
+import { hasTriggeredPower } from '../data/equipment';
 import type { AbilityRuntime } from '../abilities/AbilityRuntime';
 import {
   enemiesAlongSegment,
@@ -59,6 +60,8 @@ export interface CombatCallbacks {
   onProcNote?(text: string): void;
   /** Named (or any) enemy melee that actually damaged the player — comic / telemetry. */
   onEnemyStrikeLanded?(e: Enemy, info: { amount: number; critical: boolean; attackId: string; attackLabel: string }): void;
+  /** Player blow that damaged a named nemesis — comic / cross-system hooks. */
+  onPlayerStrikeLanded?(e: Enemy, info: { amount: number; critical: boolean; source: string; attackLabel: string }): void;
 }
 
 /**
@@ -262,7 +265,7 @@ export class CombatSystem {
       if (stats.techniques.includes('gs_breaker') && hit.kind === 'heavy' && e.combat.attacking) {
         stagger *= 1.2;
       }
-      if (stats.powers.has('combo_finisher') && hit.kind === 'light' && p.combat.comboIndex === 2) {
+      if (hasTriggeredPower(stats.powers.ids(), 'combo_finisher') && hit.kind === 'light' && p.combat.comboIndex === 2) {
         stagger *= 1.55;
       }
       if (stats.ashenEye && e.named && e.nemesis.scars.length) damage *= 1.18;
@@ -275,8 +278,8 @@ export class CombatSystem {
         this.audio.play('stagger', { volume: 0.45, pitch: 1.4, minGap: 0.08 });
       }
       // BLOOD DEBT — the ones who have killed you before bleed harder.
-      if (stats.powers.has('blood_debt') && e.nemesis.killsAgainstPlayer > 0) damage *= 1.75;
-      if (stats.powers.has('hunters_mark') && e.named) damage *= 1.2;
+      if (hasTriggeredPower(stats.powers.ids(), 'blood_debt') && e.nemesis.killsAgainstPlayer > 0) damage *= 1.75;
+      if (hasTriggeredPower(stats.powers.ids(), 'hunters_mark') && e.named) damage *= 1.2;
       if (p.combat.livingWeaponT > 0) damage *= ULTIMATE.livingWeaponDamageMul;
       // EXECUTION POWER — broken enemies take extra from everything.
       if (e.combat.broken) damage *= stats.stat('executionPower');
@@ -285,7 +288,7 @@ export class CombatSystem {
       if (crit) damage *= stats.critMultiplier;
 
       // POSTURE HUNTER — broken enemies take extra posture damage.
-      const hunter = stats.powers.has('posture_hunter') && e.combat.broken ? 1.6 : 1;
+      const hunter = hasTriggeredPower(stats.powers.ids(), 'posture_hunter') && e.combat.broken ? 1.6 : 1;
 
       const info: DamageInfo = {
         amount: damage,
@@ -298,8 +301,8 @@ export class CombatSystem {
         fromBehind: behind,
         ignite: hit.ignite,
         critical: crit,
-        postureMul: stats.stat('postureDamage') * hunter * (stats.powers.has('heavy_breaker') && hit.kind === 'heavy' ? 1.55 : 1) * (p.combat.livingWeaponT > 0 ? ULTIMATE.livingWeaponPostureMul : 1),
-        poison: stats.powers.has('toxic_edge') ? POISON.buildupMelee * stats.stat('poisonDamage') : 0,
+        postureMul: stats.stat('postureDamage') * hunter * (hasTriggeredPower(stats.powers.ids(), 'heavy_breaker') && hit.kind === 'heavy' ? 1.55 : 1) * (p.combat.livingWeaponT > 0 ? ULTIMATE.livingWeaponPostureMul : 1),
+        poison: hasTriggeredPower(stats.powers.ids(), 'toxic_edge') ? POISON.buildupMelee * stats.stat('poisonDamage') : 0,
         channel: 'primary',
         grantsPlayerKill: true,
         slowFactor: this.player.stats.techniques.includes('spear_chase') && this.player.combat.dashStrike ? 0.7 : undefined,
@@ -348,11 +351,11 @@ export class CombatSystem {
       this.onDamageFeedback(e, res.applied, hit.kind, res.critical, hit.ignite);
       this.afterPlayerHit(e, res, hit.kind === 'heavy', info);
 
-      if (stats.powers.has('leech') && canProc(info, 'leech')) {
+      if (hasTriggeredPower(stats.powers.ids(), 'leech') && canProc(info, 'leech')) {
         const healed = stats.heal(Math.min(HEAL_ECON.leechCapPerHit, 1 + stats.powers.count('leech')), 'leech');
         if (healed > 0) this.audio.play('heal', { volume: 0.15, minGap: 0.4 });
       }
-      if (stats.powers.has('momentum') && canProc(info, 'momentum')) {
+      if (hasTriggeredPower(stats.powers.ids(), 'momentum') && canProc(info, 'momentum')) {
         stats.momentum = Math.min(stats.momentumMax, stats.momentum + 1);
       }
       this.grantSurge(hit.kind === 'heavy' ? PLAYER.surgeOnHeavyHit : PLAYER.surgeOnHit, hit.kind === 'heavy' ? 'heavy' : 'light');
@@ -395,27 +398,29 @@ export class CombatSystem {
       else this.camera.shake(0.06);
     }
 
-    // SHOCKWAVE — heavies blast outward.
-    if (hit.kind === 'heavy' && stats.powers.has('shockwave')) {
-      if (this.effects.allow('shockwave', this.combatClock, 0.25, 'sw' + p.combat.swingId)) {
+    // SHOCKWAVE — heavies blast outward (POWER_TRIGGER: ON_HEAVY_HIT).
+    if (hit.kind === 'heavy' && hasTriggeredPower(stats.powers.ids(), 'shockwave')) {
+      if (this.effects.trigger('ON_HEAVY_HIT', this.combatClock, { scope: 'shockwave', cooldown: 0.25, onceKey: 'sw' + p.combat.swingId })) {
         this.shockwave(p.position.x, p.position.z, 7.2, hit.damage * 0.55, 34);
       }
     }
     const fam = weaponFamily(p.stats.weaponId);
-    if (hit.kind === 'heavy' && fam === 'hammer' && !stats.powers.has('shockwave')) {
-      if (this.effects.allow('hammer_slam', this.combatClock, 0.25, 'hs' + p.combat.swingId)) {
+    if (hit.kind === 'heavy' && fam === 'hammer' && !hasTriggeredPower(stats.powers.ids(), 'shockwave')) {
+      if (this.effects.trigger('ON_HEAVY_HIT', this.combatClock, { scope: 'hammer_slam', cooldown: 0.25, onceKey: 'hs' + p.combat.swingId })) {
         this.shockwave(p.position.x, p.position.z, 4.4, hit.damage * 0.32, 28);
       }
     }
-    // ECHO — a second, delayed strike.
-    if (hit.kind === 'heavy' && stats.powers.has('echo')) {
-      const fx = p.position.x;
-      const fz = p.position.z;
-      const facing = p.facing;
-      window.setTimeout(() => {
-        if (!this.player.alive) return;
-        this.delayedArc(fx, fz, facing, hit.reach, hit.halfArc, hit.damage * 0.6);
-      }, 190);
+    // ECHO — a second, delayed strike (POWER_TRIGGER: ON_HEAVY_HIT).
+    if (hit.kind === 'heavy' && hasTriggeredPower(stats.powers.ids(), 'echo')) {
+      if (this.effects.trigger('ON_HEAVY_HIT', this.combatClock, { scope: 'echo', cooldown: 0.25, onceKey: 'echo' + p.combat.swingId })) {
+        const fx = p.position.x;
+        const fz = p.position.z;
+        const facing = p.facing;
+        window.setTimeout(() => {
+          if (!this.player.alive) return;
+          this.delayedArc(fx, fz, facing, hit.reach, hit.halfArc, hit.damage * 0.6);
+        }, 190);
+      }
     }
   }
 
@@ -554,8 +559,8 @@ export class CombatSystem {
         chainLeft: chain,
         slowFactor: crippling ? 0.42 : RANGED.slowFactor,
         slowDuration: crippling ? 2.8 : RANGED.slowDuration,
-        poison: stats.powers.has('toxic_shot') ? POISON.buildupShot * stats.stat('poisonDamage') : 0,
-        postureMul: stats.stat('postureDamage') * (stats.powers.has('interruptor') ? 2.4 : 1),
+        poison: hasTriggeredPower(stats.powers.ids(), 'toxic_shot') ? POISON.buildupShot * stats.stat('poisonDamage') : 0,
+        postureMul: stats.stat('postureDamage') * (hasTriggeredPower(stats.powers.ids(), 'interruptor') ? 2.4 : 1),
         critical: crit,
         hitUids: [],
         struckPlayer: false,
@@ -571,7 +576,7 @@ export class CombatSystem {
     let damage = a.damage;
     if (e.combat.broken) {
       damage *= stats.stat('executionPower');
-      if (stats.powers.has('execution_shot')) damage *= 1.45;
+      if (hasTriggeredPower(stats.powers.ids(), 'execution_shot')) damage *= 1.45;
     }
 
     const res = this.strike(e, {
@@ -590,6 +595,7 @@ export class CombatSystem {
     });
 
     if (res.applied > 0) {
+      this.effects.trigger('ON_PROJECTILE_HIT', this.combatClock, { scope: String(e.uid), cooldown: 0.05 });
       this.vfx.impact('projectile', a.x, a.y, a.z);
       this.audio.play('arrow_hit', { volume: 0.5, pitch: 1.4, minGap: 0.05 });
       this.grantSurge(2, 'needle');
@@ -668,7 +674,7 @@ export class CombatSystem {
     const id = (c.skillId ?? 'shadow_step') as SkillId;
     const def = getSkill(id);
     const prof = profileFor(def, p.stats.weaponId);
-    const mom = p.stats.powers.has('momentum') ? 1 + p.stats.momentum * 0.02 : 1;
+    const mom = hasTriggeredPower(p.stats.powers.ids(), 'momentum') ? 1 + p.stats.momentum * 0.02 : 1;
     const empower = this.abilities?.nextEmpowered && !isUltimateSkill(id);
 
     if (c.phase === 'windup' && !this.skillArmed) {
@@ -706,7 +712,7 @@ export class CombatSystem {
       for (const e of crossed) {
         c.stepMarks.set(e.uid, markT);
         this.vfx.flash(e.position.x, 1.1, e.position.z, 0xa14cff, 0.45, 0.1);
-        if (p.stats.powers.has('ember')) e.burning = Math.max(e.burning, 2.2);
+        if (hasTriggeredPower(p.stats.powers.ids(), 'ember')) e.burning = Math.max(e.burning, 2.2);
       }
       this.vfx.flash(p.position.x, 1.0, p.position.z, 0x6a3cff, 0.35, 0.08);
     }
@@ -862,8 +868,8 @@ export class CombatSystem {
         knockback: def.knockback * e.combat.displaceScale(),
         channel: i === 0 ? 'primary' : 'area',
         grantsPlayerKill: true,
-        poison: p.stats.powers.has('toxic_edge') ? POISON.buildupMelee * 0.6 : 0,
-        ignite: p.stats.powers.has('ember'),
+        poison: hasTriggeredPower(p.stats.powers.ids(), 'toxic_edge') ? POISON.buildupMelee * 0.6 : 0,
+        ignite: hasTriggeredPower(p.stats.powers.ids(), 'ember'),
       };
       i++;
       const res = this.strike(e, info);
@@ -876,7 +882,7 @@ export class CombatSystem {
       }
       if (res.killed) this.killEnemy(e, false, undefined, info);
     }
-    if (p.stats.powers.has('toxic_edge')) {
+    if (hasTriggeredPower(p.stats.powers.ids(), 'toxic_edge')) {
       this.spawnHazard(p.position.x, p.position.z, r * 0.55, POISON.dps * 0.7, 2.4, 'player');
     }
   }
@@ -919,7 +925,7 @@ export class CombatSystem {
       p.combat.skillMoveZ = (dz / len) * 18;
     } else {
       target.pullToward(p.position.x, p.position.z, 22);
-      if (p.stats.powers.has('posture_hunter') && target.combat.interruptible) {
+      if (hasTriggeredPower(p.stats.powers.ids(), 'posture_hunter') && target.combat.interruptible) {
         target.combat.stagger(0.4);
         this.cb.onInterrupt?.(target);
       }
@@ -1067,7 +1073,8 @@ export class CombatSystem {
     const named = target.named;
     const allow = (id: string) => this.executionAllowed(id, named);
 
-    if (wasPoisoned && stats.powers.has('toxic_detonation') && allow('toxic_detonation')) {
+    if (wasPoisoned && hasTriggeredPower(stats.powers.ids(), 'toxic_detonation') && allow('toxic_detonation') &&
+        this.effects.trigger('ON_EXECUTION', this.combatClock, { scope: 'detonation', cooldown: 0.4 })) {
       const px = target.position.x;
       const pz = target.position.z;
       const dmg = POISON.detonateDamage * stats.stat('poisonDamage');
@@ -1093,26 +1100,29 @@ export class CombatSystem {
       this.spawnHazard(px, pz, POISON.detonateRadius * 0.7, POISON.dps * stats.stat('poisonDamage'), 3.2, 'player');
     }
 
-    if (stats.powers.has('execution_surge') && allow('execution_surge')) {
+    if (hasTriggeredPower(stats.powers.ids(), 'execution_surge') && allow('execution_surge') && this.effects.trigger('ON_EXECUTION', this.combatClock, { scope: String(target.uid), cooldown: 0.4 })) {
       this.grantSurge(30, 'execution_surge', true);
     }
-    if (stats.powers.has('execution_flow') && this.effects.allow('execution_flow', this.combatClock, 0.4)) {
+    if (hasTriggeredPower(stats.powers.ids(), 'execution_flow') && this.effects.trigger('ON_EXECUTION', this.combatClock, { scope: 'flow', cooldown: 0.4 })) {
       this.player.combat.dodgeCooldown = 0;
-      this.player.combat.dodgeCharges = stats.powers.has('double_dodge') ? 2 : 1;
+      this.player.combat.dodgeCharges = hasTriggeredPower(stats.powers.ids(), 'double_dodge') ? 2 : 1;
     }
     this.grantSurge(PLAYER.surgeOnExecute, 'execute', true);
     if (named) this.abilities?.namedExecuteRefund();
 
-    if (stats.powers.has('vulture') && allow('vulture')) {
+    if (hasTriggeredPower(stats.powers.ids(), 'vulture') && allow('vulture') &&
+        this.effects.trigger('ON_EXECUTION', this.combatClock, { scope: 'vulture', cooldown: 0.4 })) {
       const amt = named ? HEAL_ECON.vultureBase : HEAL_ECON.vultureBase * HEAL_ECON.vultureFalloff;
       const healed = stats.heal(amt, 'vulture');
       if (healed) this.audio.play('heal', { volume: 0.6 });
     }
-    if (stats.powers.has('predator') && allow('predator')) {
+    if (hasTriggeredPower(stats.powers.ids(), 'predator') && allow('predator') &&
+        this.effects.trigger('ON_EXECUTION', this.combatClock, { scope: 'predator', cooldown: 0.4 })) {
       stats.speedBuff = 0.55;
       stats.speedBuffTime = 6;
     }
-    if (stats.powers.has('terror') && allow('terror')) {
+    if (hasTriggeredPower(stats.powers.ids(), 'terror') && allow('terror') &&
+        this.effects.trigger('ON_EXECUTION', this.combatClock, { scope: 'terror', cooldown: 0.4 })) {
       for (const e of this.enemies) {
         if (!e.alive || e === target) continue;
         if (radiusHits(target.position.x, target.position.z, 14, e.position.x, e.position.z, e.radius)) {
@@ -1128,7 +1138,8 @@ export class CombatSystem {
       }
       this.vfx.ring(target.position.x, 0.05, target.position.z, 0x9d7bff, 0.5, 14, 0.7, 0.5);
     }
-    if (stats.powers.has('parasite') && allow('parasite') && target.named && target.nemesis.strengths.length) {
+    if (hasTriggeredPower(stats.powers.ids(), 'parasite') && allow('parasite') && target.named && target.nemesis.strengths.length &&
+        this.effects.trigger('ON_EXECUTION', this.combatClock, { scope: 'parasite', cooldown: 0.4 })) {
       const stolen = target.nemesis.strengths[0];
       if (!stats.stolenTraits.includes(stolen)) stats.stolenTraits.push(stolen);
       if (hasReaction(stats.powers, 'parasite_debt') && target.nemesis.killsAgainstPlayer > 0) {
@@ -1320,8 +1331,9 @@ export class CombatSystem {
           attackLabel: e.combat.current?.id ?? 'strike',
         });
 
-        // THORNS answers back.
-        if (p.stats.powers.has('thorns')) {
+        // THORNS answers back (POWER_TRIGGER: ON_DAMAGE_TAKEN).
+        if (hasTriggeredPower(p.stats.powers.ids(), 'thorns') &&
+            this.effects.trigger('ON_DAMAGE_TAKEN', this.combatClock, { scope: String(e.uid), cooldown: 0.15 })) {
           const tr = this.strike(e, {
             amount: 12,
             source: 'thorns',
@@ -1370,6 +1382,7 @@ export class CombatSystem {
   private onParry(e: Enemy, perfect: boolean, offered: boolean): void {
     const p = this.player;
     p.combat.onParrySuccess(perfect);
+    this.effects.trigger(perfect ? 'ON_PERFECT_PARRY' : 'ON_PARRY', this.combatClock, { scope: String(e.uid), cooldown: 0.08 });
     this.cb.onHabit('parry');
 
     const mid = { x: (p.position.x + e.position.x) / 2, z: (p.position.z + e.position.z) / 2 };
@@ -1394,7 +1407,7 @@ export class CombatSystem {
     }
 
     // Posture is the real payload. A perfect parry is worth more than a heavy.
-    const posture = (perfect ? POSTURE.perfectParry : POSTURE.parry) * p.stats.stat('postureDamage') * (perfect && p.stats.powers.has('counter_force') ? 1.45 : 1);
+    const posture = (perfect ? POSTURE.perfectParry : POSTURE.parry) * p.stats.stat('postureDamage') * (perfect && hasTriggeredPower(p.stats.powers.ids(), 'counter_force') ? 1.45 : 1);
     const branded = p.combat.brandUid === e.uid && p.combat.brandTimer > 0;
     const broke = e.combat.addPosture(posture * (offered ? 1 : 0.8) * (branded && perfect ? 1.35 : 1), e.mods.staggerResist);
     if (branded && perfect) this.grantSurge(8, 'brand_parry');
@@ -1407,8 +1420,8 @@ export class CombatSystem {
       e.staggerImmune = Math.max(e.staggerImmune, STAGGER.immunity);
     }
 
-    // REVERSAL sends the blow back — perfect parries only, as the card says.
-    if (p.stats.powers.has('reversal') && perfect) {
+    // REVERSAL sends the blow back — perfect parries only (POWER_TRIGGER: ON_PERFECT_PARRY).
+    if (perfect && hasTriggeredPower(p.stats.powers.ids(), 'reversal')) {
       const res = this.strike(e, {
         amount: e.currentDamage() * 1.6,
         source: 'counter',
@@ -1425,8 +1438,8 @@ export class CombatSystem {
       if (res.applied > 0) this.onDamageFeedback(e, res.applied, 'heavy', true, false);
       if (res.killed) this.killEnemy(e, false);
     }
-    // RIPOSTE answers immediately.
-    if (p.stats.powers.has('riposte')) {
+    // RIPOSTE answers immediately (POWER_TRIGGER: ON_PARRY).
+    if (hasTriggeredPower(p.stats.powers.ids(), 'riposte')) {
       const res = this.strike(e, {
         amount: p.weapon.damage * 1.8 * p.stats.damageMultiplier(),
         source: 'light',
@@ -1451,8 +1464,9 @@ export class CombatSystem {
   private onPerfectDodge(e: Enemy): void {
     const p = this.player;
     p.combat.onPerfectDodge();
-    this.grantSurge(PLAYER.perfectDodgeSurge * (p.stats.powers.has('perfect_dodge') ? 1.4 : 1), 'perfect_dodge', true);
-    this.loop.slowMo(PLAYER.perfectDodgeSlowMo * (p.stats.powers.has('perfect_dodge') ? 1.55 : 1), 0.42);
+    this.effects.trigger('ON_PERFECT_DODGE', this.combatClock, { scope: String(e.uid), cooldown: 0.12 });
+    this.grantSurge(PLAYER.perfectDodgeSurge * (hasTriggeredPower(p.stats.powers.ids(), 'perfect_dodge') ? 1.4 : 1), 'perfect_dodge', true);
+    this.loop.slowMo(PLAYER.perfectDodgeSlowMo * (hasTriggeredPower(p.stats.powers.ids(), 'perfect_dodge') ? 1.55 : 1), 0.42);
     this.camera.kick(0.1);
     this.audio.play('dodge', { volume: 0.85, pitch: 1.3 });
     this.vfx.ring(p.position.x, 0.05, p.position.z, SIGNAL.player, 0.35, 3.2, 0.32, 0.75);
@@ -1464,6 +1478,7 @@ export class CombatSystem {
   private onPerfectDodgeProjectile(): void {
     const p = this.player;
     p.combat.onPerfectDodge();
+    this.effects.trigger('ON_PERFECT_DODGE', this.combatClock, { scope: 'projectile', cooldown: 0.12 });
     this.grantSurge(Math.round(PLAYER.perfectDodgeSurge * 0.5), 'perfect_dodge_shot');
     this.loop.slowMo(PLAYER.perfectDodgeSlowMo * 0.6, 0.45);
     this.audio.play('dodge', { volume: 0.7, pitch: 1.4 });
@@ -1755,9 +1770,13 @@ export class CombatSystem {
             p.combat.onParrySuccess(perfect);
             this.grantSurge(perfect ? PLAYER.parrySurge : 6, perfect ? 'perfect_parry' : 'parry');
             this.cb.onHabit('parry');
+            this.effects.trigger(perfect ? 'ON_PERFECT_PARRY' : 'ON_PARRY', this.combatClock, {
+              scope: `proj${a.ownerUid}`,
+              cooldown: 0.08,
+            });
 
-            // RETURN FIRE — the projectile goes home.
-            if (p.stats.powers.has('return_fire')) {
+            // RETURN FIRE — the projectile goes home (POWER_TRIGGER: ON_PERFECT_PARRY).
+            if (perfect && hasTriggeredPower(p.stats.powers.ids(), 'return_fire')) {
               const owner = this.enemies.find((e) => e.uid === a.ownerUid && e.alive);
               const tx = owner ? owner.position.x : a.x - a.vx;
               const tz = owner ? owner.position.z : a.z - a.vz;
@@ -1996,6 +2015,12 @@ export class CombatSystem {
    */
   private afterPlayerHit(e: Enemy, res: { applied: number; staggered: boolean; flinched: boolean; poisoned: boolean; critical: boolean }, strong: boolean, info?: DamageInfo): void {
     const stats = this.player.stats;
+    if (res.applied > 0) {
+      this.effects.trigger(strong ? 'ON_HEAVY_HIT' : 'ON_HIT', this.combatClock, {
+        scope: String(e.uid),
+        onceKey: `hit:${e.uid}:${this.player.combat.swingId}`,
+      });
+    }
     if (res.applied > 0 && canProc(info, 'lifesteal')) stats.lifestealFrom(res.applied);
     if (res.applied > 0) this.telemetry?.noteEnemyHurt(e.uid);
     if (res.poisoned) {
@@ -2092,8 +2117,11 @@ export class CombatSystem {
       const stats = this.player.stats;
       stats.runKills++;
       if (e.named) stats.runNamedKills++;
+      this.effects.trigger(executed ? 'ON_EXECUTION' : 'ON_KILL', this.combatClock, { scope: String(e.uid), cooldown: 0.05 });
+      if (e.named) this.effects.trigger('ON_NEMESIS_KILL', this.combatClock, { scope: e.nemesis.id, cooldown: 0.2 });
       if (canProc(info, 'surge')) this.grantSurge(PLAYER.surgeOnKill, 'kill');
-      if (stats.powers.has('chain') && canProc(info, 'chainDodge')) {
+      if (hasTriggeredPower(stats.powers.ids(), 'chain') && canProc(info, 'chainDodge') &&
+          this.effects.trigger('ON_KILL', this.combatClock, { scope: 'chain', cooldown: 0.08 })) {
         this.player.combat.dodgeCooldown = 0;
         if (hasReaction(stats.powers, 'chain_momentum')) {
           stats.momentum = Math.min(stats.momentumMax, stats.momentum + 1);
@@ -2112,7 +2140,11 @@ export class CombatSystem {
     this.camera.kick(0.06);
     this.vfx.ring(this.player.position.x, 0.04, this.player.position.z, SIGNAL.player, 0.22, 1.8, 0.22, 0.7);
     this.particles.dust(this.player.position.x, 0.35, this.player.position.z, 10);
-    if (this.player.stats.powers.has('phantom')) {
+    this.effects.trigger('ON_DODGE', this.combatClock, { scope: 'dodge', cooldown: 0.08 });
+    if (
+      hasTriggeredPower(this.player.stats.powers.ids(), 'phantom') &&
+      this.effects.trigger('ON_DODGE', this.combatClock, { scope: 'phantom', cooldown: 0.3 })
+    ) {
       this.player.spawnPhantom(this.scene);
       // The afterimage lashes out where you were.
       const x = this.player.position.x;
@@ -2143,7 +2175,7 @@ export class CombatSystem {
 
   /** STAMPEDE — sprinting into someone flattens them. */
   checkStampede(): void {
-    if (!this.player.stats.powers.has('stampede')) return;
+    if (!hasTriggeredPower(this.player.stats.powers.ids(), 'stampede')) return;
     if (!this.player.controller.sprinting) return;
     const p = this.player;
     for (const e of this.enemies) {
@@ -2160,7 +2192,10 @@ export class CombatSystem {
           fromZ: p.position.z,
           knockback: 11,
         });
-        if (res.applied > 0) this.onDamageFeedback(e, res.applied, 'heavy', false, false);
+        if (res.applied > 0) {
+          this.effects.trigger('ON_HIT', this.combatClock, { scope: `stampede:${e.uid}`, cooldown: 0.2 });
+          this.onDamageFeedback(e, res.applied, 'heavy', false, false);
+        }
         if (res.killed) this.killEnemy(e, false);
         this.camera.shake(0.4);
         this.loop.hitStop(0.06);
@@ -2196,6 +2231,16 @@ export class CombatSystem {
   private strike(target: Enemy | Player, info: DamageInfo): DamageResult {
     if (!info.channel) info.channel = target.isPlayer ? 'primary' : info.attacker?.isPlayer ? 'primary' : 'primary';
     const res = target.applyDamage(info);
+    if (
+      target.isPlayer &&
+      res.secondWind &&
+      hasTriggeredPower(this.player.stats.powers.ids(), 'second_wind') &&
+      this.effects.trigger('ON_PLAYER_DEATH', this.combatClock, { scope: 'second_wind', cooldown: 2 })
+    ) {
+      this.cb.onProcNote?.('SECOND WIND');
+      this.audio.play('heal', { volume: 0.65, pitch: 0.82, minGap: 0.5 });
+      this.vfx.ring(this.player.position.x, 0.08, this.player.position.z, 0xff8c42, 0.45, 3.4, 0.55, 0.85);
+    }
     this.announceHit(target, res, info);
     return res;
   }
@@ -2212,6 +2257,15 @@ export class CombatSystem {
     if (res.applied <= 0) return;
     const n = String(Math.max(1, Math.round(res.applied)));
     this.floats.spawnOn(target, n, this.floatKind(target, res, info));
+    if (!target.isPlayer && info.attacker?.isPlayer && (target as Enemy).named && res.applied >= 8) {
+      const e = target as Enemy;
+      this.cb.onPlayerStrikeLanded?.(e, {
+        amount: res.applied,
+        critical: !!res.critical || res.applied >= e.maxHp * 0.18,
+        source: info.source,
+        attackLabel: info.source === 'execute' ? 'EXECUTION' : info.source.toUpperCase(),
+      });
+    }
   }
 
   private floatKind(target: Combatant, res: DamageResult, info: DamageInfo): DamageFloatKind {

@@ -5,7 +5,7 @@
 
 import type { PowerId } from './abilities';
 import type { RunStatId } from './stats';
-import type { EquipSlot, ItemInstance, ItemKind, Rarity, SynergyTag, WeaponFamilyId } from '../progress/Types';
+import type { EffectTrigger, EquipSlot, ItemInstance, ItemKind, Rarity, SynergyTag, WeaponFamilyId } from '../progress/Types';
 
 export interface AffixDef {
   id: string;
@@ -15,6 +15,8 @@ export interface AffixDef {
   powers?: PowerId[];
   stat?: { id: RunStatId; add: number };
   mechanical?: boolean;
+  /** Combat hook this affix's powers listen on — drives EffectBus dispatch. */
+  trigger?: EffectTrigger;
 }
 
 export interface ItemDef {
@@ -39,15 +41,74 @@ export const AFFIXES: AffixDef[] = [
   { id: 'atk_speed', name: 'QUICK', desc: '+10% attack speed.', tags: ['MELEE'], stat: { id: 'attackSpeed', add: 0.1 } },
   { id: 'posture', name: 'BREAKER', desc: '+20% posture damage.', tags: ['POSTURE'], stat: { id: 'postureDamage', add: 0.2 } },
   { id: 'needles', name: 'SPLIT', desc: '+1 projectile.', tags: ['PROJECTILE'], stat: { id: 'projCount', add: 1 } },
-  { id: 'toxic', name: 'VENOM', desc: 'Melee hits build poison.', tags: ['TOXIC'], powers: ['toxic_edge'], mechanical: true },
-  { id: 'exec_surge', name: 'HARVEST', desc: 'Executions restore Surge.', tags: ['SURGE', 'EXECUTION'], powers: ['execution_surge'], mechanical: true },
+  { id: 'toxic', name: 'VENOM', desc: 'Melee hits build poison.', tags: ['TOXIC'], powers: ['toxic_edge'], mechanical: true, trigger: 'ON_HIT' },
+  { id: 'exec_surge', name: 'HARVEST', desc: 'Executions restore Surge.', tags: ['SURGE', 'EXECUTION'], powers: ['execution_surge'], mechanical: true, trigger: 'ON_EXECUTION' },
   { id: 'crit', name: 'KEEN', desc: '+8% crit chance.', tags: ['CRIT'], stat: { id: 'critChance', add: 0.08 } },
-  { id: 'shock', name: 'SHOCKWAVE', desc: 'Heavies create a shockwave.', tags: ['HAMMER', 'POSTURE'], powers: ['shockwave'], mechanical: true },
-  { id: 'parry_shard', name: 'MIRROR EDGE', desc: 'Perfect parry reflects shots.', tags: ['PARRY', 'PROJECTILE'], powers: ['return_fire'], mechanical: true },
-  { id: 'phantom', name: 'PHANTOM', desc: 'Dodge leaves an afterimage.', tags: ['DODGE'], powers: ['phantom'], mechanical: true },
+  { id: 'shock', name: 'SHOCKWAVE', desc: 'Heavies create a shockwave.', tags: ['HAMMER', 'POSTURE'], powers: ['shockwave'], mechanical: true, trigger: 'ON_HEAVY_HIT' },
+  { id: 'parry_shard', name: 'MIRROR EDGE', desc: 'Perfect parry reflects shots.', tags: ['PARRY', 'PROJECTILE'], powers: ['return_fire'], mechanical: true, trigger: 'ON_PERFECT_PARRY' },
+  { id: 'phantom', name: 'PHANTOM', desc: 'Dodge leaves an afterimage.', tags: ['DODGE'], powers: ['phantom'], mechanical: true, trigger: 'ON_DODGE' },
 ];
 
 export const AFFIX_MAP = new Map(AFFIXES.map((a) => [a.id, a]));
+
+/** Build-time map: mechanical power → combat trigger (affixes + roguelite picks). */
+const EXTRA_POWER_TRIGGERS: Partial<Record<PowerId, EffectTrigger>> = {
+  riposte: 'ON_PARRY',
+  reversal: 'ON_PERFECT_PARRY',
+  terror: 'ON_EXECUTION',
+  chain: 'ON_KILL',
+  execution_flow: 'ON_EXECUTION',
+  toxic_detonation: 'ON_EXECUTION',
+  predator: 'ON_EXECUTION',
+  parasite: 'ON_EXECUTION',
+  vulture: 'ON_EXECUTION',
+  echo: 'ON_HEAVY_HIT',
+  ember: 'ON_HIT',
+  leech: 'ON_HIT',
+  thorns: 'ON_DAMAGE_TAKEN',
+  combo_finisher: 'ON_HIT',
+  blood_debt: 'ON_HIT',
+  hunters_mark: 'ON_HIT',
+  posture_hunter: 'ON_HIT',
+  heavy_breaker: 'ON_HEAVY_HIT',
+  momentum: 'ON_HIT',
+  execution_shot: 'ON_PROJECTILE_HIT',
+  interruptor: 'ON_PROJECTILE_HIT',
+  toxic_shot: 'ON_PROJECTILE_HIT',
+  counter_force: 'ON_PERFECT_PARRY',
+  perfect_dodge: 'ON_PERFECT_DODGE',
+  double_dodge: 'ON_DODGE',
+  dash_strike: 'ON_DODGE',
+  blink: 'ON_DODGE',
+  phase_step: 'ON_DODGE',
+  second_wind: 'ON_PLAYER_DEATH',
+  stampede: 'ON_HIT',
+};
+
+export const POWER_TRIGGER: Readonly<Partial<Record<PowerId, EffectTrigger>>> = {
+  ...EXTRA_POWER_TRIGGERS,
+  ...Object.fromEntries(
+    AFFIXES.flatMap((a) => (a.powers && a.trigger ? a.powers.map((p) => [p, a.trigger!] as const) : []))
+  ),
+};
+
+export function powerTrigger(id: PowerId): EffectTrigger | undefined {
+  return POWER_TRIGGER[id];
+}
+
+export function hasPowerForTrigger(ids: Iterable<PowerId>, trigger: EffectTrigger): boolean {
+  for (const id of ids) {
+    if (POWER_TRIGGER[id] === trigger) return true;
+  }
+  return false;
+}
+
+/** Owned power that maps to a combat trigger (replaces bare `.has(id)` for mechanical powers). */
+export function hasTriggeredPower(ids: Iterable<PowerId>, power: PowerId): boolean {
+  if (!POWER_TRIGGER[power]) return false;
+  for (const id of ids) if (id === power) return true;
+  return false;
+}
 
 export const ITEM_DEFS: ItemDef[] = [
   /* weapons */

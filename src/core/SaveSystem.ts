@@ -14,6 +14,7 @@ import type { TerritoryMod } from '../world/TerritoryRules';
 import { migrateProgress } from '../progress/Progression';
 import { emptyProgress, type PlayerProgress } from '../progress/Types';
 import { defaultTutorial, migrateTutorial, type TutorialState } from './Tutorial';
+import { defaultGodClockSettings, type GodClockSettings } from '../god/Clock';
 import type { GodState, LegendRecord } from '../god/GodTypes';
 
 export const SAVE_VERSION = 7;
@@ -86,6 +87,8 @@ export interface Settings {
   hudScale: number;
   showPurpose: boolean;
   tutorial: TutorialState;
+  /** THE LONG GAME hybrid clock */
+  god: GodClockSettings;
 
   /**
    * AI preferences ONLY. There is deliberately no API key field here, and
@@ -110,6 +113,7 @@ export function defaultSettings(): Settings {
     hudScale: 1,
     showPurpose: true,
     tutorial: defaultTutorial(),
+    god: defaultGodClockSettings(),
     ai: defaultAISettings(),
   };
 }
@@ -306,6 +310,7 @@ export class SaveSystem {
     data.playerMeta.ultimateLoadout = data.playerMeta.ultimateLoadout ?? 'pit_eruption';
     data.settings.showPurpose = data.settings.showPurpose ?? true;
     data.settings.tutorial = migrateTutorial(data.settings.tutorial);
+    data.settings.god = { ...defaultGodClockSettings(), ...(data.settings.god ?? {}) };
     data.playerMeta.progress = migrateProgress(data.playerMeta.progress);
     data.territoryMods = data.territoryMods ?? {};
     data.run = data.run ? migrateRunState(data.run, data.worldSeed) : null;

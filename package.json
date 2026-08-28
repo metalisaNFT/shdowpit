@@ -13,6 +13,7 @@
     "serve": "node server/index.mjs",
     "test": "node tools/playtest.mjs",
     "test:story": "node tools/storytest.mjs",
+    "test:story-ai": "node tools/storyaitest.mjs",
     "test:wiring": "node tools/wiringaudit.mjs",
     "test:wiring:browser": "node tools/wiringtest.mjs",
     "test:depth": "node tools/depthtest.mjs",

@@ -26,7 +26,7 @@ import {
   type InterventionDef,
   type SpendResult,
 } from './Interventions';
-import { applyLegacies, harvestLegends, recordLegends, type LegacyEcho } from './Legends';
+import { applyLegacies, harvestLegends, recordLegends } from './Legends';
 import { simulateCycle } from './Autonomy';
 import { buildSituations } from './Situations';
 import { evaluateUnlocks, startingConditions, type StartingConditions } from './Unlocks';
@@ -41,6 +41,7 @@ import {
   type DescentBrief,
   type GodPhase,
   type GodState,
+  type LegacyEcho,
   type RunOutcome,
   type Situation,
 } from './GodTypes';
@@ -94,6 +95,7 @@ export function emptyGodState(seed: number, run: number, bonus = 0): GodState {
     lastDescentReport: null,
     scenarioFlags: { towerCommander: false },
     history: [],
+    legacyEchoes: [],
     ended: false,
     outcome: null,
   };
@@ -108,6 +110,7 @@ export function migrateGodState(raw: GodState): GodState {
   if (g.boardUnlocked === undefined) g.boardUnlocked = g.cycle > 2 || g.openingDone;
   if (g.lastAftermath === undefined) g.lastAftermath = null;
   if (g.lastDescentReport === undefined) g.lastDescentReport = null;
+  if (!g.legacyEchoes) g.legacyEchoes = [];
   if (typeof g.pendingDescent === 'string') {
     g.pendingDescent = {
       nemesisId: g.pendingDescent,
@@ -159,6 +162,7 @@ export class GodRun {
 
     if (this.start.brokenOrder) this.breakTheOrder();
     this.echoes = applyLegacies(this.mgr, this.god, this.mgr.data.legends ?? [], this.rng);
+    this.god.legacyEchoes = this.echoes;
     if (this.start.patron) this.appointPatron();
 
     for (const n of this.mgr.living()) {
@@ -203,6 +207,7 @@ export class GodRun {
     this.god.decisions = this.god.decisions ?? [];
     this.rng = new RNG(state.rngState || state.seed);
     this.start = startingConditions(this.mgr.data.godUnlocks ?? []);
+    this.echoes = this.god.legacyEchoes ?? [];
     const ctx = this.context();
     this.god.situations = buildSituations(ctx);
     if (!this.god.focusSituationId && !this.god.openingDone) this.lockOpeningFocus();

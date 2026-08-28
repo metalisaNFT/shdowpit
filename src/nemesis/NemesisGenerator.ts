@@ -14,7 +14,7 @@ import type { Archetype, Nemesis, PersonalityType, Rank, TraitId, WeaponType } f
 import { ARCHETYPES, rankIndex } from './Nemesis';
 import { ensureSignature } from '../data/signatures';
 
-const ARCHETYPE_WEIGHTS = [0.4, 0.2, 0.16, 0.14, 0.1];
+export const ARCHETYPE_WEIGHTS = [0.4, 0.2, 0.16, 0.14, 0.1];
 
 const WEAPON_BY_ARCHETYPE: Record<Archetype, WeaponType[]> = {
   fighter: ['sword', 'spear', 'axe'],
@@ -154,9 +154,16 @@ export function recomputePower(n: Nemesis): number {
  * A throwaway enemy. Not saved, no memory, but built by the same pipeline so
  * it looks like it belongs to the same world.
  */
-export function generateGrunt(seed: number, level: number, age: AgeModifier, territory: string): Nemesis {
+export function generateGrunt(
+  seed: number,
+  level: number,
+  age: AgeModifier,
+  territory: string,
+  opts?: { archetypeWeights?: number[] }
+): Nemesis {
   const r = new RNG(seed);
-  const archetype = r.weighted(ARCHETYPES, ARCHETYPE_WEIGHTS);
+  const w = opts?.archetypeWeights?.length === ARCHETYPES.length ? opts.archetypeWeights : ARCHETYPE_WEIGHTS;
+  const archetype = r.weighted(ARCHETYPES, w);
   const weapon = r.pick(WEAPON_BY_ARCHETYPE[archetype]);
   const strengths: TraitId[] = [];
   if (r.chance(0.3)) strengths.push(r.pick(traitsOfKind('strength')).id);

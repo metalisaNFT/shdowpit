@@ -14,6 +14,7 @@ Automated checks: `npm run test:wiring` (static source audit + in-browser self-t
 | **UI screens** (`src/ui/*.ts`) | All 16 top-level screens instantiated and mounted in `Game.ts` (~311–331). **No orphan UI classes.** |
 | **God / Comic / Progress / Tutorial / VerticalSlice** | **Wired** through `Game.ts`. Submodules consumed via `GodRun`, `ComicService`, `Progression`. |
 | **Partial wiring** | OverlayGate (3 unused fields), ComicViewer (gated + missing death hook), run-loot pipeline, EffectTrigger system |
+| **God / Story AI presentation** | **Wired** — `GodAI.ts`, `StoryAI.ts`, oracle drawers, `test:god-ai`, `test:story-ai` |
 | **Dead code** | `AbilityManager.ts` (superseded by `OfferRoller`) |
 | **Dead EventBus events** | 7 of 9 event types unused or one-sided |
 | **Save schema without consumers** | `telemetryOptIn`, `unlockedStarting`, `progress.favorites` |
@@ -60,11 +61,11 @@ Child: `AISettingsPanel` mounted by `PauseScreen.ts` on open.
 
 - **BuildScreen** — title + pause only; no in-play hotkey without pausing
 - **LegendsScreen** — title button hidden until `legendCount > 0`
-- **`AIStatus.clear()`** — method exists, never called
+- **`AIStatus.clear()`** — called on title, god board open, and run end (`presentGodEnd`); notices still sync from queue each frame
 
 ### Stub callback
 
-`onGodEnd(outcome)` at `Game.ts:1456` is registered as `GodRun` hook (`onEnd` at ~1088) but empty. Real end-screen flow goes through `presentGodEnd()` called directly from `godAdvance`, `abandonGodRun`, descent return, and debug paths.
+`onGodEnd(outcome)` delegates to `presentGodEnd(outcome)` when the run ends via the hook path.
 
 ---
 
@@ -176,6 +177,8 @@ Likely prepared for UI polish (feed filtering, faction tooltips, skill tree prev
 These were flagged as "new" in git status but **are integrated**:
 
 - **God layer** — `GodRun`, `GodScreen`, interventions, teaching, legends, descent via `applyVerticalSlice`
+- **Long-game AI** — `GodAI` observe/getters, oracle UI hooks (`GodInspectDrawer`, `GodFeedDrawer`, NOW card, crisis top bar), stale scope on abandon/end, `npm run test:god-ai`
+- **Story AI** — `StoryAI` overlays for hierarchy/death report/encounters, `npm run test:story-ai`
 - **Comic system** — `ComicService` + viewer + combat intro/strike/enemy-outcome hooks
 - **Progress** — build screen, gear, cinders, skill tree, `ensureStarterGear`, `applyBuildToStats`
 - **Tutorial** — combat tutorials via `TutorialController`; god guide via `Guide` + `PrimerScreen`

@@ -33,27 +33,27 @@ export const TUTORIAL_COPY: Record<TutorialId, { title: string; body: string; gl
   basics: {
     title: 'STRIKE',
     body: '',
-    glyphs: 'LMB LIGHT    RMB HEAVY    SPACE DODGE',
+    glyphs: 'LMB LIGHT · RMB HEAVY · SPACE DODGE',
   },
   posture: {
     title: 'BREAK THEM',
     body: '',
-    glyphs: 'RMB HEAVY · FILL CYAN · E EXECUTE',
+    glyphs: 'RMB HEAVY · FILL POSTURE · E EXECUTE',
   },
   parry: {
     title: 'PARRY',
     body: '',
-    glyphs: 'Q ON CYAN    RED = MOVE',
+    glyphs: 'Q ON CYAN · RED = MOVE',
   },
   skill: {
     title: 'SKILL',
     body: '',
-    glyphs: '1 / 2 WHEN IT FLASHES',
+    glyphs: '1/C · 2/V WHEN READY · 3/G ULTIMATE',
   },
   named: {
     title: 'NAMED',
     body: '',
-    glyphs: 'THEY REMEMBER    TAB WEB',
+    glyphs: 'THEY REMEMBER · TAB THE WEB',
   },
   death: {
     title: 'THE WORLD TURNED',
@@ -72,7 +72,7 @@ export const TUTORIAL_DETAIL: Record<TutorialId, string> = {
   basics: 'Reach them. Light, heavy, and dodge are the whole first language.',
   posture: 'The second bar on their plate is posture. Fill it, then execute.',
   parry: 'Cyan is an offer. Time Q on the cut. Perfect timing fills Surge. Red cannot be parried — move.',
-  skill: 'Skills are for gaps, not instead of attacking. Cooldown is the cost.',
+  skill: 'Skills fill gaps between attacks. Perfect parries build Surge for the ultimate.',
   named: 'This one remembers. Memories, grudges, and stolen steel persist. A Vendetta is optional.',
   death: 'You died. They did not wait. The recap is the few things that mattered.',
   second_run: 'Heat draws hunters. Remnants are run-only, not Essence. Extract at a gate.',

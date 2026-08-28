@@ -8,6 +8,7 @@
 
 import type { WeaponDef } from '../data/weapons';
 import type { PlayerStats } from './PlayerStats';
+import { hasTriggeredPower } from '../data/equipment';
 import { PLAYER, RANGED, DODGE_RULES } from '../data/balance';
 
 /** total seconds of the Void Needle throw overlay animation */
@@ -236,7 +237,7 @@ export class PlayerCombat {
     // DASH STRIKE: a light attack straight out of a dodge becomes a lunge.
     this.dashStrike =
       kind === 'light' &&
-      stats.powers.has('dash_strike') &&
+      hasTriggeredPower(stats.powers.ids(), 'dash_strike') &&
       (this.action === 'dodge' || this.sinceDodgeEnd < DASH_STRIKE_WINDOW);
 
     if (stats.powers.has('relentless') && this.lastAttackKind && this.lastAttackKind !== kind) {
@@ -271,7 +272,7 @@ export class PlayerCombat {
   tryDodge(dirX: number, dirZ: number, stats?: PlayerStats): boolean {
     if (this.action === 'dead' || this.action === 'execute' || this.action === 'stagger') return false;
     if (this.action === 'skill' || this.action === 'ultimate') return false;
-    const max = stats?.powers.has('double_dodge') ? 2 : 1;
+    const max = stats && hasTriggeredPower(stats.powers.ids(), 'double_dodge') ? 2 : 1;
     if (this.dodgeCharges <= 0 && this.dodgeCooldown > 0) return false;
     if (this.dodgeCharges <= 0) return false;
     if (this.action === 'attack' && this.phase === 'windup') return false;
@@ -418,7 +419,7 @@ export class PlayerCombat {
 
     if (this.dodgeCooldown > 0) this.dodgeCooldown -= dt;
     else {
-      const max = stats.powers.has('double_dodge') ? 2 : 1;
+      const max = hasTriggeredPower(stats.powers.ids(), 'double_dodge') ? 2 : 1;
       if (this.dodgeCharges < max) this.dodgeCharges = max;
     }
     if (this.parryCooldown > 0) this.parryCooldown -= dt;
@@ -445,7 +446,7 @@ export class PlayerCombat {
       case 'dodge':
         this.invulnerable =
           this.t >= DODGE_IFRAME_START &&
-          this.t <= DODGE_IFRAME_END + (stats.powers.has('blink') ? DODGE_RULES.blinkIFrameEndBonus : 0);
+          this.t <= DODGE_IFRAME_END + (hasTriggeredPower(stats.powers.ids(), 'blink') ? DODGE_RULES.blinkIFrameEndBonus : 0);
         if (this.t >= DODGE_TIME) {
           this.action = 'idle';
           this.invulnerable = false;
@@ -579,7 +580,7 @@ export class PlayerCombat {
       halfArc: arc,
       combo: this.comboIndex,
       knockback: c.knockback,
-      ignite: stats.powers.has('ember'),
+      ignite: hasTriggeredPower(stats.powers.ids(), 'ember'),
     };
   }
 

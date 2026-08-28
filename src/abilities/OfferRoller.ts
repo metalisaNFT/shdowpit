@@ -11,7 +11,19 @@ export interface OfferContext {
   owned: PowerSet;
   weaponId: string;
   statAtCap: (id: RunStatId) => boolean;
+  /** Last combat proc note — biases offers toward what just happened. */
+  recentProc?: string;
 }
+
+const PROC_FAMILY_HINTS: Record<string, PowerFamily[]> = {
+  'KILL RHYTHM': ['Momentum', 'Revenge'],
+  'THE CHASE': ['Movement', 'PerfectDefense'],
+  'PLAGUE WAVE': ['Poison', 'Fire'],
+  'BLOOD TITHE': ['Utility', 'Revenge'],
+  RICOCHET: ['Projectile', 'Fire'],
+  'CINDER PARRY': ['PerfectDefense', 'Fire'],
+  PIN: ['Posture', 'Execution'],
+};
 
 function pickWeighted<T>(rng: RNG, items: T[], weight: (t: T) => number): T | null {
   if (!items.length) return null;
@@ -59,8 +71,13 @@ export function rollPowerOffers(rng: RNG, ctx: OfferContext, powerCount: number)
     for (const id of r.requires) if (!ctx.owned.has(id)) synIds.add(id);
   }
   const fam = dominantFamily(ctx.owned);
+  const procHint = ctx.recentProc ? PROC_FAMILY_HINTS[ctx.recentProc] : undefined;
   const synPool = pool.filter((p) => synIds.has(p.id) || (fam && familyOf(p.id) === fam));
-  const syn = pickWeighted(rng, synPool.length ? synPool : pool, (p) => p.weight);
+  const syn = pickWeighted(rng, synPool.length ? synPool : pool, (p) => {
+    let w = p.weight;
+    if (procHint?.includes(familyOf(p.id))) w *= 1.55;
+    return w;
+  });
   if (syn) {
     out.push(syn);
     taken.add(syn.id);

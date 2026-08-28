@@ -444,6 +444,11 @@ function storyFactBlock(f: StoryFacts): string {
   if (f.arcNext) lines.push(`NEXT: ${f.arcNext}`);
   if (f.encounterKind) lines.push(`ENCOUNTER: ${f.encounterKind}`);
   if (f.relationshipChip) lines.push(`RELATIONSHIP: ${f.relationshipChip}`);
+  if (f.legacyKind) lines.push(`LEGACY: ${f.legacyKind}`);
+  if (f.legacyHeadline) lines.push(`LEGACY LINE: ${f.legacyHeadline}`);
+  if (f.conditionMarks) lines.push(`MARKS: ${f.conditionMarks}`);
+  if (f.recentProc) lines.push(`RECENT PROC: ${f.recentProc}`);
+  if (f.combatNote) lines.push(`COMBAT: ${f.combatNote}`);
   if (f.nemesisName) lines.push(`SUBJECT: ${f.nemesisName}`);
   if (f.linkLabel) lines.push(`LINK: ${f.linkLabel}`);
   if (f.linkText) lines.push(`SOURCE TEXT: ${f.linkText}`);
@@ -515,7 +520,7 @@ export function encounterPrompt(f: StoryFacts): { system: string; user: string }
       `Rewrite the encounter headline.\n\n` +
       `RULES:\n` +
       `- Output ONLY the headline, maximum 80 characters, ALL CAPS optional.\n` +
-      `- Ground it in ENCOUNTER and RELATIONSHIP facts.\n` +
+      `- Ground it in ENCOUNTER, RELATIONSHIP, LEGACY, MARKS, and COMBAT facts when present.\n` +
       `- Do not invent a new reason they are here.\n` +
       `- No quotation marks.\n\n` +
       `FACTS\n${storyFactBlock(f)}`,

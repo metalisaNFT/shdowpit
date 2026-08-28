@@ -47,6 +47,16 @@ export interface Landmark {
   z: number;
 }
 
+/** Open duel placement for god-layer viewport replays. */
+export interface DuelStage {
+  cx: number;
+  cz: number;
+  ax: number;
+  az: number;
+  bx: number;
+  bz: number;
+}
+
 interface Banner {
   areaId: string;
   cloth: THREE.Mesh;
@@ -638,6 +648,86 @@ export class Arena {
     }
     if (fallback) return new THREE.Vector3(fallback.x, 0, fallback.z);
     return new THREE.Vector3(a.cx, 0, a.cz);
+  }
+
+  /** Open ground for a god-layer duel replay — avoids area centroids inside geometry. */
+  duelStage(areaId: string, seed: number, spread = 3.4): DuelStage {
+    const area = getArea(areaId);
+    const rng = new RNG(seed);
+    const bodyR = 1.15;
+    const centers: Array<{ x: number; z: number }> = [];
+
+    const ex = this.extractAnchors.find((e) => e.areaId === areaId);
+    if (ex) centers.push({ x: ex.x, z: ex.z });
+    const landmark = this.landmarks.find((l) => l.areaId === areaId);
+    if (landmark) centers.push({ x: landmark.x, z: landmark.z });
+
+    for (let i = 0; i < 28; i++) {
+      const pt = this.spawnPoint(areaId, rng, 0.28, 0.9);
+      centers.push({ x: pt.x, z: pt.z });
+    }
+
+    let best: DuelStage | null = null;
+    let bestScore = -1;
+
+    for (const c of centers) {
+      const resolved = this.probeOpen(c.x, c.z, bodyR);
+      if (!resolved.ok) continue;
+      const cx0 = resolved.x;
+      const cz0 = resolved.z;
+      if (Math.hypot(cx0 - area.cx, cz0 - area.cz) > area.radius * 0.94) continue;
+
+      for (let k = 0; k < 10; k++) {
+        const angle = rng.range(0, Math.PI * 2);
+        const cos = Math.cos(angle);
+        const sin = Math.sin(angle);
+        const aProbe = this.probeOpen(cx0 - cos * spread, cz0 - sin * spread, bodyR);
+        const bProbe = this.probeOpen(cx0 + cos * spread, cz0 + sin * spread, bodyR);
+        if (!aProbe.ok || !bProbe.ok) continue;
+        if (!this.lineOfSight(aProbe.x, aProbe.z, bProbe.x, bProbe.z)) continue;
+
+        const cx = (aProbe.x + bProbe.x) * 0.5;
+        const cz = (aProbe.z + bProbe.z) * 0.5;
+        const centerProbe = this.probeOpen(cx, cz, bodyR * 0.6);
+        if (!centerProbe.ok) continue;
+
+        const distFromCentroid = Math.hypot(cx - area.cx, cz - area.cz);
+        const sep = Math.hypot(aProbe.x - bProbe.x, aProbe.z - bProbe.z);
+        const score = sep * 2 - distFromCentroid * 0.04;
+        if (score > bestScore) {
+          bestScore = score;
+          best = { cx, cz, ax: aProbe.x, az: aProbe.z, bx: bProbe.x, bz: bProbe.z };
+        }
+      }
+    }
+
+    if (best) return best;
+
+    const center = this.spawnPoint(areaId, rng, 0.2, 0.55);
+    const tight = spread * 0.5;
+    return {
+      cx: center.x,
+      cz: center.z,
+      ax: center.x - tight,
+      az: center.z,
+      bx: center.x + tight,
+      bz: center.z,
+    };
+  }
+
+  /** Camera-safe open point in an area (extract plaza preferred). */
+  focusPoint(areaId: string): THREE.Vector3 {
+    const ex = this.extractPoint(areaId);
+    const out = { x: 0, z: 0 };
+    this.resolve(ex.x, ex.z, 0.8, out);
+    return new THREE.Vector3(out.x, 0, out.z);
+  }
+
+  private probeOpen(x: number, z: number, radius: number): { ok: boolean; x: number; z: number } {
+    const out = { x: 0, z: 0 };
+    this.resolve(x, z, radius, out);
+    const pushed = Math.hypot(out.x - x, out.z - z);
+    return { ok: pushed < 0.14, x: out.x, z: out.z };
   }
 
   extractPoint(areaId: string): { x: number; z: number } {
