@@ -115,7 +115,7 @@ import { populatedAreas } from '../ui/GodMap';
 import { activeConditionLabels, applyLegacyPresence, applyTiltToEnemy, legacyArrivalToast, legendOmenFor, legacyTiltFor, legendSpawnBias, mergeCombatTilts, nemesisTilt, resolveLegacyEcho } from '../god/PitBridge';
 import { encounterTuningFromKit } from '../core/Telemetry';
 import { removeConditions } from '../god/Conditions';
-import { describeQuietDecline, spectacleCauseCaption } from '../god/Aftermath';
+import { describeBlessedFailure, describeQuietDecline, spectacleCauseCaption } from '../god/Aftermath';
 
 import { AIContentService } from '../ai/AIContentService';
 import type { MythEventKind } from '../ai/AITypes';
@@ -1479,6 +1479,32 @@ export class Game {
     return { ok: false, reason: 'OPEN WHY ON THIS CYCLE — THEN CONTINUE' };
   }
 
+  /**
+   * Drop oracle UI blockers so headless godtest can keep advancing through
+   * pause beats, aftermath modals, spectacle replays, and the opening WHY gate.
+   */
+  private clearGodHarnessState(): void {
+    this.godRun?.clearAftermath();
+    this.godRun?.clearDescentReport();
+    this.pendingSpectacleBeat = null;
+    this.godSpectator?.abortSpectacle();
+    this.ui.god.setSpectacleBeat(null);
+    this.ui.god.resetBoardState();
+    this.ui.god.dismissPauseBeat();
+    this.godClock?.dismissBeat();
+    this.godBusy = false;
+    this.godGuide.whyOpened = true;
+    const run = this.godRun;
+    if (run && !run.god.openingDone) {
+      run.god.openingDone = true;
+      run.unlockBoard();
+    }
+    if (this.mode === 'god') {
+      this.syncGodClockPhase();
+      this.ui.god.refresh();
+    }
+  }
+
   private refreshGodTeach(): void {
     const tut = this.mgr.data.settings.tutorial;
     if (tut.skipped) {
@@ -1719,7 +1745,13 @@ export class Game {
       this.ui.god.flash(`${done} CYCLES RESOLVED IN ${Math.round(performance.now() - t0)}MS`, 'neutral');
     } else {
       const quiet = this.quietAdvanceNotice(run, actorFocus);
-      if (quiet) this.ui.god.markNoticed(quiet.id, quiet.headline);
+      if (quiet) {
+        if (quiet.id.startsWith('bless-fail:')) {
+          this.ui.god.flash(quiet.headline, 'hot', 5200);
+        } else {
+          this.ui.god.markNoticed(quiet.id, quiet.headline);
+        }
+      }
     }
     if (run.ended) {
       this.presentGodEnd(run.outcome!);
@@ -1795,6 +1827,11 @@ export class Game {
     run: GodRun,
     actorFocus: Set<string>
   ): { id: string; headline: string } | null {
+    if (run.lastBlessedLosers.length) {
+      const line = describeBlessedFailure(this.mgr, run.lastBlessedLosers, run.lastCycleBeats);
+      return { id: `bless-fail:${run.god.cycle}`, headline: line.toUpperCase() };
+    }
+
     const decline = describeQuietDecline(this.mgr, run.god, run.god.decisions, [...actorFocus]);
     if (decline) return { id: `quiet:${run.god.cycle}`, headline: decline };
 
@@ -6246,8 +6283,14 @@ export class Game {
         if (!run) return { ok: false };
         const n = Math.max(1, parseInt(arg ?? '1', 10) || 1);
         const t0 = performance.now();
-        if (this.mode === 'god') this.godAdvance(n);
-        else run.advanceMany(n);
+        if (this.mode === 'god') {
+          for (let i = 0; i < n && this.godRun && !this.godRun.ended; i++) {
+            this.clearGodHarnessState();
+            this.godAdvance(1);
+          }
+        } else {
+          run.advanceMany(n);
+        }
         return { ok: true, ms: Math.round(performance.now() - t0), ...this.__god('state') };
       }
       case 'situations': {
@@ -6374,11 +6417,7 @@ export class Game {
         return { ok: true, mode: this.mode, ...this.__god('state') };
       }
       case 'clearBoards': {
-        this.godRun?.clearAftermath();
-        this.godRun?.clearDescentReport();
-        this.ui.god.dismissPauseBeat();
-        this.godClock?.dismissBeat();
-        if (this.mode === 'god') this.ui.god.refresh();
+        this.clearGodHarnessState();
         return { ok: true, ...this.__god('state') };
       }
       case 'legendsScreen': {

@@ -188,6 +188,18 @@ export class GodSpectator {
     return !!this.playing;
   }
 
+  /** Headless harness — drop an in-flight duel replay so cycles can advance. */
+  abortSpectacle(): void {
+    if (!this.playing && !this.ambientPlaying) return;
+    this.playing = null;
+    this.timeline = [];
+    this.proxy.clear();
+    this.worldPop.setSuppressed(false);
+    this.setAmbientPlaying(false);
+    this.ambientBeats = [];
+    this.onSpectacleDone?.();
+  }
+
   update(dt: number): void {
     if (this.playing) {
       this.setAmbientPlaying(false);

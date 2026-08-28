@@ -406,6 +406,8 @@ export interface RunOutcome {
   revengeChains: number;
   /** rendered summary lines for the end-of-run screen */
   highlights: string[];
+  /** "crisis was X because you did Y" chain shown before the next run */
+  recapChain: string[];
   legendsMade: string[];
   essence: number;
   unlocked: string[];

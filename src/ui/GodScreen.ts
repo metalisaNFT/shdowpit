@@ -419,12 +419,16 @@ export class GodScreen {
       const a = run.god.lastAftermath;
       const link = a.links[this.aftermathLinkIdx] ?? a.links[0];
       const text = link ? h.aftermathLinkFor?.(a.cycle, link.label, link.text) ?? link.text : a.intention;
+      const failed = link?.label === 'IT DID NOT WORK';
       model = {
         mode: 'aftermath',
-        kicker: `CYCLE ${a.cycle} · CONSEQUENCE · ${this.aftermathLinkIdx + 1}/${a.links.length}`,
-        headline: aftermathHeadline(a.intention),
+        kicker: failed
+          ? `CYCLE ${a.cycle} · IT DID NOT WORK`
+          : `CYCLE ${a.cycle} · CONSEQUENCE · ${this.aftermathLinkIdx + 1}/${a.links.length}`,
+        headline: failed ? 'THE BOARD ANSWERED ANYWAY' : aftermathHeadline(a.intention),
         body: text,
         beat: a.explainBeat ?? undefined,
+        tone: failed ? 'hot' : 'neutral',
         showDismiss: true,
       };
     } else if (this.activeCrisis(run)) {
@@ -628,6 +632,17 @@ export class GodScreen {
     this.pauseBeat = null;
     this.phase = 'observe';
     this.render();
+  }
+
+  /** Reset oracle UI blockers — used by the test harness between advances. */
+  resetBoardState(): void {
+    this.pauseBeat = null;
+    this.aftermathLinkIdx = 0;
+    this.phase = 'observe';
+    this.spectacleBeat = null;
+    this.spectacleCauseCaption = '';
+    this.liveCaption = '';
+    this.pendingDef = null;
   }
 
   get urgentAreas(): string[] {

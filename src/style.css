@@ -4042,6 +4042,41 @@ button.tiny {
   margin: 16px 0 6px;
 }
 
+.god-end-recap {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: var(--gold);
+  line-height: 1.75;
+  margin-bottom: 4px;
+}
+
+.god-end-unlock-card {
+  border-left: 2px solid var(--good);
+  padding: 8px 0 8px 14px;
+  margin-bottom: 10px;
+}
+
+.god-end-unlock-name {
+  font-size: 12px;
+  letter-spacing: 0.2em;
+  color: var(--good);
+  margin-bottom: 4px;
+}
+
+.god-end-unlock-kind {
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  color: var(--dim);
+  margin-bottom: 6px;
+}
+
+.god-end-unlock-desc {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--ink);
+  line-height: 1.65;
+}
+
 .god-end-stats,
 .god-end-legend,
 .god-end-unlock {

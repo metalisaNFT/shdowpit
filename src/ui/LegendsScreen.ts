@@ -9,7 +9,7 @@
 
 import { button, clear, div, show } from './Dom';
 import { describeLegend, legendHome } from '../god/Legends';
-import { unlockName } from '../god/Unlocks';
+import { UNLOCK_MAP, unlockName, type UnlockKind } from '../god/Unlocks';
 import type { LegendRecord, RunOutcome } from '../god/GodTypes';
 
 const LEGACY_LINE: Record<string, string> = {
@@ -180,6 +180,12 @@ export class RunEndScreen {
 
     for (const line of outcome.highlights) this.bodyEl.append(div('god-end-line', line));
 
+    const recap = outcome.recapChain ?? [];
+    if (recap.length) {
+      this.bodyEl.append(div('god-end-sub', 'WHY IT ENDED THIS WAY'));
+      for (const line of recap) this.bodyEl.append(div('god-end-recap', line));
+    }
+
     this.bodyEl.append(div('god-end-sub', 'THE RUN'));
     this.bodyEl.append(
       div(
@@ -195,8 +201,17 @@ export class RunEndScreen {
     }
 
     if (outcome.unlocked.length) {
-      this.bodyEl.append(div('god-end-sub', 'UNLOCKED'));
-      for (const u of outcome.unlocked) this.bodyEl.append(div('god-end-unlock', unlockName(u)));
+      this.bodyEl.append(div('god-end-sub', 'NEW VERBS FOR THE NEXT WORLD'));
+      for (const id of outcome.unlocked) {
+        const def = UNLOCK_MAP.get(id);
+        const card = div('god-end-unlock-card');
+        card.append(div('god-end-unlock-name', def?.name ?? unlockName(id)));
+        if (def) {
+          card.append(div('god-end-unlock-kind', UNLOCK_KIND[def.kind] ?? def.kind.toUpperCase()));
+          card.append(div('god-end-unlock-desc', def.desc));
+        }
+        this.bodyEl.append(card);
+      }
     }
 
     this.bodyEl.append(div('god-end-sub', 'BANKED'));
@@ -218,4 +233,11 @@ const HEADLINE: Record<string, string> = {
   collapse: 'THE WORLD DID NOT HOLD',
   stalemate: 'NOTHING CAME OF IT',
   abandoned: 'YOU LET GO',
+};
+
+const UNLOCK_KIND: Record<UnlockKind, string> = {
+  intervention: 'NEW INTERVENTION',
+  world: 'WORLD MODIFIER',
+  start: 'STARTING CONDITION',
+  insight: 'NEW READ ON THE BOARD',
 };

@@ -401,6 +401,7 @@ export class GodRun {
       focusActorIds: focusActors,
       spendTargetIds,
       finishedCycle,
+      blessedLosers: result.blessedLosers,
     });
     this.pendingSpends = [];
     this.advancedQuiet = false;
@@ -598,6 +599,7 @@ export class GodRun {
       slayerName: slayer ? fullName(slayer) : '',
       revengeChains: countRevengeChains(ctx),
       highlights: this.highlights(ctx, ending, slayer),
+      recapChain: this.recapChain(ctx, ending, slayer),
       legendsMade: [],
       essence: 0,
       unlocked: [],
@@ -681,6 +683,59 @@ export class GodRun {
     const tier = chaosTier(this.god.chaosPeak);
     out.push(`The world ended ${tier.name.toLowerCase()}. ${tier.blurb}`);
     return out;
+  }
+
+  /** "Your crisis was X because you did Y" — the run's causal receipt. */
+  private recapChain(ctx: GodContext, ending: RunOutcome['ending'], slayer: Nemesis | null): string[] {
+    const chain: string[] = [];
+    const crisis = this.god.crisis;
+    if (!crisis) {
+      chain.push('Nothing in this world ever grew large enough to name a crisis.');
+      return chain;
+    }
+
+    const body = ctx.mgr.byId(crisis.bodyId);
+    const bodyName = body ? fullName(body) : crisis.title;
+    chain.push(`THE CRISIS WAS ${crisis.title.toUpperCase()} — ${bodyName.toUpperCase()}.`);
+
+    const champ = ctx.mgr.byId(this.god.championId);
+    const champMarks = champ
+      ? this.god.conditions.filter((c) => c.targetId === champ.id && c.source === 'god').length
+      : 0;
+    if (body && crisis.bodyId === champ?.id && champMarks > 0) {
+      chain.push(
+        `BECAUSE YOU KEPT TOUCHING THEM — ${champMarks} mark${champMarks === 1 ? '' : 's'} on ${fullName(champ)} across the run.`
+      );
+    } else if (champ && body && crisis.bodyId !== champ.id) {
+      chain.push(
+        `BECAUSE YOU INVESTED IN ${fullName(champ).toUpperCase()} WHILE ${bodyName.toUpperCase()} GREW PAST EVERYONE ELSE.`
+      );
+    } else if (body && simOf(body).crisisBorn) {
+      chain.push('BECAUSE THE SIMULATION BRED THEM — you only changed what things cost.');
+    } else if (champMarks > 0 && champ) {
+      chain.push(`BECAUSE YOUR MARKS ACCUMULATED ON ${fullName(champ).toUpperCase()} — and the world answered elsewhere.`);
+    }
+
+    const interventions = Object.values(this.god.interventionsUsed).reduce((a, b) => a + b, 0);
+    if (interventions > 0) {
+      chain.push(
+        `BECAUSE YOU SPENT ${interventions} INTERVENTION${interventions === 1 ? '' : 'S'} — each one a price, never an order.`
+      );
+    }
+
+    if (ending === 'triumph' && slayer) {
+      chain.push(
+        `AND ${fullName(slayer).toUpperCase()} ENDED IT — you never touched either of them directly.`
+      );
+    } else if (ending === 'collapse') {
+      chain.push(`AND NOBODY IN THERE WAS ENOUGH — ${bodyName.toUpperCase()} IS WHAT YOUR PRICES BUILT.`);
+    } else if (ending === 'stalemate') {
+      chain.push('AND THE RUNWAY RAN OUT BEFORE ANYONE COULD ANSWER.');
+    } else {
+      chain.push('AND YOU TOOK YOUR HANDS OFF IT BEFORE IT RESOLVED.');
+    }
+
+    return chain;
   }
 
   /* ============================================================

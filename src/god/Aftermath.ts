@@ -156,6 +156,28 @@ function rippleFromBeat(ctx: GodContext, beat: Beat): string | null {
   return `${fullName(actor)} did something the board will answer.`;
 }
 
+/** Someone the player propped up lost anyway — measured in Context.blessedLosers. */
+export function describeBlessedFailure(
+  mgr: NemesisManager,
+  loserIds: readonly string[],
+  beats: readonly Beat[]
+): string {
+  const loser = mgr.byId(loserIds[0] ?? '');
+  if (!loser) {
+    return 'Someone you backed lost anyway. You bought odds — not a command. The board answered anyway.';
+  }
+  const name = fullName(loser);
+  const duel = beats.find((b) => b.kind === 'duel' && b.actors.includes(loser.id));
+  if (duel) {
+    const winnerId = duel.actors.find((id) => id !== loser.id);
+    const winner = winnerId ? mgr.byId(winnerId) : null;
+    if (winner) {
+      return `${name} lost to ${fullName(winner)} anyway. Your blessing was a thumb on the scale — not a hand.`;
+    }
+  }
+  return `${name} lost anyway. You bought better odds against someone who had their own reasons to be dangerous.`;
+}
+
 export function buildAftermath(args: {
   ctx: GodContext;
   god: GodState;
@@ -167,8 +189,10 @@ export function buildAftermath(args: {
   spendTargetIds?: string[];
   /** Cycle that just finished simulating (before god.cycle increments). */
   finishedCycle?: number;
+  /** characters the player blessed or warded who lost a fight this cycle */
+  blessedLosers?: readonly string[];
 }): AftermathReport {
-  const { ctx, god, beats, decisions, intention, focusActorIds, spendTargetIds = [], finishedCycle } = args;
+  const { ctx, god, beats, decisions, intention, focusActorIds, spendTargetIds = [], finishedCycle, blessedLosers = [] } = args;
   const links: CausalLink[] = [];
   const focus = new Set(focusActorIds.filter(Boolean));
   const spendFocus = new Set(spendTargetIds.filter(Boolean));
@@ -180,6 +204,13 @@ export function buildAftermath(args: {
       return focus.size === 0 || focus.has(c.targetId);
     })
     .sort((a, b) => b.createdCycle - a.createdCycle || b.id.localeCompare(a.id));
+  if (blessedLosers.length) {
+    links.push({
+      label: 'IT DID NOT WORK',
+      text: describeBlessedFailure(ctx.mgr, blessedLosers, beats),
+    });
+  }
+
   if (marks.length) {
     const c = marks[0];
     links.push({
