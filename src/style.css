@@ -3029,6 +3029,35 @@ body.god-oracle-active #ui[data-mode='god'] {
   margin-top: 8px;
 }
 
+#god-advance.ready {
+  animation: god-advance-pulse 1.85s ease-in-out infinite;
+}
+
+@keyframes god-advance-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(255, 213, 106, 0);
+    border-color: var(--line);
+  }
+  50% {
+    box-shadow: 0 0 0 2px rgba(255, 213, 106, 0.35);
+    border-color: var(--gold);
+  }
+}
+
+.god-topbar.god-spend-flash .god-meter-fill {
+  animation: god-meter-spend 0.55s ease-out;
+}
+
+@keyframes god-meter-spend {
+  0% {
+    filter: brightness(1.55);
+  }
+  100% {
+    filter: brightness(1);
+  }
+}
+
 .god-head {
   display: flex;
   align-items: flex-start;
@@ -3468,6 +3497,10 @@ body.god-oracle-active #ui[data-mode='god'] {
   margin-bottom: 10px;
 }
 
+.god-note.ok {
+  color: var(--gold);
+}
+
 .god-int-grid {
   display: grid;
   gap: 8px;
@@ -3486,6 +3519,17 @@ body.god-oracle-active #ui[data-mode='god'] {
 
 .god-int.suggested {
   border-color: var(--gold);
+  animation: god-suggest-pulse 2.2s ease-in-out infinite;
+}
+
+@keyframes god-suggest-pulse {
+  0%,
+  100% {
+    box-shadow: inset 0 0 0 0 rgba(255, 213, 106, 0);
+  }
+  50% {
+    box-shadow: inset 0 0 0 1px rgba(255, 213, 106, 0.45);
+  }
 }
 
 .god-int.off {
@@ -3940,6 +3984,21 @@ button.tiny {
   border-color: var(--hot);
 }
 
+.god-flash.god-flash-pop {
+  animation: god-flash-in 0.38s ease-out;
+}
+
+@keyframes god-flash-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
 button.primary {
   color: var(--bg);
   background: var(--gold);
@@ -4080,6 +4139,14 @@ button.primary:hover {
   margin-bottom: 14px;
   line-height: 1.5;
   text-transform: none;
+}
+
+.god-modal-targets {
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  color: var(--gold);
+  margin: -6px 0 14px;
+  line-height: 1.5;
 }
 
 .god-modal-line {

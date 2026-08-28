@@ -279,6 +279,34 @@ export class AudioManager {
       this.tone('square', 880, 660, 0.24, g);
     });
 
+    V.set('god_bless', (_t, _g, _c) => {
+      const g = this.env(0.008, 0.62, 0.34);
+      this.tone('triangle', 392, 784, 0.42, g);
+      const g2 = this.env(0.01, 0.9, 0.22, 0.1);
+      this.tone('sine', 523, 1046, 0.34, g2, 0.1);
+    });
+
+    V.set('god_curse', (_t, _g, _c) => {
+      const g = this.env(0.004, 0.48, 0.38);
+      this.tone('square', 220, 88, 0.34, g);
+      const g2 = this.env(0.006, 0.55, 0.28, 0.08);
+      this.noise(0.18, g2, 'bandpass', 420, 1.4);
+    });
+
+    V.set('god_whisper', (_t, _g, _c) => {
+      const g = this.env(0.003, 0.22, 0.26);
+      this.noise(0.12, g, 'highpass', 1800, 1.2);
+      const g2 = this.env(0.004, 0.18, 0.2, 0.06);
+      this.tone('sine', 660, 330, 0.08, g2, 0.06);
+    });
+
+    V.set('god_mark', (_t, _g, _c) => {
+      const g = this.env(0.004, 0.38, 0.3);
+      this.tone('triangle', 740, 988, 0.28, g);
+      const g2 = this.env(0.006, 0.44, 0.24, 0.07);
+      this.tone('square', 988, 660, 0.18, g2, 0.07);
+    });
+
     V.set('pickup', (_t, _g, _c) => {
       const g = this.env(0.005, 0.5, 0.3);
       this.tone('triangle', 520, 1560, 0.4, g);

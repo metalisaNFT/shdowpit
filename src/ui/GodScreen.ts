@@ -8,6 +8,7 @@
 import { button, clear, div, show } from './Dom';
 import type { Nemesis } from '../nemesis/Nemesis';
 import { fullName } from '../nemesis/Nemesis';
+import { AREA_NAMES } from '../data/names';
 import type { GodRun } from '../god/GodRun';
 import type { InterventionDef, SpendResult } from '../god/Interventions';
 import { chaosTier } from '../god/Influence';
@@ -199,8 +200,18 @@ export class GodScreen {
     this.flashEl.textContent = text;
     this.flashEl.className = `god-flash tone-${tone}`;
     show(this.flashEl, true);
+    this.flashEl.classList.remove('god-flash-pop');
+    void this.flashEl.offsetWidth;
+    this.flashEl.classList.add('god-flash-pop');
     if (this.flashTimer) clearTimeout(this.flashTimer);
     this.flashTimer = setTimeout(() => show(this.flashEl, false), ms) as unknown as number;
+  }
+
+  /** Brief meter pulse after spending Influence or raising Chaos. */
+  pulseSpend(): void {
+    this.topBar.classList.remove('god-spend-flash');
+    void this.topBar.offsetWidth;
+    this.topBar.classList.add('god-spend-flash');
   }
 
   markNoticed(_id: string, headline: string): void {
@@ -494,6 +505,8 @@ export class GodScreen {
       const box = div('god-modal');
       box.append(div('god-modal-title', def.name));
       box.append(div('god-modal-sub', def.promise));
+      const targets = confirmTargets(run, def, this.stripState);
+      if (targets) box.append(div('god-modal-targets', targets));
       const row = div('god-modal-actions');
       row.append(
         button('CANCEL', () => {
@@ -510,7 +523,7 @@ export class GodScreen {
             return;
           }
           this.pendingDef = null;
-          this.stripState.note = '';
+          this.stripState.note = 'CONDITION WRITTEN — ADVANCE WHEN READY';
           this.stripState.suggested.clear();
           this.phase = 'interfere';
           this.render();
@@ -569,6 +582,23 @@ function confirmLabel(def: InterventionDef): string {
   if (def.id === 'calamity') return 'UNLEASH ▸';
   if (def.id === 'raise') return 'RAISE ▸';
   return 'WRITE ▸';
+}
+
+function confirmTargets(run: GodRun, def: InterventionDef, state: ActionStripState): string | null {
+  const parts: string[] = [];
+  if (def.targeting === 'nemesis' || def.targeting === 'dead') {
+    const n = run.mgr.byId(state.selA);
+    if (n) parts.push(fullName(n).toUpperCase());
+  }
+  if (def.targeting === 'pair') {
+    const a = run.mgr.byId(state.selA);
+    const b = run.mgr.byId(state.selB);
+    if (a && b) parts.push(`${fullName(a).toUpperCase()} → ${fullName(b).toUpperCase()}`);
+  }
+  if (def.targeting === 'area' && state.selArea) {
+    parts.push((AREA_NAMES[state.selArea] ?? state.selArea).toUpperCase());
+  }
+  return parts.length ? parts.join(' · ') : null;
 }
 
 function clockHint(state: GodClockState): string {

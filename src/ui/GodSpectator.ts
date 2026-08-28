@@ -110,6 +110,43 @@ export class GodSpectator {
     this.applyAreaFraming(areaId, true);
   }
 
+  /** 3D juice when the player marks one or more characters. */
+  markIntervention(actorIds: readonly string[], tone: 'good' | 'bad' | 'gold' | 'neutral'): void {
+    if (this.playing || this.ambientPlaying) return;
+    const color = tone === 'good' ? 0x6aff8a : tone === 'bad' ? 0xff5a4a : tone === 'gold' ? 0xffd56a : 0xc8d0ff;
+    let nudged = false;
+    for (const id of actorIds) {
+      const pos = this.worldPop.positionOf(id);
+      if (!pos) continue;
+      this.worldPop.reactToMark(id);
+      this.vfx?.ring(pos.x, 0.08, pos.z, color, 0.45, 5.8, 0.58, 0.88);
+      this.vfx?.flash(pos.x, 1.25, pos.z, color, 0.75, 0.22);
+      if (!nudged) {
+        this.camera.nudgeToward(pos.x, 1.2, pos.z, 0.42);
+        this.camera.pulseFov(2.5);
+        nudged = true;
+      }
+    }
+  }
+
+  /** Ground-level mark when an intervention targets territory, not a person. */
+  markArea(areaId: string, tone: 'good' | 'bad' | 'gold' | 'neutral'): void {
+    if (this.playing || this.ambientPlaying) return;
+    const bounds = this.worldPop.areaLiveBounds(areaId);
+    const live = this.worldPop.areaLiveCentroid(areaId);
+    const fallback = this.worldPop.areaCentroid(areaId) ?? this.arena.extractPoint(areaId);
+    const x = bounds?.cx ?? live?.x ?? fallback.x;
+    const z = bounds?.cz ?? live?.z ?? fallback.z;
+    const resolved = { x, z };
+    this.arena.resolve(x, z, 0.85, resolved);
+    const color = tone === 'bad' ? 0xff5a4a : tone === 'good' ? 0x6aff8a : 0xffd56a;
+    this.vfx?.ring(resolved.x, 0.1, resolved.z, color, 0.55, 8.5, 0.72, 0.75);
+    this.vfx?.flash(resolved.x, 1.4, resolved.z, color, 0.95, 0.26);
+    this.camera.nudgeToward(resolved.x, 1.3, resolved.z, 0.35);
+    this.camera.pulseFov(2);
+    this.focusArea(areaId);
+  }
+
   playDuel(spec: DuelSpectacle): void {
     const a = this.mgr.byId(spec.aId);
     const b = this.mgr.byId(spec.bId);

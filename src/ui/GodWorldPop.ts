@@ -117,6 +117,21 @@ export class GodWorldPop {
     return n;
   }
 
+  /** Live position for a named roster body — used for intervention VFX. */
+  positionOf(id: string): { x: number; y: number; z: number } | null {
+    const entry = this.entries.get(id);
+    if (!entry) return null;
+    const p = entry.rig.root.position;
+    return { x: p.x, y: p.y, z: p.z };
+  }
+
+  /** Brief reaction when the player writes a condition on someone. */
+  reactToMark(id: string): void {
+    const entry = this.entries.get(id);
+    if (!entry) return;
+    entry.rig.anim.playOneShot('TAUNT', 'Taunt', 1.08);
+  }
+
   sync(run: GodRun): void {
     this.ensureAttached();
     this.active = true;

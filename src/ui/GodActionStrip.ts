@@ -66,7 +66,11 @@ export class GodActionStrip {
     }
     this.root.append(sel);
 
-    if (state.note) this.root.append(div('god-note', state.note));
+    if (state.note) {
+      const note = div('god-note', state.note);
+      if (!state.note.includes('Nothing') && !state.note.includes('Pick')) note.classList.add('ok');
+      this.root.append(note);
+    }
 
     if (run.spentThisCycle) {
       const go = button('ADVANCE ▸', () => this.onAdvance?.());
@@ -124,7 +128,7 @@ export class GodActionStrip {
       state.selArea
     );
     state.busy = false;
-    state.note = res.ok ? '' : res.reason ?? 'Nothing happened.';
+    state.note = res.ok ? 'CONDITION WRITTEN — ADVANCE WHEN READY' : res.reason ?? 'Nothing happened.';
     state.suggested.clear();
     this.onChange?.();
   }

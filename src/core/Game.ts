@@ -1578,7 +1578,9 @@ export class Game {
     if (res.ok) {
       this.godIdleCycles = 0;
       this.onGodTeach('intervened');
-      this.audio.play('world_event', { volume: 0.4 });
+      this.audio.play(interventionSfx(id), { volume: interventionSfxVolume(id) });
+      this.playInterventionJuice(id, a, area, res);
+      this.ui.god.pulseSpend();
       // DESCEND is the one intervention that leaves this screen.
       const target = run.god.pendingDescent;
       if (target) {
@@ -1587,15 +1589,31 @@ export class Game {
         return res;
       }
       const noticed = this.noticeAfterIntervention(run, res.effect?.actors ?? [], a);
+      const flashTone = interventionFlashTone(res.effect?.tone);
       if (noticed) this.ui.god.markNoticed(noticed.id, noticed.headline);
-      else       if (res.effect?.headline) {
-        this.ui.god.flash(`THE WORLD NOTICED — ${res.effect.headline}`, 'gold', 4200);
+      else if (res.effect?.headline) {
+        this.ui.god.flash(`YOUR MARK — ${res.effect.headline}`, flashTone, 3800);
       }
       this.godClock?.enterIntervening();
       this.ui.god.refresh();
       this.syncGodWorldPop();
     }
     return res;
+  }
+
+  /** 3D ring burst + character reaction when a condition lands on the board. */
+  private playInterventionJuice(
+    id: string,
+    primaryId: string | null,
+    areaId: string | null,
+    res: { effect?: { actors?: string[]; tone?: string } }
+  ): void {
+    const spec = this.godSpectator;
+    if (!spec || id === 'descend') return;
+    const tone = interventionJuiceTone(res.effect?.tone);
+    const actors = res.effect?.actors?.length ? res.effect.actors : primaryId ? [primaryId] : [];
+    if (actors.length) spec.markIntervention(actors, tone);
+    else if (areaId) spec.markArea(areaId, tone);
   }
 
   /**
@@ -6468,6 +6486,40 @@ function clockLabel(state: GodClockState, sec: number, tempo: number): string {
     default:
       return `TEMPO ×${tempo.toFixed(2)}`;
   }
+}
+
+function interventionSfx(id: string): string {
+  switch (id) {
+    case 'bless':
+    case 'gift':
+    case 'raise':
+      return 'god_bless';
+    case 'curse':
+    case 'sabotage':
+    case 'calamity':
+      return 'god_curse';
+    case 'whisper':
+      return 'god_whisper';
+    default:
+      return 'god_mark';
+  }
+}
+
+function interventionSfxVolume(id: string): number {
+  return id === 'whisper' ? 0.3 : id === 'calamity' ? 0.52 : 0.42;
+}
+
+function interventionFlashTone(tone?: string): 'neutral' | 'hot' | 'gold' {
+  if (tone === 'bad') return 'hot';
+  if (tone === 'good' || tone === 'gold') return 'gold';
+  return 'neutral';
+}
+
+function interventionJuiceTone(tone?: string): 'good' | 'bad' | 'gold' | 'neutral' {
+  if (tone === 'good') return 'good';
+  if (tone === 'bad') return 'bad';
+  if (tone === 'gold') return 'gold';
+  return 'neutral';
 }
 
 const TITLE_FOCUS = new THREE.Vector3(0, 2, 0);
