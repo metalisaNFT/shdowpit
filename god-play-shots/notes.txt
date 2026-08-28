@@ -1,0 +1,16 @@
+title buttons: ["BEGIN THE LONG GAME","DESCEND ALONE","NEW WORLD","PREPARE BUILD","SETTINGS","RESET WORLD"]
+god screen visible: true
+teaching rail in DOM: true  hidden=false
+WHY control present: false
+advance-like buttons: ["DO NOTHING — ADVANCE ▸"]
+opening copy (trim): THE LONG GAME RUN 1 · CYCLE 1 · THE SMALL WARS FOCUS → INTERFERE? → ADVANCE → CONSEQUENCE INFLUENCE 7 / 12 CHAOS 0 · QUIET INTENTION — THE SMALL WARS RAISE OR RUIN SOMEONE WHO WILL MATTER WHEN THE TOWER — AND WORSE — COMES DUE. YOU CANNOT WIN THE CRISIS YOURSELF. LEARNING THE LOOP · 1 OF 6 YOU ARE NOT IN THIS WORLD Nobody here is yours. The left column is what is about to matter — click a situation to see who is in it and what you could nudge. ▸ CLICK ANY SITUATION ON THE LEFT THE PRIMER STOP TE
+visible interventions: ["BLESS","CURSE","PRICE THEIR HEAD","DESCEND"]
+confirm overlay after BLESS click: false  
+after spend, advance-like: ["ADVANCE ▸"]
+aftermath overlay: true
+aftermath text: CYCLE 2 — CONSEQUENCE YOUR MARK You spent Influence: BLESS on Ashul THE PATIENT. CONDITION BLESSED on Ashul THE PATIENT — something is holding them up WHO NOTICED Ashul THE PATIENT weighed CHALLENGE → Hargock THE DREAD THEY CHOSE Ashul THE PATIENT acted: CHALLENGE on Hargock THE DREAD. That was their call — not yours. WHAT HAPPENED HARGOCK THE DREAD WOULD NOT STAND IN FRONT OF ASHUL THE PATIENT. NOW Ashul THE PATIENT COMMANDS THE TOWER — Ashul THE PATIENT holds the Tower. Olmven THE SHARP stands
+visible beat headlines: ["THE HOLLOW BANNER AND THE IRON YOKE ARE AT WAR.","GOREIAK THE CROWN TURNED ON VARUR THE MAD.","Hargez THE PATIENT TOOK Goreiak THE CROWN'S PLACE.","GOREIAK THE CROWN BROKE AWAY FROM HARGEZ THE PATIENT RATHER THAN FINISH IT.","HARGOCK THE DREAD WOULD NOT STAND IN FRONT OF ASHUL THE PATIENT.","Ashul THE PATIENT FEELS SOMETHING BEHIND THEM.","THE LONG GAME — RUN 1"]
+WHY buttons after expanding a beat: []
+×5 present: true
+after ×5 overlay: false  
+state after play: cycle=7 influence=12 chaos=0 openingDone=true aftermath=false intention=null
