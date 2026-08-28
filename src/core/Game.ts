@@ -502,7 +502,7 @@ export class Game {
       },
     });
     this.comic.setQuality('potato');
-    this.comic.setEnabled(!this.mgr.data.settings.reducedMotion);
+    // Save data is not loaded until start(); applySettings() sets enabled there.
   }
 
   private openComic(seq: import('../comic/Types').ComicSequence): void {
