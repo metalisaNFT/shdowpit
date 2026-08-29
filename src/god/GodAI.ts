@@ -79,6 +79,8 @@ export function beatIsWorthy(b: Beat): boolean {
 }
 
 export function mythKindForBeat(b: Beat, n: Nemesis): MythEventKind | null {
+  const primary = b.actors[0];
+  if (primary && n.id !== primary) return null;
   switch (b.kind) {
     case 'return':
       return 'returned_from_death';
@@ -87,7 +89,7 @@ export function mythKindForBeat(b: Beat, n: Nemesis): MythEventKind | null {
       if (n.rank === 'warlord') return 'promoted_warlord';
       return 'promoted_captain';
     case 'betrayal':
-      return 'killed_rival';
+      return /KILL|DIED|DEAD|THE GROUND|EXECUTE/.test(b.headline) ? 'killed_rival' : null;
     case 'theft':
       return 'stole_weapon';
     case 'build':
@@ -314,12 +316,14 @@ export function observeGodBeats(
   const worthy = beats.filter(beatIsWorthy);
   const congested = ai.queue.queuedCount + ai.queue.activeCount >= 10;
   for (const b of worthy) {
-    for (const id of b.actors) {
-      const n = mgr.byId(id);
-      if (!n) continue;
-      const myth = mythKindForBeat(b, n);
-      if (myth && !congested) ai.onMythEvent(n, myth);
-      else if (b.priority === 'legendary' || rankIndex(n.rank) >= 2) ai.ensureFor(n, 40);
+    const primary = b.actors[0];
+    if (primary) {
+      const n = mgr.byId(primary);
+      if (n) {
+        const myth = mythKindForBeat(b, n);
+        if (myth && !congested) ai.onMythEvent(n, myth);
+        else if (b.priority === 'legendary' || rankIndex(n.rank) >= 2) ai.ensureFor(n, 40);
+      }
     }
     expressBeat(ai, mgr, god, b);
   }

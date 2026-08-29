@@ -922,12 +922,22 @@ export class Game {
    */
   private openGodSettings(): void {
     if (this.mode !== 'god' && this.mode !== 'legends' && this.mode !== 'godend') return;
+    this.godClock?.enterModal();
     this.ui.pause.open(
       this.mgr.data.settings,
       {
-        onResume: () => this.ui.pause.close(),
-        onExtract: () => this.ui.pause.close(),
-        onQuit: () => this.ui.pause.close(),
+        onResume: () => {
+          this.ui.pause.close();
+          this.syncGodClockPhase();
+        },
+        onExtract: () => {
+          this.ui.pause.close();
+          this.syncGodClockPhase();
+        },
+        onQuit: () => {
+          this.ui.pause.close();
+          this.syncGodClockPhase();
+        },
         onSettingsChanged: (s) => {
           this.applySettings(s);
           if (this.saveSys.exists()) this.mgr.persist();
@@ -1403,6 +1413,14 @@ export class Game {
   private syncGodClockPhase(): void {
     const run = this.godRun;
     if (!run || !this.godClock) return;
+    if (!run.god.openingDone && !this.mgr.data.settings.tutorial.skipped) {
+      this.godClock.pauseForTutorial();
+      return;
+    }
+    if (this.ui.pause.visible) {
+      this.godClock.enterModal();
+      return;
+    }
     if (run.god.lastDescentReport || run.god.lastAftermath) {
       this.godClock.enterModal();
       return;
@@ -1661,6 +1679,7 @@ export class Game {
       }
       const tierBeat = res.pauseBeats?.length ? pickPauseBeat(res.pauseBeats) : null;
       if (tierBeat) {
+        this.godClock?.pauseForBeat(tierBeat);
         this.ui.god.setPauseBeat(tierBeat);
         this.ui.god.pulseChaosTier();
         this.onGodTeach('beatOpened');

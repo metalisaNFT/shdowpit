@@ -15,7 +15,7 @@ import { getPersonality } from '../data/personalities';
 import { chooseTitle } from '../data/names';
 import { makeEvent, type WorldEvent, type WorldEventType } from '../world/WorldEvent';
 import type { NemesisManager } from '../nemesis/NemesisManager';
-import { fullName, rankIndex, type MemoryType, type Nemesis, type ScarId } from '../nemesis/Nemesis';
+import { displayName, fullName, isNamed, rankIndex, type MemoryType, type Nemesis, type ScarId } from '../nemesis/Nemesis';
 import { generateNemesis, recomputePower } from '../nemesis/NemesisGenerator';
 import { applyScar, remember } from '../nemesis/NemesisMemory';
 import { makeRivals, purgeReferences, setMaster } from '../nemesis/NemesisRelationships';
@@ -319,7 +319,9 @@ export class GodContext {
     kill = Math.max(0.03, Math.min(0.9, kill));
 
     if (this.rng.chance(kill)) {
-      this.killOff(loser, winner, kind === 'betrayal' ? 'a knife in the dark' : 'the fight');
+      let killer: Nemesis | null = winner;
+      if (!isNamed(winner) && isNamed(loser)) killer = this.elevateRabble(winner, loser);
+      this.killOff(loser, killer, kind === 'betrayal' ? 'a knife in the dark' : 'the fight');
       return 'killed';
     }
 
@@ -423,8 +425,8 @@ export class GodContext {
   }
 
   private fightHeadline(w: Nemesis, l: Nemesis, a: Aftermath, kind: string, upset: boolean): string {
-    const W = fullName(w);
-    const L = fullName(l);
+    const W = displayName(w);
+    const L = displayName(l);
 
     // Someone who broke and ran was never run down, and a sentence that says
     // both at once is the kind of thing that makes a generated feed read as

@@ -266,12 +266,15 @@ function godMarksForArea(run: GodRun, areaId: string): string[] {
   return out.slice(0, 3);
 }
 
-export function situationAreaId(run: GodRun, actors: string[]): string {
+export function situationAreaId(run: GodRun, actors: string[], depth = 0): string {
+  if (depth > 8) return 'pit';
   for (const id of actors) {
     const n = run.mgr.byId(id);
     if (n?.territory) return n.territory;
   }
-  return run.situations[0] ? situationAreaId(run, run.situations[0].actors) : 'pit';
+  const first = run.situations[0];
+  if (!first || first.actors === actors) return 'pit';
+  return situationAreaId(run, first.actors, depth + 1);
 }
 
 export function populatedAreas(run: GodRun): string[] {

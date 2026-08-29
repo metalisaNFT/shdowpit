@@ -133,11 +133,14 @@ export function simulateCycle(ctx: GodContext): CycleResult {
     const before = s.goal;
     s.lastActionId = picked.def.id;
     s.lastCycle = god.cycle;
-    if (picked.option.target.id && FIGHT_ACTIONS.has(picked.def.id)) {
-      if (s.goalTargetId === picked.option.target.id) s.goalAge++;
-      else {
-        s.goalTargetId = picked.option.target.id;
-        s.goalAge = 0;
+    if (picked.option.target.nemesis && FIGHT_ACTIONS.has(picked.def.id)) {
+      const tid = picked.option.target.id;
+      if (s.goal === 'revenge' || picked.def.id === 'attack' || picked.def.id === 'hunt' || picked.def.id === 'challenge' || picked.def.id === 'betray') {
+        if (s.goalTargetId === tid) s.goalAge++;
+        else {
+          s.goalTargetId = tid;
+          s.goalAge = 0;
+        }
       }
     }
     if (s.goal === before) s.goalAge++;

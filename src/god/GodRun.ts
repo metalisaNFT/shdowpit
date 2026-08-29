@@ -16,6 +16,7 @@ import { getPersonality } from '../data/personalities';
 import { actForCycle, advanceAct, effectiveAct, getAct, actIndex, RUN_DEADLINE } from './Arc';
 import { addCondition } from './Conditions';
 import { GodContext } from './Context';
+import { trimWhy } from './Explain';
 import { birthCrisis, crisisLabel, crisisRunway, crisisTick } from './Crisis';
 import { seedFactions, livingFactions } from './Factions';
 import { chaosTier, decayChaos, INFLUENCE, regenInfluence, syncChaosTierAt } from './Influence';
@@ -780,7 +781,11 @@ export class GodRun {
 
   persist(): void {
     this.god.rngState = this.rng.state;
-    if (!this.god.ended) this.mgr.data.god = serialiseGod(this.god);
+    if (!this.god.ended) {
+      const snapshot = { ...this.god, pendingDescent: null };
+      trimWhy(snapshot.feed);
+      this.mgr.data.god = serialiseGod(snapshot);
+    }
     this.mgr.persist();
     this.hooks.persist?.();
   }
@@ -799,6 +804,7 @@ const ENDING_HEADLINE: Record<RunOutcome['ending'], string> = {
 
 /** Decisions are a debugging view of one cycle; they never go into the save. */
 export function serialiseGod(god: GodState): GodState {
+  trimWhy(god.feed);
   return { ...god, decisions: [] };
 }
 

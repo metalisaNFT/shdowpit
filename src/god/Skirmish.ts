@@ -12,6 +12,7 @@ import { displayName, fullName, isNamed, rankIndex, type Nemesis } from '../neme
 import { livingFactions } from './Factions';
 import type { GodContext } from './Context';
 import { fightSpectacle } from './Context';
+import { simOf } from './GodTypes';
 
 function areaPressure(ctx: GodContext, areaId: string): number {
   let p = 1;
@@ -92,22 +93,25 @@ function rabbleVsNamed(ctx: GodContext, areaId: string, named: Nemesis, salt: nu
   const res = ctx.fight(rabble, named, 'war');
   ctx.skirmishMode = false;
 
-  if (res.aftermath === 'killed' && res.loser === named && !isNamed(res.winner)) {
-    const elevated = ctx.elevateRabble(res.winner, named);
-    const beat = ctx.emitFight(
-      'skirmish',
-      rankIndex(named.rank) >= 3 ? 'legendary' : 'major',
-      res,
-      elevated,
-      named,
-      'war',
-      [elevated.id, named.id],
-      'bad',
-      `${displayName(rabble).toUpperCase()} KILLED ${fullName(named).toUpperCase()} AND TOOK THEIR PLACE.`,
-      [`The rabble had no name. Now it is ${fullName(elevated).toUpperCase()}.`]
-    );
-    beat.spectacle = fightSpectacle(elevated, named, 'war', res.duel);
-    return;
+  if (res.aftermath === 'killed' && res.loser === named) {
+    const killerId = simOf(named).killedById;
+    const elevated = killerId ? ctx.mgr.byId(killerId) : null;
+    if (elevated && isNamed(elevated)) {
+      const beat = ctx.emitFight(
+        'skirmish',
+        rankIndex(named.rank) >= 3 ? 'legendary' : 'major',
+        res,
+        elevated,
+        named,
+        'war',
+        [elevated.id, named.id],
+        'bad',
+        `${displayName(elevated).toUpperCase()} KILLED ${fullName(named).toUpperCase()} AND TOOK THEIR PLACE.`,
+        [`The rabble had no name. Now it is ${fullName(elevated).toUpperCase()}.`]
+      );
+      beat.spectacle = fightSpectacle(elevated, named, 'war', res.duel);
+      return;
+    }
   }
 
   const w = displayName(res.winner);

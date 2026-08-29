@@ -44,7 +44,7 @@ export function addCondition(god: GodState, spec: ConditionSpec): Condition {
   // The same kind on the same target does not stack into absurdity; it
   // refreshes and deepens, which is what "keep protecting him" should feel like.
   const existing = god.conditions.find(
-    (x) => x.kind === c.kind && x.targetId === c.targetId && x.otherId === c.otherId
+    (x) => x.kind === c.kind && x.targetId === c.targetId && x.otherId === c.otherId && x.source === c.source
   );
   if (existing) {
     existing.magnitude = Math.min(2.5, existing.magnitude + c.magnitude * 0.7);
