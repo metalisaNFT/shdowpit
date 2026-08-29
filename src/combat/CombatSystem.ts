@@ -174,6 +174,7 @@ export class CombatSystem {
      ============================================================ */
 
   update(dt: number): void {
+    this.effects.beginEvent();
     this.combatClock += dt;
     this.tickPlayerSwingWhoosh();
     this.resolvePlayerSwing();

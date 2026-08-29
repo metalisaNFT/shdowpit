@@ -289,7 +289,11 @@ async function main() {
 
   // Outside the area: the forced slam itself must not reach us. Sample only
   // across the slam window — the heavy is free to fight normally afterwards.
-  await G(() => window.SHDOWPIT.__godMode(true));
+  await G(() => {
+    const g = window.SHDOWPIT;
+    g.__godMode(false);
+    g.player.position.set(42, 0, 42);
+  });
   const hpOutside = (await state()).playerHp;
   const forced = await G(() => window.SHDOWPIT.__qaForceAttack('slam'));
   log('forced:', forced);
@@ -437,6 +441,15 @@ async function main() {
   check('build A: needles cripple the crowd', slowedCount >= 1, `${slowedCount} slowed`);
   await shot('t5-buildA.png');
 
+  // Proc chain must reset each combat frame — three saturated allows unblock after beginEvent().
+  log('--- proc chain ---');
+  const chain = await G(() => window.SHDOWPIT.__sim('procChain'));
+  check(
+    'proc chain resets each combat frame',
+    chain.blocked === true && chain.allowed === true,
+    JSON.stringify(chain),
+  );
+
   // Build B: posture breaker — heavy hits + posture stats crack an enemy open.
   // Target a HEAVY: grunts die before their posture matters; the wall is the
   // enemy this build exists for.
@@ -515,7 +528,11 @@ async function main() {
   check('ground rupture is on the loadout', beforeSkill.loadout.includes('ground_rupture'), JSON.stringify(beforeSkill.loadout));
   check('skill 2 produces a cooldown or skill state', midSkill.skillCd.b > 0 || midSkill.playerAction === 'skill', JSON.stringify({ act: midSkill.playerAction, cd: midSkill.skillCd }));
   const kit = await G(() => window.SHDOWPIT.__kit());
-  check('kit telemetry records uses or events', (kit.skillUses && Object.keys(kit.skillUses).length >= 0) || Array.isArray(kit.events), JSON.stringify(kit.skillUses));
+  check(
+    'kit telemetry records uses or events',
+    (kit.skillUses && Object.keys(kit.skillUses).length > 0) || (Array.isArray(kit.events) && kit.events.length > 0),
+    JSON.stringify(kit.skillUses),
+  );
 
   log('--- TEST 7: NEW SKILLS × WEAPON FAMILIES ---');
   await G(() => {

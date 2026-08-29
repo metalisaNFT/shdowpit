@@ -158,6 +158,13 @@ export function runStorySelfTest(): { passed: number; failed: number; results: T
 
   const g = buildStoryGraph(data);
   check(results, 'relationship graph construction', g.nodes.length >= 5 && g.edges.length >= 4, `${g.nodes.length}n ${g.edges.length}e`);
+  const model = buildStoryModel(data);
+  check(
+    results,
+    'derived story model output',
+    model.visibleNodes.length > 0 && model.nodes.length >= model.visibleNodes.length,
+    `${model.visibleNodes.length} visible / ${model.nodes.length} total`,
+  );
   const master = g.edges.find((e) => e.kind === 'master' && e.from === 'n3' && e.to === 'n2');
   check(results, 'directional connections', !!master && master.directed, master?.label ?? 'missing');
   const steal = g.edges.find((e) => e.kind === 'stolen_weapon');

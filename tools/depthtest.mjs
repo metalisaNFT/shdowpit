@@ -102,7 +102,7 @@ async function main() {
   check('__sim heat works', typeof sim.a?.heat === 'number');
   check('__sim remnants works', typeof sim.b?.remnants === 'number');
   check('proc inspector present', sim.proc.channel !== undefined);
-  check('AI mode reported', sim.proc.aiMode === 'off' || typeof sim.proc.aiMode === 'string');
+  check('AI mode reported', sim.proc.aiMode === 'off', String(sim.proc.aiMode));
 
   const canProc = await page.evaluate(() => {
     const g = window.SHDOWPIT;
@@ -115,6 +115,66 @@ async function main() {
   check('no api key in save', canProc.noKey);
   check('save version current after sim', typeof canProc.saveVersion === 'number' && canProc.saveVersion >= 6, `v${canProc.saveVersion}`);
   check('procStress blocks secondary CD reset', canProc.proc && canProc.proc.secondaryNoCd === true);
+
+  const heatCycle = await page.evaluate(() => {
+    const g = window.SHDOWPIT;
+    const run = g.world.run;
+    const read = () => ({
+      heat: run.heat,
+      lastThreshold: run.lastThreshold,
+      lockedExits: run.lockedExits,
+      spawnBudget: run.spawnBudget,
+    });
+    g.__sim('setHeat', '90');
+    run.lastThreshold = 85;
+    const hot = read();
+    g.__sim('setHeat', '60');
+    const cooled = read();
+    const budgetBefore = run.spawnBudget;
+    g.__sim('setHeat', '55');
+    g.__sim('heat+', '');
+    const pulse = g.__sim('heatPulse');
+    const pulsed = read();
+    return { hot, cooled, pulsed, pulse, budgetBefore, budgetAfter: run.spawnBudget };
+  });
+  check('heat 90 locks extraction exits', heatCycle.hot.lockedExits === true, `locked=${heatCycle.hot.lockedExits}`);
+  check('heat 60 reopens extraction exits', heatCycle.cooled.lockedExits === false, `locked=${heatCycle.cooled.lockedExits}`);
+  check(
+    'heat can pulse 60 threshold again after decay',
+    heatCycle.pulse?.ok === true && heatCycle.pulse?.crossed === 60,
+    JSON.stringify(heatCycle.pulse),
+  );
+
+  await page.evaluate(() => {
+    const g = window.SHDOWPIT;
+    const meta = g.mgr.data.playerMeta;
+    meta.essence = 120;
+    meta.progress.cinders = 8;
+    g.mgr.persist();
+    g.world.endRun();
+    g.ui.pause.close();
+    g.ui.power.hide();
+    g.showTitle(true);
+  });
+  await page.waitForTimeout(800);
+  const newWorldBtn = await page.$('#title-new-world');
+  if (newWorldBtn) {
+    await newWorldBtn.click();
+    await page.waitForTimeout(250);
+    await newWorldBtn.click();
+    await page.waitForTimeout(900);
+  }
+  const afterNewWorld = await page.evaluate(() => {
+    const raw = JSON.parse(window.SHDOWPIT.__rawSave() || '{}');
+    return {
+      essence: raw.playerMeta?.essence,
+      cinders: raw.playerMeta?.progress?.cinders,
+      turn: raw.worldTurn,
+    };
+  });
+  check('NEW WORLD keeps banked essence', afterNewWorld.essence === 120, String(afterNewWorld.essence));
+  check('NEW WORLD keeps banked cinders', afterNewWorld.cinders === 8, String(afterNewWorld.cinders));
+  check('NEW WORLD resets world turn', afterNewWorld.turn === 1, String(afterNewWorld.turn));
 
   check('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 

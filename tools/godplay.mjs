@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import { launchChromium } from './browser.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const URL_BASE = process.env.PLAYTEST_URL ?? 'http://localhost:5173/?quality=low';
+const URL_BASE = process.env.PLAYTEST_URL ?? 'http://localhost:4173/?quality=low';
 const SHOTS = path.join(ROOT, 'god-play-shots');
 
 async function main() {

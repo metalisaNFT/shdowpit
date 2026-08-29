@@ -41,6 +41,16 @@ export class EventBus<Events> {
     }
   }
 
+  hasListeners(key: keyof Events): boolean {
+    return (this.map.get(key)?.size ?? 0) > 0;
+  }
+
+  listenerCount(): number {
+    let n = 0;
+    for (const set of this.map.values()) n += set.size;
+    return n;
+  }
+
   clear(): void {
     this.map.clear();
   }

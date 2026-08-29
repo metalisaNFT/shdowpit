@@ -18,6 +18,8 @@ import { launchChromium } from './browser.mjs';
 import path from 'node:path';
 import fs from 'node:fs';
 
+import { PLAYTEST_URL_BASE } from './url.mjs';
+
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const URL_BASE = process.env.PLAYTEST_URL ?? 'http://localhost:4173/?quality=low';
 const SHOTS = path.join(ROOT, 'playtest-shots');
@@ -37,8 +39,12 @@ async function main() {
   fs.mkdirSync(SHOTS, { recursive: true });
 
   // Refuse to run against a live backend — the results would be meaningless.
-  const probe = await fetch('http://localhost:4173/api/ai/status').then((r) => r.json());
-  void probe;
+  const probe = await fetch(`${PLAYTEST_URL_BASE}/api/ai/status`).then((r) => r.json());
+  check('backend is in mock mode', probe.mode === 'mock', JSON.stringify(probe).slice(0, 80));
+  if (probe.mode !== 'mock') {
+    console.error('[aisuccess] Start preview with: npm run preview:mock');
+    process.exit(2);
+  }
 
   const browser = await launchChromium();
   const page = await browser.newPage({ viewport: { width: 1400, height: 800 } });
@@ -105,7 +111,7 @@ async function main() {
   const c1 = await content(unburned);
   check(
     'a title claiming fire is REJECTED for a nemesis with no burns',
-    c1.title !== 'THE CINDER-EYED',
+    c1.title !== 'THE CINDER-EYED' && c1.title !== 'THE ASHEN',
     `got "${c1.title}"`
   );
 

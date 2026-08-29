@@ -210,6 +210,11 @@ export class Input {
     if (!v) this.releaseAll();
   }
 
+  /** Harness hook — inject a press without pointer lock or DOM events. */
+  simulatePress(a: Action): void {
+    this.press(a);
+  }
+
   requestPointerLock(): void {
     if (!this.pointerLocked && this.el.requestPointerLock) {
       const p = this.el.requestPointerLock() as unknown as Promise<void> | undefined;

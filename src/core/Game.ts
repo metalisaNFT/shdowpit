@@ -32,11 +32,11 @@ import {
 } from '../story/StoryAI';
 import { buildTimeline } from '../story/StoryTimeline';
 import { runStorySelfTest, formatStorySelfTest } from '../story/StorySelfTest';
-import { runWiringSelfTest, formatWiringSelfTest } from './WiringSelfTest';
+import { runWiringSelfTest, formatWiringSelfTest, probeWiringRuntime } from './WiringSelfTest';
 import { inspectArc, inspectEdge, inspectNode, inspectRecap } from '../story/StoryInspector';
 import { buildStoryModel } from '../story/StoryModel';
 import { simulateTurn, simulateSuccession } from '../world/WorldSimulation';
-import { heatLabel, addHeat } from '../world/Heat';
+import { heatLabel, addHeat, syncHeatGates, crossedThreshold, spendSpawn } from '../world/Heat';
 import { applyVerticalSlice } from '../world/VerticalSlice';
 import { TutorialController, markTutorial, tutorialDone, type TutorialId } from './Tutorial';
 
@@ -238,6 +238,8 @@ export class Game {
   };
 
   private mode: Mode = 'title';
+  /** Where the build screen should return when closed. */
+  private buildReturnMode: Mode = 'playing';
 
   /* ---- THE LONG GAME ---- */
   private godRun: GodRun | null = null;
@@ -1111,7 +1113,7 @@ export class Game {
       {
         onContinue: () => this.beginPlaying(),
         onNewWorld: () => {
-          this.mgr.newWorld(randomSeed());
+          this.mgr.reseedWorld(randomSeed());
           this.rebuildArena();
           this.godRun = null;
           this.openLongGame();
@@ -2096,7 +2098,7 @@ export class Game {
 
   private openBuild(from: Mode): void {
     ensureStarterGear(this.mgr.data.playerMeta);
-    const returnMode = from === 'paused' ? 'paused' : from;
+    this.buildReturnMode = from === 'paused' ? 'paused' : from;
     this.mode = 'build';
     this.ui.title.hide();
     this.input.setEnabled(false);
@@ -2107,18 +2109,7 @@ export class Game {
       this.mgr.data.playerMeta,
       this.player.stats,
       {
-        onClose: () => {
-          this.ui.build.hide();
-          this.mgr.persist();
-          if (returnMode === 'paused') {
-            this.mode = 'paused';
-            this.openPause();
-          } else if (returnMode === 'title') {
-            this.showTitle(true);
-          } else {
-            this.resumeToPlaying();
-          }
-        },
+        onClose: () => this.closeBuild(),
         onChanged: () => {
           syncLegacyWeapons(this.mgr.data.playerMeta);
           if (this.world.runActive) this.applyPlayerBuild();
@@ -2128,6 +2119,20 @@ export class Game {
       },
       this.world.run?.runLoot ?? []
     );
+  }
+
+  private closeBuild(): void {
+    if (this.mode !== 'build') return;
+    this.ui.build.hide();
+    this.mgr.persist();
+    if (this.buildReturnMode === 'paused') {
+      this.mode = 'playing';
+      this.openPause();
+    } else if (this.buildReturnMode === 'title') {
+      this.showTitle(true);
+    } else {
+      this.resumeToPlaying();
+    }
   }
 
   private syncSkillLoadout(): void {
@@ -2621,12 +2626,20 @@ export class Game {
       this.audio.play('skill_ready', { volume: 0.28, pitch: id === 'pit_eruption' ? 0.8 : 1.15, minGap: 0.15 });
     }
     this.ui.hud.setLowHealth(this.player.stats.hp / this.player.stats.maxHp);
+    this.applyOverlayGate(overlay, prompt);
+    this.autoQuality(rdt);
+  }
+
+  /** OverlayGate outputs consumed each playing frame — probed by __wiringSelfTest. */
+  private applyOverlayGate(
+    overlay: ReturnType<typeof decideOverlays>,
+    prompt: { text: string | null; remnant: boolean },
+  ): void {
     if (!overlay.showBanner && this.ui.hud.bannerActive) this.ui.hud.clearAreaBanner();
     this.ui.hud.setToastsEnabled(overlay.showToasts);
     const promptText =
       overlay.showPrompt && !(prompt.remnant && !overlay.allowRemnantPrompt) ? prompt.text : null;
     this.ui.hud.setPrompt(promptText);
-    this.autoQuality(rdt);
   }
 
   /**
@@ -2930,9 +2943,7 @@ export class Game {
       } else if (this.mode === 'paused') {
         this.resumeFromPause();
       } else if (this.mode === 'build') {
-        this.ui.build.hide();
-        if (this.ui.title.visible) this.showTitle(this.saveSys.exists());
-        else this.openPause();
+        this.closeBuild();
       } else if (this.mode === 'title' && this.ui.pause.visible) {
         this.ui.pause.close();
       } else if (this.mode === 'god') {
@@ -3614,6 +3625,7 @@ export class Game {
     if (!options.length) {
       this.player.stats.heal(30, 'empty_pool');
       this.ui.hud.toast('NOTHING LEFT TO LEARN — HEALED', 'good');
+      if (this.loop.paused) this.resumeToPlaying();
       return;
     }
     this.presentOffer(options, subtitle);
@@ -3642,6 +3654,9 @@ export class Game {
     else if (this.world.run.remnants >= REMNANT.rerollCost) this.world.run.remnants -= REMNANT.rerollCost;
     else return;
     this.ui.power.hide();
+    this.mode = 'playing';
+    this.loop.paused = false;
+    this.input.setEnabled(true);
     this.offerPower('REROLL');
   }
 
@@ -5397,6 +5412,11 @@ export class Game {
     this.input.clearBuffers();
   }
 
+  /** Inject a combat input without pointer lock — harness only. */
+  __qaPress(action: 'light' | 'heavy' | 'dodge' | 'parry'): void {
+    this.input.simulatePress(action);
+  }
+
   /** Grant run-stat boons directly, for TEST 5 build assembly. */
   __qaGrantStat(id: string, count = 1): void {
     for (let i = 0; i < count; i++) this.player.stats.addStatBoon(id as RunStatId);
@@ -5885,16 +5905,15 @@ export class Game {
     regressionFailed: number;
     log: string;
   } {
-    const r = runWiringSelfTest({
-      comicServiceReady: !!this.comic,
+    const ctx = probeWiringRuntime({
+      comic: this.comic,
+      bus: this.bus,
+      telemetryOptInField: typeof this.mgr.data.playerMeta.telemetryOptIn === 'boolean',
+      overlayGateWired: typeof this.applyOverlayGate === 'function',
+      runLootWired: typeof runLootChoices === 'function',
       onGodEndIsStub: false,
-      overlayGateWired: true,
-      comicPlayerDeadWired: true,
-      runLootWired: true,
-      nemesisEventsWired: true,
-      telemetryOptInWired: true,
-      abilityManagerRemoved: true,
     });
+    const r = runWiringSelfTest(ctx);
     const wired = r.results.filter((x) => x.category === 'wired');
     return {
       passed: r.passed,
@@ -5904,6 +5923,10 @@ export class Game {
       regressionFailed: wired.filter((x) => !x.ok).length,
       log: formatWiringSelfTest(r),
     };
+  }
+
+  __qaListenerCount(): number {
+    return this.bus.listenerCount();
   }
 
   __storyAction(cmd: string): string {
@@ -6142,7 +6165,30 @@ export class Game {
         break;
       case 'setHeat':
         run.heat = Math.max(0, Number(arg) || 0);
+        syncHeatGates(run);
         break;
+      case 'heatPulse': {
+        syncHeatGates(run);
+        const crossed = crossedThreshold(run.lastThreshold, run.heat);
+        if (crossed !== null && spendSpawn(run)) {
+          run.lastThreshold = crossed;
+          return { ok: true, crossed, lastThreshold: run.lastThreshold };
+        }
+        return { ok: false, crossed, lastThreshold: run.lastThreshold, heat: run.heat };
+      }
+      case 'procChain': {
+        const bus = this.combat.effects;
+        bus.log.length = 0;
+        const now = this.combat.combatClock;
+        bus.chain = 0;
+        bus.allow('a', now);
+        bus.allow('b', now);
+        bus.allow('c', now);
+        const blocked = !bus.allow('d', now);
+        bus.beginEvent();
+        const allowed = bus.allow('e', now);
+        return { blocked, allowed, chain: bus.chain };
+      }
       case 'remnants':
         run.remnants = Math.min(6, run.remnants + 3);
         break;
@@ -6380,6 +6426,9 @@ export class Game {
               heretic: s.heretic,
               standing: n.playerRelationship,
               faction: s.factionId,
+              master: n.master,
+              allies: n.allies.length,
+              stolen: n.stolen.length,
               memoryTypes: n.memory.map((m) => m.type),
             };
           }),

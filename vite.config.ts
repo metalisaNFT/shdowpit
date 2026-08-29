@@ -9,12 +9,15 @@ export default defineConfig({
   plugins: [aiBackendPlugin()],
   server: {
     port: 5173,
-    host: true,
     watch: {
       // Native CUDA binaries lock while llama-server is running; watching them
       // crashes Vite with EBUSY on Windows.
       ignored: ['**/local-ai-engine/**'],
     },
+  },
+  preview: {
+    port: 4173,
+    host: '127.0.0.1',
   },
   build: {
     target: 'es2022',

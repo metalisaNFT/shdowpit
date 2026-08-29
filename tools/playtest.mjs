@@ -195,26 +195,32 @@ async function main() {
   }
   // Invulnerable for the input-state checks so a stray axe cannot end them.
   await page.evaluate(() => {
-    window.SHDOWPIT.__godMode(true);
-    window.SHDOWPIT.__qaIdle?.();
+    const g = window.SHDOWPIT;
+    g.__godMode(true);
+    g.__qaIdle?.();
+    const c = g.player.combat;
+    c.dodgeCooldown = 0;
+    c.dodgeCharges = 2;
+    c.action = 'idle';
+    g.input.setEnabled(true);
+    g.input.requestPointerLock();
   });
+  await page.waitForTimeout(600);
   await page.waitForFunction(() => window.SHDOWPIT.__state().playerAction === 'idle', null, { timeout: 8000 });
-  await page.mouse.down({ button: 'right' });
-  await page.waitForTimeout(60);
-  await page.mouse.up({ button: 'right' });
-  let act = await sawAction('attack');
+  await page.evaluate(() => window.SHDOWPIT.__qaPress('heavy'));
+  let act = await sawAction('attack', 6000);
   check('heavy attack enters attack state', act === 'attack', act);
 
-  await page.waitForTimeout(200);
+  await page.waitForTimeout(300);
   await page.waitForFunction(() => window.SHDOWPIT.__state().playerAction === 'idle', null, { timeout: 8000 });
-  await key('Space', 60);
-  act = await sawAction('dodge');
+  await page.evaluate(() => window.SHDOWPIT.__qaPress('dodge'));
+  act = await sawAction('dodge', 6000);
   check('dodge enters dodge state', act === 'dodge', act);
 
-  await page.waitForTimeout(200);
+  await page.waitForTimeout(300);
   await page.waitForFunction(() => window.SHDOWPIT.__state().playerAction === 'idle', null, { timeout: 8000 });
-  await key('KeyQ', 60);
-  act = await sawAction('parry');
+  await page.evaluate(() => window.SHDOWPIT.__qaPress('parry'));
+  act = await sawAction('parry', 6000);
   check('parry enters parry state', act === 'parry', act);
 
   await page.waitForTimeout(200);
@@ -289,12 +295,55 @@ async function main() {
     const offers = names.filter((n) => n && !String(n).includes('REROLL'));
     check('power offer appears after a captain dies', offers.length === 3, names.join(', '));
     await shot('06-power-select.png');
+    await page.evaluate(() => window.SHDOWPIT.__sim('remnants'));
+    await page.keyboard.press('KeyR');
+    await page.waitForTimeout(500);
+    const rerollSt = await state();
+    const rerollVisible = await page.$eval('#power-screen', (e) => !e.classList.contains('hidden')).catch(() => false);
+    check(
+      'REROLL shows a fresh power offer',
+      rerollVisible && rerollSt.mode === 'power' && rerollSt.loopPaused === true,
+      `mode=${rerollSt.mode} paused=${rerollSt.loopPaused}`,
+    );
     await page.keyboard.press('Digit1');
     await page.waitForTimeout(900);
     s = await state();
     check('power granted', s.powers.length > 0, s.powers.join(','));
   } else {
     check('power offer appears after a captain dies', false, 'screen not shown');
+  }
+
+  /* ============================================================
+     build screen — Esc returns to pause
+     ============================================================ */
+  await dismissOverlays();
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(400);
+  const pauseOpen = await page.$eval('#pause-screen', (e) => !e.classList.contains('hidden')).catch(() => false);
+  if (pauseOpen) {
+    const buildBtn = await page.$('#pause-screen button');
+    const labels = await page.$$eval('#pause-screen button', (e) => e.map((x) => x.textContent.trim()));
+    const buildIdx = labels.findIndex((t) => /BUILD/i.test(t));
+    if (buildIdx >= 0) {
+      const buttons = await page.$$('#pause-screen button');
+      await buttons[buildIdx].click();
+      await page.waitForTimeout(400);
+      const buildOpen = await page.$eval('#build-screen', (e) => !e.classList.contains('hidden')).catch(() => false);
+      check('build screen opens from pause', buildOpen);
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(400);
+      const afterEsc = await state();
+      const pauseBack = await page.$eval('#pause-screen', (e) => !e.classList.contains('hidden')).catch(() => false);
+      check('Esc on build returns to pause menu', pauseBack && afterEsc.mode === 'paused', afterEsc.mode);
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(300);
+    } else {
+      check('build screen opens from pause', false, labels.join(', '));
+      check('Esc on build returns to pause menu', false, 'no build button');
+    }
+  } else {
+    check('build screen opens from pause', false, 'pause not open');
+    check('Esc on build returns to pause menu', false, 'pause not open');
   }
 
   /* ============================================================

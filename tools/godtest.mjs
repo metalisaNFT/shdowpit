@@ -14,9 +14,10 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
 import { launchChromium } from './browser.mjs';
+import { PLAYTEST_URL } from './url.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const URL_BASE = process.env.PLAYTEST_URL ?? 'http://localhost:4173/?quality=low';
+const URL_BASE = PLAYTEST_URL;
 const SHOTS = path.join(ROOT, 'god-shots');
 
 const errors = [];
@@ -29,6 +30,53 @@ function check(name, ok, detail = '') {
   checks.push({ name, ok, detail });
   log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  — ' + String(detail).slice(0, 130) : ''}`);
 }
+
+function snapRoster(list) {
+  return list.map((n) => ({
+    id: n.id,
+    alive: n.alive,
+    rank: n.rank,
+    power: n.power,
+    territory: n.territory,
+    faction: n.faction ?? '',
+    master: n.master ?? null,
+    allies: n.allies ?? 0,
+    stolen: n.stolen ?? 0,
+  }));
+}
+
+/** Hard roster mutations allowed only for priced exceptions (§6-1). */
+function rosterHardIssues(before, after, interventionId) {
+  const allowed = interventionId === 'raise' || interventionId === 'gift' || interventionId === 'calamity';
+  const issues = [];
+  const byBefore = new Map(before.map((n) => [n.id, n]));
+  const byAfter = new Map(after.map((n) => [n.id, n]));
+  if (interventionId === 'calamity' && after.length <= before.length) {
+    issues.push('calamity did not add a body');
+  } else if (!allowed && before.length !== after.length) {
+    issues.push(`roster ${before.length}->${after.length}`);
+  }
+  for (const [id, b] of byBefore) {
+    const a = byAfter.get(id);
+    if (!a) {
+      if (!allowed) issues.push(`missing ${id}`);
+      continue;
+    }
+    if (b.alive !== a.alive || b.rank !== a.rank) {
+      if (interventionId !== 'raise') {
+        issues.push(`${id} alive/rank`);
+      }
+    }
+    if (interventionId !== 'gift' && b.stolen !== a.stolen) {
+      issues.push(`${id} stolen`);
+    }
+    if (!allowed && Math.abs(b.power - a.power) > 10) {
+      issues.push(`${id} power ${b.power}->${a.power}`);
+    }
+  }
+  return issues;
+}
+
 function beat(n, title) {
   log(`\n---------- ${n}. ${title}`);
 }
@@ -114,14 +162,14 @@ async function main() {
   check('the guided first cycle is live', s.guideStep === 'select' || s.guideStep === 'spend', String(s.guideStep));
   check('the rail teaches the loop', /YOU ARE NOT IN THIS WORLD|LEARNING THE LOOP/.test(boardText));
   const colAdvance = await page.$eval('#god-advance', (e) => e.textContent.trim()).catch(() => '');
-  check('advance lives in the action strip', /ADVANCE/.test(colAdvance) || colAdvance === '', colAdvance);
+  check('advance lives in the action strip', /ADVANCE/.test(colAdvance), colAdvance);
   const footerAdvance = await page.$$eval('.god-foot-controls button', (els) =>
     els.map((e) => e.textContent.trim()).filter((t) => t === 'ADVANCE ▸')
   );
   check('the footer does not duplicate Advance', footerAdvance.length === 0, footerAdvance.join(','));
   const skipBtns = await page.$$eval('.god-foot-controls button', (els) => els.map((e) => e.textContent.trim()));
   check('×N waits until after the opening advance', !skipBtns.includes('×5') && !skipBtns.includes('×20'), skipBtns.join(','));
-  const overlayHidden = await page.$eval('.god-overlay', (e) => e.classList.contains('hidden')).catch(() => true);
+  const overlayHidden = await page.$eval('.god-overlay', (e) => e.classList.contains('hidden')).catch(() => false);
   check('no overlay owns the opening', overlayHidden === true);
 
   /* ============================================================
@@ -174,6 +222,43 @@ async function main() {
   check('a two-party intervention works', whisper.ok === true, whisper.reason);
   const badPair = await god('intervene', 'whisper', two[0], two[0]);
   check('a nonsensical target is refused', badPair.ok === false, badPair.reason);
+
+  /* ============================================================
+     5c. every catalogue entry — conditions, not outcomes
+     ============================================================ */
+  beat('5c', 'INTERVENTION CATALOGUE PROOF');
+  await page.evaluate(() => window.SHDOWPIT.__debug().godAddInfluence?.(200));
+  const catalogue = (await god('interventions')).list;
+  let catalogueFails = 0;
+  for (const def of catalogue) {
+    if (def.id === 'descend') continue;
+    const before = snapRoster((await god('roster')).list);
+    const livingNow = (await god('roster')).list.filter((n) => n.alive);
+    const deadNow = (await god('roster')).list.filter((n) => !n.alive);
+    let res;
+    if (def.targeting === 'nemesis' || def.targeting === 'pair') {
+      const a = livingNow[0]?.id;
+      const b = livingNow[1]?.id;
+      if (!a) continue;
+      res = await god('intervene', def.id, a, def.targeting === 'pair' ? b : undefined);
+    } else if (def.targeting === 'dead') {
+      const d = deadNow[0]?.id;
+      if (!d) continue;
+      res = await god('intervene', def.id, d);
+    } else if (def.targeting === 'area') {
+      res = await god('interveneArea', def.id, livingNow[0]?.territory ?? 'tower');
+    } else {
+      res = await god('intervene', def.id);
+    }
+    if (!res.ok) continue;
+    const after = snapRoster((await god('roster')).list);
+    const issues = rosterHardIssues(before, after, def.id);
+    if (issues.length) {
+      catalogueFails++;
+      check(`catalogue ${def.id} writes conditions only`, false, issues.join('; '));
+    }
+  }
+  check('catalogue loop fired without forbidden hard changes', catalogueFails === 0, `${catalogueFails} failures`);
 
   const spentAdvance = await god('advance', '1');
   check(
@@ -254,7 +339,7 @@ async function main() {
   check('characters flee', roster.some((n) => n.escapedFrom.length > 0), roster.filter((n) => n.escapedFrom.length).length + ' have run from someone');
   check('characters win and lose', roster.some((n) => n.wins > 0) && roster.some((n) => n.losses > 0));
   const returns = feed.filter((b) => b.kind === 'return');
-  check('the dead can come back', returns.length > 0 || dead.length > 0, `${returns.length} returns`);
+  check('the dead can come back', returns.length > 0, `${returns.length} returns`);
 
   beat(10, 'MEMORY CHANGES FUTURE BEHAVIOUR');
   const withMemory = roster.filter((n) => n.memoryTypes.length > 0);
@@ -282,9 +367,9 @@ async function main() {
   const dead0 = roster.find((n) => !n.alive);
   if (dead0) {
     const raise = await god('intervene', 'raise', dead0.id);
-    check('a heavy intervention costs heavily', raise.ok === false || raise.chaos > chaosBefore + 5, `${chaosBefore} -> ${raise.chaos}`);
+    check('a heavy intervention costs heavily', raise.ok === true && raise.chaos > chaosBefore + 5, `${chaosBefore} -> ${raise.chaos}`);
   } else {
-    check('a heavy intervention costs heavily', true, 'nobody dead to raise; skipped');
+    check('a heavy intervention costs heavily', false, 'nobody dead to raise');
   }
 
   /* ============================================================

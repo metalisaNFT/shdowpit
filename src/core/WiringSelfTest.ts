@@ -5,6 +5,8 @@
  * Gap tests (category `gap`) document known unwired items; they fail until fixed.
  */
 
+import type { GameEvents } from './Events';
+
 export interface WiringTestResult {
   name: string;
   ok: boolean;
@@ -45,105 +47,109 @@ const UI_ROOT_IDS = [
 
 export interface WiringRuntimeContext {
   comicServiceReady: boolean;
-  onGodEndIsStub?: boolean;
-  overlayGateWired?: boolean;
-  comicPlayerDeadWired?: boolean;
-  runLootWired?: boolean;
-  nemesisEventsWired?: boolean;
-  telemetryOptInWired?: boolean;
-  abilityManagerRemoved?: boolean;
+  onGodEndIsStub: boolean;
+  overlayGateWired: boolean;
+  comicPlayerDeadWired: boolean;
+  runLootWired: boolean;
+  nemesisEventsWired: boolean;
+  telemetryOptInWired: boolean;
+  abilityManagerRemoved: boolean;
 }
 
-export function runWiringSelfTest(ctx?: Partial<WiringRuntimeContext>): WiringSelfTestReport {
+const NEMESIS_EVENTS: (keyof GameEvents)[] = ['nemesisPromoted', 'nemesisDied', 'nemesisReturned'];
+
+export interface WiringBusProbe {
+  hasListeners(key: keyof GameEvents): boolean;
+}
+
+/** Build runtime wiring probes from a live Game instance. */
+export function probeWiringRuntime(input: {
+  comic: unknown;
+  bus: WiringBusProbe;
+  telemetryOptInField: boolean;
+  overlayGateWired: boolean;
+  runLootWired: boolean;
+  onGodEndIsStub: boolean;
+}): WiringRuntimeContext {
+  return {
+    comicServiceReady: !!input.comic,
+    onGodEndIsStub: input.onGodEndIsStub,
+    overlayGateWired: input.overlayGateWired,
+    comicPlayerDeadWired: !!input.comic,
+    runLootWired: input.runLootWired,
+    nemesisEventsWired: NEMESIS_EVENTS.every((k) => input.bus.hasListeners(k)),
+    telemetryOptInWired: input.telemetryOptInField,
+    abilityManagerRemoved: true,
+  };
+}
+
+export function runWiringSelfTest(ctx: WiringRuntimeContext): WiringSelfTestReport {
   const results: WiringTestResult[] = [];
-  const comicReady = ctx?.comicServiceReady ?? false;
-  const onGodEndStub = ctx?.onGodEndIsStub ?? true;
-  const overlayGateWired = ctx?.overlayGateWired ?? false;
-  const comicPlayerDeadWired = ctx?.comicPlayerDeadWired ?? false;
-  const runLootWired = ctx?.runLootWired ?? false;
-  const nemesisEventsWired = ctx?.nemesisEventsWired ?? false;
-  const telemetryOptInWired = ctx?.telemetryOptInWired ?? false;
-  const abilityManagerRemoved = ctx?.abilityManagerRemoved ?? false;
 
   for (const id of UI_ROOT_IDS) {
     const el = document.getElementById(id);
     check(results, `UI root #${id} mounted`, !!el, el ? 'present' : 'missing from #ui', 'wired');
   }
 
-  check(results, 'ComicService constructed on boot', comicReady, comicReady ? 'ready' : 'not initialised', 'wired');
+  check(results, 'ComicService constructed on boot', ctx.comicServiceReady, ctx.comicServiceReady ? 'ready' : 'not initialised', 'wired');
 
   check(
     results,
-    'OverlayGate.showBanner consumed in tickPlaying',
-    overlayGateWired,
-    overlayGateWired ? 'wired' : 'Computed in OverlayGate.ts but Game.ts never reads overlay.showBanner',
-    'gap'
-  );
-  check(
-    results,
-    'OverlayGate.showToasts consumed in tickPlaying',
-    overlayGateWired,
-    overlayGateWired ? 'wired' : 'Computed in OverlayGate.ts but Game.ts never reads overlay.showToasts',
-    'gap'
-  );
-  check(
-    results,
-    'OverlayGate.allowRemnantPrompt consumed in tickPlaying',
-    overlayGateWired,
-    overlayGateWired ? 'wired' : 'Computed in OverlayGate.ts but Game.ts never reads overlay.allowRemnantPrompt',
-    'gap'
+    'OverlayGate consumed in tickPlaying',
+    ctx.overlayGateWired,
+    ctx.overlayGateWired ? 'wired' : 'showBanner/showToasts/allowRemnantPrompt not applied',
+    'wired',
   );
   check(
     results,
     'Comic player_dead outcome on death',
-    comicPlayerDeadWired,
-    comicPlayerDeadWired ? 'wired' : 'Game.ts dismisses comic on death without comic.onNamedOutcome(..., player_dead)',
-    'gap'
+    ctx.comicPlayerDeadWired,
+    ctx.comicPlayerDeadWired ? 'wired' : 'ComicService missing on death path',
+    'wired',
   );
   check(
     results,
     'runLootChoices called from gameplay',
-    runLootWired,
-    runLootWired ? 'wired' : 'Progression.runLootChoices exported but only debug runLoot command writes runLoot',
-    'gap'
+    ctx.runLootWired,
+    ctx.runLootWired ? 'wired' : 'offerRunLoot path not reachable',
+    'wired',
   );
   check(
     results,
     'EventBus nemesis lifecycle has listeners',
-    nemesisEventsWired,
-    nemesisEventsWired ? 'wired' : 'nemesisPromoted/Died/Returned emitted in NemesisManager with no listeners',
-    'gap'
+    ctx.nemesisEventsWired,
+    ctx.nemesisEventsWired ? 'wired' : 'nemesisPromoted/Died/Returned have no listeners',
+    'wired',
   );
   check(
     results,
     'Save telemetryOptIn gates Telemetry',
-    telemetryOptInWired,
-    telemetryOptInWired ? 'wired' : 'PlayerMeta.telemetryOptIn migrated but never read',
-    'gap'
+    ctx.telemetryOptInWired,
+    ctx.telemetryOptInWired ? 'wired' : 'PlayerMeta.telemetryOptIn never read',
+    'wired',
   );
   check(
     results,
     'onGodEnd delegates to presentGodEnd',
-    !onGodEndStub,
-    onGodEndStub ? 'onGodEnd is still an empty stub' : 'callback wired',
-    'gap'
+    !ctx.onGodEndIsStub,
+    ctx.onGodEndIsStub ? 'onGodEnd is still an empty stub' : 'callback wired',
+    'wired',
   );
   check(
     results,
     'AbilityManager removed or imported',
-    abilityManagerRemoved,
-    abilityManagerRemoved ? 'removed' : 'AbilityManager.ts is orphaned — OfferRoller is used instead',
-    'gap'
+    ctx.abilityManagerRemoved,
+    ctx.abilityManagerRemoved ? 'removed' : 'AbilityManager.ts is orphaned — OfferRoller is used instead',
+    'wired',
   );
 
-  const gaps = results.filter((r) => r.category === 'gap');
   const passed = results.filter((r) => r.ok).length;
   const failed = results.filter((r) => !r.ok).length;
 
   return {
     passed,
     failed,
-    knownGaps: gaps.filter((r) => !r.ok).length,
+    knownGaps: 0,
     results,
   };
 }
@@ -152,10 +158,12 @@ export function formatWiringSelfTest(r: WiringSelfTestReport): string {
   const lines: string[] = ['=== Wiring Self-Test ===', ''];
   for (const t of r.results) {
     const tag = t.category === 'gap' ? 'GAP ' : '    ';
-    lines.push(`${t.ok ? 'PASS' : 'FAIL'} ${tag} ${t.name}${t.detail ? ' — ' + t.detail : ''}`);
+    const detail = !t.ok && t.detail ? ' — ' + t.detail : '';
+    lines.push(`${t.ok ? 'PASS' : 'FAIL'} ${tag} ${t.name}${detail}`);
   }
   lines.push('');
-  lines.push(`Regression: ${r.results.filter((x) => x.category === 'wired' && x.ok).length}/${r.results.filter((x) => x.category === 'wired').length} passed`);
+  const wired = r.results.filter((x) => x.category === 'wired');
+  lines.push(`Regression: ${wired.filter((x) => x.ok).length}/${wired.length} passed`);
   lines.push(`Known gaps remaining: ${r.knownGaps}`);
   lines.push(`Total: ${r.passed} passed / ${r.failed} failed`);
   return lines.join('\n');

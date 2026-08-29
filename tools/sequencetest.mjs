@@ -336,6 +336,7 @@ async function main() {
     return { before, after: g.player.stats.maxHp, changed, vigour: g.__rawSave ? JSON.parse(g.__rawSave()).playerMeta.vigour : null };
   });
   check('armor/vigour is tracked on the character', armorRes.vigour !== null, JSON.stringify(armorRes));
+  check('armor swap changes maxHp when granted', armorRes.changed === true && armorRes.after > armorRes.before, JSON.stringify(armorRes));
 
   /* ============================================================ */
   beat(14, 'ITEM PICKUP');
@@ -346,7 +347,7 @@ async function main() {
     if (cache) {
       g.player.position.set(cache.x, 0, cache.z);
     }
-    return { before, cacheFound: !!cache };
+    return { before, cacheFound: !!cache, cacheCount: g.arena.caches.filter((c) => !c.taken).length };
   });
   await page.waitForTimeout(400);
   await page.keyboard.press('KeyE');
@@ -357,6 +358,7 @@ async function main() {
     remnants: window.SHDOWPIT.world.run.remnants,
   }));
   check('a world pickup exists and can be reached', pickup.cacheFound, JSON.stringify(afterPick));
+  check('item pickup spends a cache or grants essence', afterPick.essence > pickup.before || afterPick.cachesLeft < (pickup.cacheCount ?? 999), JSON.stringify(afterPick));
 
   /* ============================================================ */
   beat(15, 'NEMESIS DEATH');

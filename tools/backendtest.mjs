@@ -135,6 +135,18 @@ async function main() {
   r = await call('/api/ai/status', null, 'GET');
   check('server survives the whole suite', r.status === 200);
 
+  const badPath = await fetch(BASE + '/%');
+  check('malformed path returns 400', badPath.status === 400, String(badPath.status));
+  r = await call('/api/ai/status', null, 'GET');
+  check('server survives malformed path', r.status === 200);
+
+  const foreign = await fetch(BASE + '/api/ai/connect', {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain', Origin: 'https://evil.example' },
+    body: '{"key":"sk-test"}',
+  });
+  check('foreign origin POST to /connect rejected', foreign.status >= 400 && foreign.status < 500, String(foreign.status));
+
   const failed = checks.filter((c) => !c.ok);
   console.log('\n================ BACKEND ================');
   console.log(`checks: ${checks.length - failed.length}/${checks.length} passed`);

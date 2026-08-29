@@ -1,10 +1,17 @@
 import { HEAT, clamp } from '../data/balance';
 import type { RunState } from '../run/RunState';
 
+/** Keep threshold memory and exit lock aligned with the current heat reading. */
+export function syncHeatGates(run: RunState): void {
+  run.lastThreshold = Math.min(run.lastThreshold, run.heat);
+  run.lockedExits = run.heat >= 85 && !run.extractHeatImmune;
+}
+
 export function addHeat(run: RunState, amount: number): number {
   const next = clamp(run.heat + amount, 0, HEAT.max);
   run.heat = next;
   if (next > run.heatPeak) run.heatPeak = next;
+  syncHeatGates(run);
   return next;
 }
 

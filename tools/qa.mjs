@@ -637,6 +637,8 @@ async function main() {
   console.log('screenshots in', SHOTS);
 
   fs.writeFileSync(path.join(SHOTS, 'qa-report.json'), JSON.stringify({ findings, notes }, null, 2));
+  const critical = findings.filter((f) => f.sev === 'CRITICAL').length;
+  if (critical > 0 || errors.length > 0) process.exit(1);
   process.exit(0);
 }
 

@@ -182,8 +182,15 @@ async function main() {
   // Endings must actually vary, or the run structure is decorative.
   const distinctEndings = Object.keys(endings).length;
   console.log(`\ndistinct endings across the sample: ${distinctEndings}`);
-  if (missing) console.log(`\n${missing} pattern(s) never occurred — improve the simulation, not the presentation.`);
-  if (missing || errors.length) process.exit(1);
+  const minPatternRuns = Math.max(1, Math.ceil(RUNS * 0.3));
+  const weakPatterns = PATTERNS.filter(([key]) => runsWith[key] < minPatternRuns);
+  if (weakPatterns.length) {
+    console.log(`\nPatterns below ${minPatternRuns}/${RUNS} run threshold:`);
+    for (const [key, question] of weakPatterns) {
+      console.log(`  ${key}: ${runsWith[key]}/${RUNS} — ${question}`);
+    }
+  }
+  if (missing || errors.length || weakPatterns.length) process.exit(1);
 }
 
 main().catch((e) => {

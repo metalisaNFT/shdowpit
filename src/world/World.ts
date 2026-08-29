@@ -33,7 +33,7 @@ import { makeRivals } from '../nemesis/NemesisRelationships';
 import type { Nemesis, ScarId, StolenItem } from '../nemesis/Nemesis';
 import { fullName, rankIndex } from '../nemesis/Nemesis';
 import { emptyRunState, type RunState } from '../run/RunState';
-import { addHeat, tickHeatEconomy, spendSpawn, spawnSafeOffset, crossedThreshold, heatLabel } from './Heat';
+import { addHeat, tickHeatEconomy, spendSpawn, spawnSafeOffset, crossedThreshold, heatLabel, syncHeatGates } from './Heat';
 import { HEAT, REMNANT, EXTRACT } from '../data/balance';
 import { presentTerritory, type TerritoryPresentation } from './TerritoryRules';
 import { snapshotOccupancy, type OccupancyMap } from './WorldOccupancy';
@@ -287,9 +287,10 @@ export class World {
 
     /* ---- hunters / heat pulses ---- */
     this.huntTimer -= dt;
+    syncHeatGates(this.run);
     const crossed = crossedThreshold(this.run.lastThreshold, this.run.heat);
     if (crossed !== null && spendSpawn(this.run)) {
-      this.run.lastThreshold = this.run.heat;
+      this.run.lastThreshold = crossed;
       this.pulseHeat(player, crossed);
     } else if (this.huntTimer <= 0) {
       this.huntTimer = 60 + this.rng.range(0, 55);
@@ -1024,7 +1025,6 @@ export class World {
   }
 
   private pulseHeat(player: Player, threshold: number): void {
-    this.run.lockedExits = threshold >= 85 && !this.run.extractHeatImmune;
     if (threshold >= 100) {
       const ov = this.mgr.overlord();
       if (ov && !this.resolvedThisRun.has(ov.id) && !this.activeNamed.has(ov.id)) {

@@ -108,7 +108,7 @@ async function main() {
   await page.keyboard.press('Escape');
 
   const st = await page.evaluate(() => window.SHDOWPIT.__state());
-  check('multi staging id present or solo', st.multiRule === 'loyalist_guard' || st.multiRule === null || typeof st.multiRule === 'string', String(st.multiRule));
+  check('multi staging id present or solo', st.multiRule === null || st.multiRule === 'loyalist_guard', String(st.multiRule));
 
   check('no page errors', errors.length === 0, errors.slice(0, 4).join(' | '));
   const failed = checks.filter((c) => !c.ok);

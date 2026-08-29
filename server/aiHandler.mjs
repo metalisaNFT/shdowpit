@@ -223,6 +223,35 @@ function isLoopback(req) {
   return /^(::1|127\.|::ffff:127\.)/.test(a);
 }
 
+const SENSITIVE_AI_ROUTES = new Set([
+  '/api/ai/connect',
+  '/api/ai/disconnect',
+  '/api/ai/test',
+  '/api/ai/text',
+  '/api/ai/image',
+]);
+
+function headerHostLocal(host) {
+  if (!host) return true;
+  const h = String(host).split(':')[0].toLowerCase();
+  return h === 'localhost' || h === '127.0.0.1' || h === '[::1]';
+}
+
+function headerOriginLocal(origin) {
+  if (!origin) return true;
+  try {
+    const u = new URL(origin);
+    return u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '[::1]';
+  } catch {
+    return false;
+  }
+}
+
+function requestOriginAllowed(req) {
+  if (!isLoopback(req)) return false;
+  return headerOriginLocal(req.headers?.origin) && headerHostLocal(req.headers?.host);
+}
+
 function pingEngine(pathname, timeoutMs = 1500) {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), timeoutMs);
@@ -699,6 +728,19 @@ export async function handleAiRequest(req, res) {
   const url = (req.url ?? '').split('?')[0];
   if (!url.startsWith('/api/ai/')) return false;
 
+  if (req.method !== 'GET') {
+    const ct = req.headers['content-type'] ?? '';
+    if (!ct.includes('application/json')) {
+      send(res, 400, { ok: false, error: 'Unsupported media type' });
+      return true;
+    }
+  }
+
+  if (SENSITIVE_AI_ROUTES.has(url) && !requestOriginAllowed(req)) {
+    send(res, 403, { ok: false, error: 'Forbidden' });
+    return true;
+  }
+
   const routeKey = `${req.method} ${url}`;
   const route = routes[routeKey];
   if (!route) {
@@ -742,6 +784,15 @@ let shutdownHooked = false;
 /** Vite plugin form, used by vite.config.ts for both dev and preview. */
 export function aiBackendPlugin() {
   const mount = (server) => {
+    server.middlewares.use((req, res, next) => {
+      try {
+        decodeURIComponent((req.url ?? '/').split('?')[0]);
+        next();
+      } catch {
+        res.statusCode = 400;
+        res.end('bad request');
+      }
+    });
     server.middlewares.use(async (req, res, next) => {
       const handled = await handleAiRequest(req, res);
       if (!handled) next();
@@ -766,6 +817,7 @@ export function aiBackendPlugin() {
   };
   return {
     name: 'shdowpit-ai-backend',
+    enforce: 'pre',
     configureServer: mount,
     configurePreviewServer: mount,
   };

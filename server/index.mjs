@@ -17,6 +17,7 @@ import { stopEngineSync } from '../local-ai-engine/lib.mjs';
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const DIST = path.join(ROOT, 'dist');
 const PORT = Number(process.env.PORT) || 4173;
+const HOST = process.env.HOST ?? '127.0.0.1';
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -31,7 +32,14 @@ const TYPES = {
 const server = http.createServer(async (req, res) => {
   if (await handleAiRequest(req, res)) return;
 
-  const urlPath = decodeURIComponent((req.url ?? '/').split('?')[0]);
+  let urlPath;
+  try {
+    urlPath = decodeURIComponent((req.url ?? '/').split('?')[0]);
+  } catch {
+    res.statusCode = 400;
+    res.end('bad request');
+    return;
+  }
   let file = path.join(DIST, urlPath === '/' ? 'index.html' : urlPath);
 
   // Never serve outside dist/.
@@ -52,8 +60,8 @@ const server = http.createServer(async (req, res) => {
   fs.createReadStream(file).pipe(res);
 });
 
-server.listen(PORT, () => {
-  console.log(`[shdowpit] serving dist/ and /api/ai on http://localhost:${PORT}`);
+server.listen(PORT, HOST, () => {
+  console.log(`[shdowpit] serving dist/ and /api/ai on http://${HOST}:${PORT}`);
   console.log('[shdowpit] API key is held in memory only; it is not written to disk.');
 });
 

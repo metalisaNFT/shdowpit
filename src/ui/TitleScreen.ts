@@ -44,6 +44,7 @@ export class TitleScreen {
   private worldEl = div('title-world');
   private actionsEl = div('actions');
   private confirmingReset = false;
+  private confirmingNewWorld = false;
 
   constructor() {
     this.root.id = 'title-screen';
@@ -59,6 +60,7 @@ export class TitleScreen {
 
   present(info: TitleInfo, handlers: TitleHandlers): void {
     this.confirmingReset = false;
+    this.confirmingNewWorld = false;
     clear(this.actionsEl);
 
     const longGame = () => {
@@ -134,7 +136,15 @@ export class TitleScreen {
 
     if (info.hasSave) {
       const utilities = div('title-utilities');
-      const newWorld = button('NEW WORLD', handlers.onNewWorld, 'brut tiny');
+      const newWorld = button('NEW WORLD', () => {
+        if (!this.confirmingNewWorld) {
+          this.confirmingNewWorld = true;
+          newWorld.textContent = 'START FRESH WORLD?';
+          newWorld.classList.add('danger');
+          return;
+        }
+        handlers.onNewWorld();
+      }, 'brut tiny');
       newWorld.id = 'title-new-world';
       utilities.append(newWorld);
       if (handlers.onBuild) utilities.append(button('PREPARE BUILD', handlers.onBuild, 'brut tiny'));
