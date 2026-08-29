@@ -1294,7 +1294,19 @@ export class CombatSystem {
             this.particles.burst(r.position.x, 1.2, r.position.z, 8, 0xff6a4a, 6, { size: 0.11, life: 0.35 });
             this.audio.play('light_hit', { volume: 0.3, minGap: 0.06 });
           }
-          if (res.killed) this.killEnemy(r, false, e);
+          if (res.killed) {
+            this.killEnemy(r, false, e, {
+              amount: hit.damage * 0.55,
+              source: 'light',
+              stagger: hit.stagger * 0.5,
+              attacker: e,
+              fromX: e.position.x,
+              fromZ: e.position.z,
+              knockback: 2,
+              channel: 'eve',
+              grantsPlayerKill: false,
+            });
+          }
         }
       }
 

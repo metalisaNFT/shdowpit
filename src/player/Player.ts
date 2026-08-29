@@ -321,6 +321,13 @@ export class Player implements Combatant {
    */
   rebuildWeapon(): void {
     if (this.weaponMesh) {
+      this.weaponMesh.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if (mesh.geometry) mesh.geometry.dispose();
+        const mat = mesh.material;
+        if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+        else if (mat) mat.dispose();
+      });
       this.rig.bones.HandSlot_R.remove(this.weaponMesh);
       this.weaponMesh = null;
     }
@@ -402,7 +409,7 @@ export class Player implements Combatant {
       return res;
     }
 
-    if (this.combat.invulnerable && !info.unblockable) {
+    if (this.combat.invulnerable && (!info.unblockable || this.combat.action === 'execute' || this.combat.defianceArmorT > 0)) {
       res.dodged = true;
       return res;
     }
@@ -428,7 +435,7 @@ export class Player implements Combatant {
 
     if (this.stats.hp - amount <= 0 && hasTriggeredPower(this.stats.powers.ids(), 'second_wind') && !this.stats.secondWindUsed) {
       this.stats.secondWindUsed = true;
-      this.stats.hp = Math.max(12, Math.round(this.stats.maxHp * 0.22));
+      this.stats.hp = 1;
       res.applied = amount;
       res.secondWind = true;
       this.hurtFlash = 1;

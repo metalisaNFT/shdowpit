@@ -32,6 +32,7 @@ import { applyScar, remember, recomputeRevenge } from '../nemesis/NemesisMemory'
 import { makeRivals } from '../nemesis/NemesisRelationships';
 import type { Nemesis, ScarId, StolenItem } from '../nemesis/Nemesis';
 import { fullName, rankIndex } from '../nemesis/Nemesis';
+import { refreshSignature } from '../data/signatures';
 import { emptyRunState, type RunState } from '../run/RunState';
 import { addHeat, tickHeatEconomy, spendSpawn, spawnSafeOffset, crossedThreshold, heatLabel, syncHeatGates } from './Heat';
 import { HEAT, REMNANT, EXTRACT } from '../data/balance';
@@ -766,6 +767,7 @@ export class World {
     }
 
     remember(n, executed ? 'PLAYER_EXECUTED_ME' : 'PLAYER_KILLED_ME', turn);
+    this.noteAllyKilled(n);
     this.recoverStolen(n);
     this.mgr.data.playerMeta.kills++;
     this.mgr.data.playerMeta.namedKills++;
@@ -816,6 +818,7 @@ export class World {
       const adapt = pickAdaptation(habits, n.adaptations);
       if (adapt && n.adaptations.length < 3) {
         n.adaptations.push(adapt);
+        refreshSignature(n);
         this.mgr.log(
           makeEvent(turn, this.mgr.age, 'mutation', `${fullName(n)} has learned something about you.`, [n.id], true, 'bad')
         );
@@ -835,6 +838,7 @@ export class World {
           : itemForWeapon(playerWeaponId);
         if (stolen) {
           n.stolen.push(stolen);
+          refreshSignature(n);
           remember(n, 'I_STOLE_PLAYER_WEAPON', turn);
           const wid = stolen.weaponId ?? playerWeaponId;
           if (wid && !meta.lostWeapons.includes(wid)) meta.lostWeapons.push(wid);
@@ -949,6 +953,7 @@ export class World {
     n.stolen.length = 0;
     syncLegacyWeapons(meta);
     recomputePower(n);
+    refreshSignature(n);
   }
 
   /** The player fled combat range of a named enemy. */

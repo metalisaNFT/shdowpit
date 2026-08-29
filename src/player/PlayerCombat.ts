@@ -60,6 +60,8 @@ export class PlayerCombat {
   private comboTimer = 0;
 
   dodgeCooldown = 0;
+  /** Time until the next dodge charge refills (one charge per full cooldown). */
+  dodgeRecharge = 0;
   parryCooldown = 0;
 
   /** set for exactly one frame when a swing's active window opens */
@@ -145,6 +147,7 @@ export class PlayerCombat {
     this.comboIndex = 0;
     this.comboTimer = 0;
     this.dodgeCooldown = 0;
+    this.dodgeRecharge = 0;
     this.parryCooldown = 0;
     this.pendingHit = null;
     this.invulnerable = false;
@@ -283,10 +286,14 @@ export class PlayerCombat {
     this.dodgeX = dirX;
     this.dodgeZ = dirZ;
     this.dodgeCharges = Math.max(0, this.dodgeCharges - 1);
-    this.dodgeCooldown =
-      this.dodgeCharges > 0
-        ? 0.12
-        : Math.max(DODGE_RULES.cooldownFloor, DODGE_TIME + DODGE_COOLDOWN * this.dodgeCooldownMul);
+    if (this.dodgeCharges > 0) {
+      this.dodgeCooldown = 0.12;
+    } else {
+      this.dodgeRecharge = Math.max(
+        DODGE_RULES.cooldownFloor,
+        DODGE_TIME + DODGE_COOLDOWN * this.dodgeCooldownMul
+      );
+    }
     this.comboTimer = 0;
     void max;
     return true;
@@ -418,9 +425,19 @@ export class PlayerCombat {
     }
 
     if (this.dodgeCooldown > 0) this.dodgeCooldown -= dt;
-    else {
-      const max = hasTriggeredPower(stats.powers.ids(), 'double_dodge') ? 2 : 1;
-      if (this.dodgeCharges < max) this.dodgeCharges = max;
+
+    const maxCharges = hasTriggeredPower(stats.powers.ids(), 'double_dodge') ? 2 : 1;
+    if (this.dodgeCharges < maxCharges && this.dodgeRecharge > 0) {
+      this.dodgeRecharge -= dt;
+      if (this.dodgeRecharge <= 0) {
+        this.dodgeCharges++;
+        if (this.dodgeCharges < maxCharges) {
+          this.dodgeRecharge = Math.max(
+            DODGE_RULES.cooldownFloor,
+            DODGE_TIME + DODGE_COOLDOWN * this.dodgeCooldownMul
+          );
+        }
+      }
     }
     if (this.parryCooldown > 0) this.parryCooldown -= dt;
     if (this.riposteWindow > 0) this.riposteWindow -= dt;
@@ -528,11 +545,12 @@ export class PlayerCombat {
     // recovery rather than to damage, because tempo is what a defensive read
     // should be worth. The ATTACK SPEED run stat multiplies on top.
     const haste = (this.hasteTime > 0 ? 1 - PLAYER.perfectDodgeHaste : 1) / Math.max(0.5, this.attackSpeedMul);
+    const livingRecover = this.livingWeaponT > 0 ? 0.82 : 1;
     if (this.attackKind === 'heavy') {
       return {
         windup: (weapon.windup * 1.9 + 0.05) * haste,
         active: 0.1,
-        recover: weapon.recover * 1.55 * haste,
+        recover: weapon.recover * 1.55 * haste * livingRecover,
       };
     }
     // Three genuinely different swings, not two identical ones and a finisher.
@@ -543,7 +561,7 @@ export class PlayerCombat {
     return {
       windup: weapon.windup * c.windup * haste,
       active: 0.07,
-      recover: weapon.recover * c.recover * haste,
+      recover: weapon.recover * c.recover * haste * livingRecover,
     };
   }
 

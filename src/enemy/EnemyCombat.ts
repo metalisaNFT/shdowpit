@@ -16,7 +16,7 @@
 import type { WeaponDef } from '../data/weapons';
 import type { TraitMods } from '../data/traits';
 import type { EnemyAttackDef, AttackIntent, ProjectileKind } from '../data/attacks';
-import { POSTURE, ENEMY } from '../data/balance';
+import { POSTURE, ENEMY, TELEGRAPH } from '../data/balance';
 
 export type EnemyActionState =
   | 'ready'
@@ -48,6 +48,8 @@ export interface EnemyHit {
   knockbackMul: number;
   /** which projectile behaviour a ranged attack fires */
   projectileKind: ProjectileKind;
+  /** forward displacement during the strike — used by PIN vs charges */
+  lunge: number;
 }
 
 export class EnemyCombat {
@@ -213,8 +215,14 @@ export class EnemyCombat {
     this.state = 'windup';
     this.t = 0;
     this.current = def;
-    this.anticipation = Math.max(0.15, anticipation * mods.windupMul);
-    this.holdTime = def.delay;
+    this.anticipation = Math.max(TELEGRAPH.minAnticipation, anticipation * mods.windupMul);
+    let hold = def.delay;
+    if (mods.windupJitter > 0 && hold <= 0 && def.anticipation >= 0.45) {
+      hold = def.anticipation * mods.windupJitter * 0.55;
+    } else if (mods.windupJitter > 0 && hold > 0) {
+      hold += def.anticipation * mods.windupJitter * 0.25;
+    }
+    this.holdTime = hold;
     this.activeTime = def.active;
     this.recoverTime = def.recovery * mods.windupMul;
     this.hitsTotal = Math.max(1, def.hits);
@@ -224,6 +232,7 @@ export class EnemyCombat {
   }
 
   block(duration: number): void {
+    if (this.state === 'broken') return;
     this.state = 'block';
     this.t = duration;
   }
@@ -238,6 +247,7 @@ export class EnemyCombat {
   }
 
   knockdown(duration = 1.5): void {
+    if (this.state === 'broken') return;
     this.state = 'knockdown';
     this.t = duration;
     this.posture = 0;
@@ -391,6 +401,7 @@ export class EnemyCombat {
       index: this.hitsDone,
       knockbackMul: def.knockbackMul,
       projectileKind: def.projectileKind,
+      lunge: def.lunge,
     };
     this.hitsDone++;
   }

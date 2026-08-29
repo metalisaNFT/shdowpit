@@ -4,6 +4,7 @@
  */
 
 import type { PowerId, PowerSet } from '../data/abilities';
+import { getPower } from '../data/abilities';
 import { REACTION } from '../data/balance';
 import type { RunState } from '../run/RunState';
 
@@ -115,35 +116,5 @@ export function markReaction(run: RunState, key: string, now: number): void {
 }
 
 export function familyOf(id: PowerId): PowerFamily {
-  const m: Partial<Record<PowerId, PowerFamily>> = {
-    blink: 'Movement',
-    dash_strike: 'Movement',
-    chain: 'Movement',
-    phantom: 'Movement',
-    stampede: 'Movement',
-    reversal: 'PerfectDefense',
-    riposte: 'PerfectDefense',
-    return_fire: 'PerfectDefense',
-    thorns: 'PerfectDefense',
-    predator: 'Execution',
-    parasite: 'Execution',
-    vulture: 'Execution',
-    terror: 'Execution',
-    execution_surge: 'Execution',
-    toxic_detonation: 'Poison',
-    toxic_edge: 'Poison',
-    toxic_shot: 'Poison',
-    ember: 'Fire',
-    shockwave: 'Momentum',
-    momentum: 'Momentum',
-    echo: 'Posture',
-    posture_hunter: 'Posture',
-    interruptor: 'Posture',
-    blood_debt: 'Revenge',
-    hunters_mark: 'Revenge',
-    crippling_bolt: 'Projectile',
-    chain_shard: 'Projectile',
-    piercing_shard: 'Projectile',
-  };
-  return m[id] ?? 'Utility';
+  return getPower(id).family;
 }

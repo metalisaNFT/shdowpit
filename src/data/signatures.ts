@@ -120,6 +120,12 @@ export function ensureSignature(n: Nemesis): SignatureId {
   return n.signatureId;
 }
 
+/** Re-derive when simulation facts change (stolen gear, scars, returns, …). */
+export function refreshSignature(n: Nemesis): SignatureId {
+  n.signatureId = deriveSignature(n);
+  return n.signatureId;
+}
+
 /**
  * True when this attack is the named foe's signature tell — used for combat
  * feedback (toast / telegraph / known flag). Keeps presentation tied to facts

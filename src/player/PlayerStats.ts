@@ -70,6 +70,9 @@ export class PlayerStats {
     this.brokenMask = false;
     this.ashenEye = false;
     this.varkMask = false;
+    this.heavySetBonus = false;
+    this.lightSetBonus = false;
+    this.toxicSetBonus = false;
   }
 
   statCount(id: RunStatId): number {
@@ -153,6 +156,10 @@ export class PlayerStats {
   /** currently equipped weapon id */
   weaponId = 'sword';
 
+  heavySetBonus = false;
+  lightSetBonus = false;
+  toxicSetBonus = false;
+
   /** compiled from skill tree + gear (incoming damage mul) */
   armorIncomingMul = 1;
   brokenMask = false;
@@ -198,6 +205,9 @@ export class PlayerStats {
     this.brokenMask = false;
     this.ashenEye = false;
     this.varkMask = false;
+    this.heavySetBonus = false;
+    this.lightSetBonus = false;
+    this.toxicSetBonus = false;
     this.runKills = 0;
     this.runNamedKills = 0;
     this.essence = 0;

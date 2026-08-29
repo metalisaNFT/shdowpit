@@ -199,6 +199,9 @@ export function applyBuildToStats(meta: PlayerMeta, stats: PlayerStats, runItems
     if (n >= 2 && b.twoPowers) powers.push(...b.twoPowers);
     if (n >= 3 && b.threePowers) powers.push(...b.threePowers);
     if (n >= 3 && b.three) notes.push(`${setId.toUpperCase()} 3: ${b.three}`);
+    if (setId === 'light' && n >= 2) stats.lightSetBonus = true;
+    if (setId === 'heavy' && n >= 2) stats.heavySetBonus = true;
+    if (setId === 'toxic' && n >= 2) stats.toxicSetBonus = true;
   }
 
   for (const rid of runItems) {
@@ -207,9 +210,8 @@ export function applyBuildToStats(meta: PlayerMeta, stats: PlayerStats, runItems
   }
 
   const unique = Array.from(new Set(powers));
-  for (const id of unique) {
-    if (!stats.powers.has(id)) stats.addPower(id);
-  }
+  stats.powers.clear();
+  for (const id of unique) stats.powers.add(id);
 
   const triggers = new Map<EffectTrigger, PowerId[]>();
   for (const id of unique) {
@@ -221,7 +223,10 @@ export function applyBuildToStats(meta: PlayerMeta, stats: PlayerStats, runItems
   }
 
   const w = equippedWeapon(p);
-  if (w) stats.weaponId = weaponIdFor(w);
+  if (w) {
+    stats.weaponId = weaponIdFor(w);
+    stats.techniques = [...(meta.techniques[stats.weaponId] ?? [])];
+  }
 
   const brokenMask = worn.some((i) => i.defId === 'broken_mask');
   const ashenEye = worn.some((i) => i.defId === 'ashen_eye');
@@ -229,6 +234,7 @@ export function applyBuildToStats(meta: PlayerMeta, stats: PlayerStats, runItems
   const heavy = worn.some((i) => i.defId === 'heavy_chest');
   const light = worn.some((i) => i.defId === 'light_chest');
   stats.armorIncomingMul = heavy ? 0.82 : light ? 1.08 : 1;
+  if (stats.lightSetBonus) stats.addGearStat('dodgeCooldown', -0.06);
   stats.brokenMask = brokenMask;
   stats.ashenEye = ashenEye;
   stats.varkMask = varkMask;

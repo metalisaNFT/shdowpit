@@ -450,6 +450,32 @@ async function main() {
     JSON.stringify(chain),
   );
 
+  log('--- PHASE 3: combat promises ---');
+  const dodge = await G(() => window.SHDOWPIT.__sim('dodgeRecharge'));
+  check(
+    'double dodge recharges one charge per cooldown',
+    dodge.recharged === true,
+    JSON.stringify(dodge),
+  );
+  const broken = await G(() => window.SHDOWPIT.__sim('brokenGuard'));
+  check(
+    'broken enemies ignore block and knockdown',
+    broken.stillBroken === true,
+    JSON.stringify(broken),
+  );
+  const sw = await G(() => window.SHDOWPIT.__sim('shockwaveProc'));
+  check(
+    'shockwave proc gate fires on heavy hit',
+    sw.fired === true && String(sw.log).includes('TRIGGER ON_HEAVY_HIT shockwave'),
+    sw.log ?? '',
+  );
+  const wind = await G(() => window.SHDOWPIT.__sim('secondWind'));
+  check(
+    'second wind leaves 1 HP on a fatal blow',
+    wind.secondWind === true && wind.hp === 1,
+    JSON.stringify(wind),
+  );
+
   // Build B: posture breaker — heavy hits + posture stats crack an enemy open.
   // Target a HEAVY: grunts die before their posture matters; the wall is the
   // enemy this build exists for.

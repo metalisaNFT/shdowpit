@@ -18,7 +18,9 @@ import type { Nemesis, Rank } from './Nemesis';
 import { fullName, rankIndex, RANK_ORDER } from './Nemesis';
 import { generateNemesis, recomputePower } from './NemesisGenerator';
 import { remember, recomputeRevenge } from './NemesisMemory';
+import { refreshSignature } from '../data/signatures';
 import { purgeReferences, makeRivals, setMaster } from './NemesisRelationships';
+import { simOf } from '../god/GodTypes';
 
 const MAX_LOG = 600;
 
@@ -328,17 +330,17 @@ export class NemesisManager {
     const cap = targets.overlord + targets.warlord + targets.captain + targets.elite + 2;
     let living = this.living();
     if (living.length <= cap) return;
+    const god = this.data.god;
     const expendable = living
-      .filter(
-        (n) =>
-          n.rank === 'elite' &&
-          n.killsAgainstPlayer === 0 &&
-          n.defeatsByPlayer === 0 &&
-          n.escapedPlayer === 0 &&
-          n.returns === 0 &&
-          n.stolen.length === 0 &&
-          n.playerRelationship <= 0
-      )
+      .filter((n) => {
+        if (n.rank !== 'elite') return false;
+        if (n.killsAgainstPlayer > 0 || n.defeatsByPlayer > 0 || n.escapedPlayer > 0 || n.returns > 0) return false;
+        if (n.stolen.length > 0 || n.playerRelationship > 0) return false;
+        const s = simOf(n);
+        if (s.deeds.length > 0 || s.revengeTargets.length > 0) return false;
+        if (god?.conditions.some((c) => c.targetKind === 'nemesis' && c.targetId === n.id)) return false;
+        return true;
+      })
       .sort((a, b) => a.power - b.power);
     while (living.length > cap && expendable.length) {
       const n = expendable.shift()!;
@@ -432,13 +434,7 @@ export class NemesisManager {
     for (const a of AREAS) {
       if (this.data.territories[a.id] === n.id) this.data.territories[a.id] = null;
     }
-    // Allies take it personally.
-    for (const aid of n.allies) {
-      const ally = this.byId(aid);
-      if (ally && ally.alive && byPlayer) {
-        remember(ally, 'PLAYER_KILLED_MY_ALLY', this.turn, n.id);
-      }
-    }
+    // Allies take it personally — written once after the survive roll (World.onEnemyKilled).
     this.bus.emit('nemesisDied', { nemesis: n, byPlayer });
     return this.log(
       makeEvent(
@@ -463,6 +459,7 @@ export class NemesisManager {
     n.title = chooseTitle(n, this.titlesInUse(n));
     recomputeRevenge(n);
     recomputePower(n);
+    refreshSignature(n);
     this.bus.emit('nemesisReturned', { nemesis: n });
     const detail = scarLabel ? ` ${scarLabel} and all.` : '';
     return this.log(

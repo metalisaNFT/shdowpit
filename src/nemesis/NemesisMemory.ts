@@ -5,6 +5,7 @@
 
 import type { MemoryEvent, MemoryType, Nemesis, Scar, ScarId } from './Nemesis';
 import { countMemory, hasScar } from './Nemesis';
+import { refreshSignature } from '../data/signatures';
 
 const MAX_MEMORY = 40;
 
@@ -142,6 +143,7 @@ export function applyScar(n: Nemesis, id: ScarId, turn: number, cause?: string):
   if (t.weakness && !n.weaknesses.includes(t.weakness) && n.weaknesses.length < 3) {
     n.weaknesses.push(t.weakness);
   }
+  if (id === 'burn') refreshSignature(n);
   return SCAR_NAMES[id];
 }
 

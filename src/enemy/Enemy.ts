@@ -14,6 +14,7 @@
 
 import * as THREE from 'three';
 import type { Combatant, DamageInfo, DamageResult } from '../combat/Types';
+import type { Player } from '../player/Player';
 import { emptyResult } from '../combat/Types';
 import { computeMods, type TraitMods } from '../data/traits';
 import { getPersonality } from '../data/personalities';
@@ -484,7 +485,7 @@ export class Enemy implements Combatant {
     const res = emptyResult();
     if (!this.alive) return res;
 
-    if (!info.unblockable && this.combat.state !== 'stagger' && this.combat.state !== 'knockdown') {
+    if (!info.unblockable && this.combat.state !== 'stagger' && this.combat.state !== 'knockdown' && this.combat.state !== 'broken') {
       if (this.mods.dodgeChance > 0 && Math.random() < this.mods.dodgeChance && info.source !== 'execute') {
         res.dodged = true;
         return res;
@@ -552,7 +553,12 @@ export class Enemy implements Combatant {
       this.poison += info.poison;
       if (this.poison >= POISON.threshold && this.poisonTimer <= 0) {
         this.poison = 0;
-        this.poisonTimer = POISON.duration;
+        let dur = POISON.duration;
+        const atk = info.attacker;
+        if (atk?.isPlayer && (atk as Player).stats.toxicSetBonus) {
+          dur *= 1.35;
+        }
+        this.poisonTimer = dur;
         this.poisonTick = 0;
         res.poisoned = true;
       }
