@@ -272,8 +272,28 @@ async function main() {
     { timeout: 5000 }
   ).catch(() => {});
   if (await page.$eval('#choice-screen', (e) => !e.classList.contains('hidden')).catch(() => false)) {
+    check('nemesis trophy offer appears after captain kill', true);
     await page.keyboard.press('Digit1');
     await page.waitForTimeout(1400);
+    const shardOrPower = await page.waitForFunction(
+      () => {
+        const p = document.querySelector('#power-screen');
+        return p && !p.classList.contains('hidden');
+      },
+      null,
+      { timeout: 6000 }
+    ).then(() => true).catch(() => false);
+    check('trophy follow-up opens (shard or power)', shardOrPower);
+    if (shardOrPower) {
+      await page.keyboard.press('Digit1');
+      await page.waitForTimeout(1200);
+      const secondPower = await page.$eval('#power-screen', (e) => !e.classList.contains('hidden')).catch(() => false);
+      if (secondPower) {
+        check('captain kill chains to power after trophy', true);
+        await page.keyboard.press('Digit1');
+        await page.waitForTimeout(900);
+      }
+    }
   }
   if (
     !(await page.$eval('#power-screen', (e) => !e.classList.contains('hidden')).catch(() => false))
@@ -431,7 +451,10 @@ async function main() {
 
   const reportButtons = await page.$$('#death-screen button');
   check('report offers hierarchy + continue', reportButtons.length >= 2, `${reportButtons.length}`);
-  await reportButtons[reportButtons.length - 1].click();
+  const continueBtn = reportButtons[reportButtons.length - 1];
+  const continueBox = await continueBtn.boundingBox().catch(() => null);
+  check('death report continue is clickable', !!continueBox && continueBox.width > 8 && continueBox.height > 8);
+  await continueBtn.click();
   await page.waitForTimeout(2500);
   s = await state();
   check('next run starts after death', s.mode === 'playing' && s.enemiesAlive > 0, JSON.stringify({ mode: s.mode, e: s.enemiesAlive }));

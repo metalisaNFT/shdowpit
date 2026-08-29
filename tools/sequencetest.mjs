@@ -243,7 +243,10 @@ async function main() {
   check('the world turned while you were dead', turnAfter > turnBefore, `${turnBefore} -> ${turnAfter}`);
   await shot('07-while-you-were-dead.png');
   const btns = await page.$$('#death-screen button');
-  if (btns.length) await btns[btns.length - 1].click();
+  const continueBtn = btns[btns.length - 1];
+  const box = continueBtn ? await continueBtn.boundingBox().catch(() => null) : null;
+  check('the death report continue button is clickable', !!box && box.width > 8, box ? `${Math.round(box.width)}x${Math.round(box.height)}` : 'missing');
+  if (btns.length) await continueBtn.click();
   await page.waitForTimeout(3000);
   s = await state();
   check('the next run begins', s.mode === 'playing', s.mode);

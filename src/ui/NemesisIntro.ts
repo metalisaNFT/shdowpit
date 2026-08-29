@@ -10,6 +10,7 @@ export class NemesisIntro {
   readonly root = div('layer hidden');
   private card = div();
   private timer = 0;
+  private fadeTimer = 0;
   private lineEl: HTMLElement | null = null;
   private portraitEl: HTMLElement | null = null;
   private chipEl: HTMLElement | null = null;
@@ -21,6 +22,10 @@ export class NemesisIntro {
   }
 
   present(p: IntroCardPayload): void {
+    if (this.fadeTimer) {
+      window.clearTimeout(this.fadeTimer);
+      this.fadeTimer = 0;
+    }
     clear(this.card);
     this.card.className = `intro-variant-${p.variant}`;
     this.card.style.setProperty('--accent', p.accent);
@@ -74,7 +79,8 @@ export class NemesisIntro {
     this.timer -= dt;
     if (this.timer <= 0) {
       this.card.classList.add('fade-out');
-      window.setTimeout(() => {
+      this.fadeTimer = window.setTimeout(() => {
+        this.fadeTimer = 0;
         show(this.root, false);
         this.card.classList.remove('fade-out');
       }, 500);
@@ -88,6 +94,10 @@ export class NemesisIntro {
 
   hide(): void {
     this.timer = 0;
+    if (this.fadeTimer) {
+      window.clearTimeout(this.fadeTimer);
+      this.fadeTimer = 0;
+    }
     show(this.root, false);
   }
 }

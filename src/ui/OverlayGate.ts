@@ -90,7 +90,8 @@ export function decideOverlays(q: OverlayQuery): OverlayDecision {
     showTutorial: !modal && !intro && !dying && q.tutorialActive && !q.executable,
     showPurpose: !modal && !intro && !dying && !q.executable && (!q.inCombat || !q.tutorialActive),
     showBanner: !modal && !intro && !dying && !q.executable && !q.tutorialActive && !q.inCombat,
-    showToasts: !modal && !intro && !dying,
+    // Encounter director callouts use toast(); only the intro card should gate them.
+    showToasts: !modal && !dying && !q.introActive,
     showPrompt: !modal && !intro && !dying && (q.executable || q.interact || (!q.inCombat && q.remnantHeal)),
     allowRemnantPrompt: !q.inCombat && !intro && !q.executable && !q.interact && !dying && !modal,
     nextLabel,

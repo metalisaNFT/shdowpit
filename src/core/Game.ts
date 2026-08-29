@@ -157,6 +157,7 @@ import {
   respecTree,
 } from '../progress/Progression';
 import type { ItemDef } from '../data/equipment';
+import { hasTriggeredPower } from '../data/equipment';
 import { SKILL_NODE_MAP } from '../data/skillTree';
 
 type Mode =
@@ -303,12 +304,16 @@ export class Game {
   private calmTime = 0;
   /** Seconds before another optional offer may open after one closed. */
   private offerQuiet = 0;
-  /** Fullscreen offer waiting for intro / lull to finish. */
-  private pendingModal: { label: string; open: () => void } | null = null;
+  /** Fullscreen offers waiting for intro / lull to finish (FIFO). */
+  private pendingModals: { label: string; open: () => void }[] = [];
   /** Real-time seconds of idle with no intro, before a queued modal may open. */
   private modalCalm = 0;
   /** True between the Overlord's death and the succession report. */
   private succession = false;
+  /** Overlord kill waiting to commit the age turn. */
+  private pendingSuccession: { name: string } | null = null;
+  private successionCommitted = false;
+  private successionEvents: WorldEvent[] | null = null;
   private quality: Quality;
   private lowFpsTime = 0;
   private markedUid = -1;
@@ -440,6 +445,7 @@ export class Game {
           this.bus.emit('combatProc', { note: t, nemesisId: named?.nemesis.id, dramatic });
           this.ui.hud.toast(t, 'gold', 1.6);
         },
+        onNamedBurned: () => this.world.noteFire(),
         onEnemyStrikeLanded: (e, info) => {
           if (!e.named) return;
           this.bus.emit('namedStrike', {
@@ -585,7 +591,14 @@ export class Game {
           };
         },
       },
-      onSequenceReady: (seq) => g.openComic(seq),
+      onSequenceReady: (seq) => {
+        if (g.comicOpen && g.ui.comic.visible) {
+          g.ui.comic.finalizeSequence(seq);
+          return;
+        }
+        g.pendingComic = seq;
+        g.comicAge = 0;
+      },
       onPanelReady: (panel, seq) => {
         if (g.comicOpen && g.ui.comic.visible) {
           g.ui.comic.appendPanel(panel, seq);
@@ -601,16 +614,6 @@ export class Game {
     });
     this.comic.setQuality('potato');
     // Save data is not loaded until start(); applySettings() sets enabled there.
-  }
-
-  private openComic(seq: import('../comic/Types').ComicSequence): void {
-    if (this.comicOpen) {
-      if (this.ui.comic.visible) this.ui.comic.finalizeSequence(seq);
-      return;
-    }
-    this.pendingComic = seq;
-    this.comicAge = 0;
-    this.tryPresentComic();
   }
 
   private enemiesAttacking(): boolean {
@@ -629,7 +632,7 @@ export class Game {
   private tryPresentComic(): void {
     if (!this.pendingComic || this.comicOpen) return;
     if (this.mode !== 'playing') return;
-    if (this.pendingModal) return;
+    if (this.pendingModals.length) return;
     if (this.encounter.busy || this.ui.intro.active) return;
     if (!this.pendingComic.panels.some((p) => p.state === 'ready' || p.state === 'failed')) return;
     if (!this.comicForce) {
@@ -714,7 +717,7 @@ export class Game {
         // without the player doing anything.
         this.ui.hierarchy.refreshIfOpen();
         if (this.ui.report.visible && this.lastReport?.recap?.length) {
-          this.presentReport(this.lastReport);
+          this.ui.report.patchRecap((b) => recapBeatLineFor(this.ai, b));
         }
         if (this.mode === 'god' && this.ui.god.visible) this.ui.god.refresh();
         if (this.mode === 'legends' && this.ui.legends.visible) this.ui.legends.refresh();
@@ -1071,6 +1074,7 @@ export class Game {
   }
 
   private showTitle(hasSave: boolean): void {
+    this.endRun({ bank: false, clearDescent: true });
     this.mode = 'title';
     this.ui.aiStatus.clear();
     this.input.setEnabled(false);
@@ -1088,7 +1092,6 @@ export class Game {
     this.ui.primer.hide();
     this.ui.legends.hide();
     this.ui.godEnd.hide();
-    this.world.endRun();
     this.setGodOverviewPresentation(false);
 
     const ov = this.mgr.overlord();
@@ -1184,8 +1187,12 @@ export class Game {
     this.runClock = 0;
     this.calmTime = 0;
     this.offerQuiet = 0;
-    this.pendingModal = null;
+    this.pendingModals = [];
     this.modalCalm = 0;
+    this.succession = false;
+    this.pendingSuccession = null;
+    this.successionCommitted = false;
+    this.successionEvents = null;
     this.dismissComic(true);
 
     this.camera.snapBehind(this.player.position, this.player.facing);
@@ -2250,6 +2257,62 @@ export class Game {
     this.mgr.persist();
   }
 
+  /** Shared cleanup for every run-end funnel. */
+  private endRun(opts: { bank?: boolean; endWorld?: boolean; exitPointer?: boolean; clearDescent?: boolean } = {}): void {
+    this.commitSuccession();
+    if (opts.exitPointer !== false) this.input.exitPointerLock();
+    if (opts.bank !== false) this.endRunAndBank();
+    if (opts.endWorld !== false) this.world.endRun();
+    if (opts.clearDescent) this.descent = null;
+  }
+
+  /** Commit the Overlord succession synchronously so no run-end can skip the Age turn. */
+  private commitSuccession(): WorldEvent[] | null {
+    if (!this.pendingSuccession || this.successionCommitted) return this.successionEvents;
+    const successionEvents = simulateSuccession(this.mgr);
+    this.mythFromEvents(successionEvents);
+    const ageEvent = this.mgr.advanceAge();
+    this.rebuildArena();
+    this.mgr.fillRanks();
+    this.mgr.persist();
+    this.mgr.markEventsKnown(this.mgr.turn);
+    this.successionEvents = [...successionEvents, ageEvent];
+    this.successionCommitted = true;
+    this.succession = false;
+    this.player.godMode = this.debugInvulnerable;
+    return this.successionEvents;
+  }
+
+  private presentSuccessionReport(name: string, events: WorldEvent[]): void {
+    this.ui.power.hide();
+    this.ui.hierarchy.close();
+    this.ui.pause.close();
+    this.mode = 'report';
+    this.loop.paused = false;
+    this.input.setEnabled(false);
+    this.input.exitPointerLock();
+    this.endRun({ bank: true });
+    this.ui.hud.setVisible(false);
+    const recap = composeWorldTurnRecap(this.mgr.data, events);
+    this.syncAIWorld();
+    observeRecapBeats(this.ai, this.mgr, recap);
+    this.presentReport({
+      title: 'THE SEAT IS EMPTY',
+      subtitle: `${name} IS DEAD — ${this.mgr.ageState.name} BEGINS`,
+      events,
+      recap,
+      highlight: this.mgr.living().map((n) => n.name.toUpperCase()),
+      buttonLabel: 'INTO THE NEW AGE  ▸',
+      onContinue: () => {
+        this.lastReport = null;
+        this.ui.report.hide();
+        this.pendingSuccession = null;
+        this.successionEvents = null;
+        this.startRun();
+      },
+    });
+  }
+
   /* ============================================================
      frame
      ============================================================ */
@@ -2484,6 +2547,20 @@ export class Game {
     if (!this.debugOpen && !this.comicOpen) this.handlePlayingInput();
 
     const lockPoint = this.currentLockPoint();
+    this.combat.worldAge = this.mgr.age;
+    if (hasTriggeredPower(this.player.stats.powers.ids(), 'hunters_mark') && this.lockTargetUid === null) {
+      let nearest: Enemy | null = null;
+      let bestD = Infinity;
+      for (const e of this.world.enemies) {
+        if (!e.alive || !e.named) continue;
+        const d = Math.hypot(e.position.x - this.player.position.x, e.position.z - this.player.position.z);
+        if (d < bestD) {
+          bestD = d;
+          nearest = e;
+        }
+      }
+      if (nearest) this.lockTargetUid = nearest.uid;
+    }
     this.combat.lockUid = this.lockTargetUid;
     this.player.update(dt, rdt, this.input, this.camera, this.arena, lockPoint);
 
@@ -2518,6 +2595,7 @@ export class Game {
 
     this.world.update(dt, this.player);
     this.encounter.update(rdt, this.encounterSafety(), this.player);
+    this.encounter.watchIntroHolds(this.world.enemies);
     this.combat.setEnemies(this.world.enemies);
 
     for (const e of this.world.enemies) e.update(dt, rdt);
@@ -2581,7 +2659,7 @@ export class Game {
       interact: prompt.interact,
       remnantHeal: prompt.remnant,
       inCombat,
-      pendingLabel: this.pendingModal?.label ?? null,
+      pendingLabel: this.pendingModals[0]?.label ?? null,
       comicOpen: this.comicOpen,
       pendingComic: !!this.pendingComic,
     });
@@ -2635,7 +2713,15 @@ export class Game {
     overlay: ReturnType<typeof decideOverlays>,
     prompt: { text: string | null; remnant: boolean },
   ): void {
-    if (!overlay.showBanner && this.ui.hud.bannerActive) this.ui.hud.clearAreaBanner();
+    if (!overlay.showBanner) {
+      if (overlay.lane === 'tutorial' && this.ui.hud.bannerActive) {
+        this.ui.hud.setAreaBannerVisible(false);
+      } else if (this.ui.hud.bannerActive) {
+        this.ui.hud.clearAreaBanner();
+      }
+    } else if (this.ui.hud.bannerActive) {
+      this.ui.hud.setAreaBannerVisible(true);
+    }
     this.ui.hud.setToastsEnabled(overlay.showToasts);
     const promptText =
       overlay.showPrompt && !(prompt.remnant && !overlay.allowRemnantPrompt) ? prompt.text : null;
@@ -2812,9 +2898,7 @@ export class Game {
       this.particles.pillar(shrine.position.x, shrine.position.z, 0xffb020, 1.2);
       this.world.run.rerolls++;
       if (this.runLootCycle++ % 3 === 0) {
-        window.setTimeout(() => {
-          if (this.mode === 'playing') this.offerRunLoot('SHRINE RELIC');
-        }, 500);
+        this.offerRunLoot('SHRINE RELIC');
       } else {
         this.offerPower('A SHRINE STILL WORKS');
       }
@@ -3231,10 +3315,9 @@ export class Game {
       return;
     }
     this.player.stats.essence += Math.round((e.named ? 30 + rankIndex(rank) * 25 : 4) * (1 + this.world.run.heat / 250));
-    if (e.named && this.pendingModal?.label === 'THEIR FATE') this.pendingModal = null;
+    if (e.named) this.pendingModals = this.pendingModals.filter((m) => m.label !== 'THEIR FATE');
     if (e.named) {
       this.comicHold = COMIC_HOLD_AFTER_NAMED;
-      this.world.noteAllyKilled(e.nemesis);
       addHeat(this.world.run, HEAT.namedKill);
       this.world.run.extraction.unlocked = true;
       this.world.run.rerolls++;
@@ -3261,18 +3344,13 @@ export class Game {
     this.finishVendettaAgainst(e, executed, false);
     this.world.onEnemyKilled(e, executed, definite);
     this.applyPlayerBuild();
-    if (!wasOverlord && e.named && this.mode === 'playing') {
-      window.setTimeout(() => {
-        if (this.mode === 'playing') this.offerNemesisReward(e.nemesis, executed);
-      }, 700);
+    if (!wasOverlord && e.named) {
+      this.offerNemesisReward(e.nemesis, executed);
     } else if (this.mode === 'playing' && !this.succession && this.player.stats.runKills >= this.nextBoonKills) {
       this.nextBoonKills = Math.ceil(this.nextBoonKills * 1.55 + 3);
       const lootTurn = this.runLootCycle++ % 2 === 0;
-      window.setTimeout(() => {
-        if (this.mode !== 'playing') return;
-        if (lootTurn) this.offerRunLoot('RUN FINDING');
-        else this.offerBoons('THE PIT FEEDS YOU');
-      }, 500);
+      if (lootTurn) this.offerRunLoot('RUN FINDING');
+      else this.offerBoons('THE PIT FEEDS YOU');
     }
     this.refreshPowerChips();
     this.mgr.data.run = this.world.run;
@@ -3327,7 +3405,7 @@ export class Game {
     this.audio.play('player_death', { volume: 1 });
     this.ui.hud.screenFlash('#ff2010', 0.55, 700);
     this.ui.hud.setPrompt(null);
-    this.pendingModal = null;
+    this.pendingModals = [];
     this.tutorial.dismiss();
     if (killer?.named) this.comic?.onNamedOutcome(killer.nemesis.id, 'player_dead');
     this.dismissComic(true);
@@ -3345,6 +3423,7 @@ export class Game {
   private runDeathSimulation(): void {
     const killer = this.pendingKiller;
     this.pendingKiller = null;
+    this.commitSuccession();
 
     const killerNemesis = this.world.onPlayerKilled(
       killer,
@@ -3431,13 +3510,13 @@ export class Game {
   private onOverlordSlain(e: Enemy): void {
     const name = fullName(e.nemesis);
 
-    // The succession runs on a 2.6s delay so the kill can land dramatically.
-    // If the player dies inside that window — an arrow already in flight, a
-    // last swing — `mode` becomes 'report' and the timeout below bails out:
-    // the Overlord is dead, but the crown never passes and the age never
-    // turns. The kill has been earned, so hold the player safe until the
-    // succession has actually been committed.
+    // The presentation waits 2.6s so the kill can land dramatically, but the
+    // age turn is committed synchronously so extraction / quit / death cannot
+    // skip the succession.
     this.succession = true;
+    this.pendingSuccession = { name };
+    this.successionCommitted = false;
+    this.successionEvents = null;
     this.player.godMode = true;
     this.combat.clearProjectiles();
 
@@ -3464,44 +3543,10 @@ export class Game {
     grantCinders(meta, 8);
 
     window.setTimeout(() => {
-      this.succession = false;
-      this.player.godMode = this.debugInvulnerable;
+      const events = this.commitSuccession();
+      if (!events || !this.pendingSuccession) return;
       if (this.mode === 'title' || this.mode === 'report') return;
-      this.ui.power.hide();
-      this.ui.hierarchy.close();
-      this.ui.pause.close();
-      this.mode = 'report';
-      this.loop.paused = false;
-      this.input.setEnabled(false);
-      this.input.exitPointerLock();
-      this.endRunAndBank();
-
-      const successionEvents = simulateSuccession(this.mgr);
-      this.mythFromEvents(successionEvents);
-      const ageEvent = this.mgr.advanceAge();
-      this.rebuildArena();
-      this.mgr.fillRanks();
-      this.mgr.persist();
-      this.mgr.markEventsKnown(this.mgr.turn);
-
-      this.world.endRun();
-      this.ui.hud.setVisible(false);
-      const recap = composeWorldTurnRecap(this.mgr.data, [...successionEvents, ageEvent]);
-      this.syncAIWorld();
-      observeRecapBeats(this.ai, this.mgr, recap);
-      this.presentReport({
-        title: 'THE SEAT IS EMPTY',
-        subtitle: `${name} IS DEAD — ${this.mgr.ageState.name} BEGINS`,
-        events: [...successionEvents, ageEvent],
-        recap,
-        highlight: this.mgr.living().map((n) => n.name.toUpperCase()),
-        buttonLabel: 'INTO THE NEW AGE  ▸',
-        onContinue: () => {
-          this.lastReport = null;
-          this.ui.report.hide();
-          this.startRun();
-        },
-      });
+      this.presentSuccessionReport(this.pendingSuccession.name, events);
     }, 2600);
   }
 
@@ -3764,7 +3809,6 @@ export class Game {
   }
 
   private offerNemesisReward(n: Nemesis, executed: boolean): void {
-    if (this.mode === 'power' || this.mode === 'choice') return;
     const vendetta = this.world.run.vendetta?.complete && this.world.run.vendetta.targetId === n.id;
     const rng = new RNG(this.world.run.runSeed ^ n.id.length * 997);
     const choices = nemesisRewardChoices(n, rng, { vendetta: !!vendetta, executed, farms: n.playerRewardFarms ?? 0 });
@@ -3789,11 +3833,7 @@ export class Game {
         this.applyNemesisReward(n, choices.find((c) => c.id === id) ?? choices[0]);
         this.resumeToPlaying();
         const runLootRoll = rankIndex(n.rank) >= 2 || this.rng.next() < 0.3;
-        if (runLootRoll) {
-          window.setTimeout(() => {
-            if (this.mode === 'playing') this.offerRunLoot('TROPHY SHARD');
-          }, 400);
-        }
+        if (runLootRoll) this.offerRunLoot('TROPHY SHARD');
         if (rankIndex(n.rank) >= 2) this.offerPower(`${n.name.toUpperCase()} IS DEAD`);
       }
     );
@@ -3849,8 +3889,7 @@ export class Game {
         if (e.named && e.alive) remember(e.nemesis, 'PLAYER_RAN_FROM_ME', this.mgr.turn);
       }
       this.mgr.markEventsKnown(this.mgr.turn);
-      this.endRunAndBank();
-      this.world.endRun();
+      this.endRun({ exitPointer: false });
       this.showWalkAway('YOU EXTRACTED', 'BONUS BANKED. THE WORLD REMEMBERS THE ESCAPE.');
     }
   }
@@ -4076,9 +4115,7 @@ export class Game {
         break;
       }
       case 'power':
-        window.setTimeout(() => {
-          if (this.mode === 'playing') this.offerPower(v.title);
-        }, 900);
+        this.offerPower(v.title);
         break;
       case 'choice':
         break;
@@ -4089,15 +4126,19 @@ export class Game {
 
   private requestModal(label: string, open: () => void): void {
     if (this.mode === 'dying' || this.mode === 'report' || this.mode === 'title') return;
-    if (this.mode === 'power' || this.mode === 'choice') return;
-    if (this.canOpenModal()) {
+    if (this.canOpenModal() && !this.pendingModals.length) {
       open();
       return;
     }
     const rank = this.modalRank(label);
-    if (!this.pendingModal || rank >= this.modalRank(this.pendingModal.label)) {
-      this.pendingModal = { label, open };
+    let insertAt = this.pendingModals.length;
+    for (let i = 0; i < this.pendingModals.length; i++) {
+      if (rank > this.modalRank(this.pendingModals[i].label)) {
+        insertAt = i;
+        break;
+      }
     }
+    this.pendingModals.splice(insertAt, 0, { label, open });
   }
 
   private modalRank(label: string): number {
@@ -4122,10 +4163,9 @@ export class Game {
       !this.ui.intro.active &&
       this.player.combat.action === 'idle';
     this.modalCalm = calm ? this.modalCalm + rdt : 0;
-    if (!this.pendingModal) return;
+    if (!this.pendingModals.length) return;
     if (!calm || this.modalCalm < 0.55) return;
-    const job = this.pendingModal;
-    this.pendingModal = null;
+    const job = this.pendingModals.shift()!;
     this.modalCalm = 0;
     job.open();
   }
@@ -4226,8 +4266,7 @@ export class Game {
         onResume: () => this.resumeFromPause(),
         onExtract: () => {
           this.ui.pause.close();
-          this.endRunAndBank();
-          this.world.endRun();
+          this.endRun();
           this.ui.hud.setVisible(false);
           this.mode = 'report';
           this.presentReport({
@@ -4244,7 +4283,7 @@ export class Game {
         },
         onQuit: () => {
           this.ui.pause.close();
-          this.endRunAndBank();
+          this.endRun({ clearDescent: true });
           this.showTitle(true);
         },
         onBuild: () => this.openBuild('paused'),
@@ -5009,7 +5048,10 @@ export class Game {
       loopPaused: this.loop.paused,
       introActive: this.ui.intro.active,
       encounterBusy: this.encounter.busy,
-      overlayNext: this.pendingModal?.label ?? (this.pendingComic ? 'ENCOUNTER' : null),
+      overlayNext: this.pendingModals[0]?.label ?? (this.pendingComic ? 'ENCOUNTER' : null),
+      pendingModals: this.pendingModals.map((m) => m.label),
+      successionPending: !!this.pendingSuccession,
+      successionCommitted: this.successionCommitted,
       comicOpen: this.comicOpen,
       debugOpen: this.debugOpen,
       lockGrace: Math.round(this.lockGrace * 100) / 100,
@@ -6188,6 +6230,50 @@ export class Game {
         bus.beginEvent();
         const allowed = bus.allow('e', now);
         return { blocked, allowed, chain: bus.chain };
+      }
+      case 'dodgeRecharge': {
+        this.player.stats.addPower('double_dodge');
+        const c = this.player.combat;
+        c.dodgeCharges = 0;
+        c.dodgeRecharge = 0.05;
+        c.dodgeCooldown = 0;
+        const before = c.dodgeCharges;
+        c.update(0.06, this.player.weapon, this.player.stats);
+        return { before, after: c.dodgeCharges, recharged: c.dodgeCharges > before };
+      }
+      case 'brokenGuard': {
+        this.__smiteEnemies();
+        if (!this.world.enemies.some((x) => x.alive)) this.__qaSpawnOne('fighter', 4);
+        const e = this.world.enemies.find((x) => x.alive);
+        if (!e) return { ok: false, stillBroken: false };
+        e.combat.breakPosture();
+        e.combat.block(0.5);
+        e.combat.knockdown(1.2);
+        return { ok: true, stillBroken: e.combat.state === 'broken', state: e.combat.state };
+      }
+      case 'shockwaveProc': {
+        this.player.stats.addPower('shockwave');
+        const bus = this.combat.effects;
+        bus.log.length = 0;
+        bus.beginEvent();
+        const now = this.combat.combatClock;
+        const fired = bus.trigger('ON_HEAVY_HIT', now, { scope: 'shockwave', cooldown: 0.25, onceKey: 'sw_test' });
+        return { fired, log: bus.log.join('\n') };
+      }
+      case 'secondWind': {
+        this.player.godMode = false;
+        this.player.stats.addPower('second_wind');
+        this.player.stats.secondWindUsed = false;
+        this.player.stats.hp = 50;
+        const res = this.player.applyDamage({
+          amount: 999,
+          source: 'light',
+          stagger: 0,
+          attacker: null,
+          fromX: 0,
+          fromZ: 0,
+        });
+        return { secondWind: res.secondWind === true, hp: this.player.stats.hp };
       }
       case 'remnants':
         run.remnants = Math.min(6, run.remnants + 3);

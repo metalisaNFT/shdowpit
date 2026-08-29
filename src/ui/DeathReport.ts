@@ -44,6 +44,7 @@ export class DeathReport {
   private actionsEl = div('actions');
   private sr = div('sr-only');
   private timers: number[] = [];
+  private recapBeats: RecapBeat[] = [];
 
   constructor() {
     this.root.id = 'death-screen';
@@ -86,6 +87,7 @@ export class DeathReport {
     }
 
     const recap = opts.recap ?? [];
+    this.recapBeats = recap;
     this.sr.textContent = recap.length
       ? recapPlainText(recap)
       : opts.events.map((e) => e.text).join('. ');
@@ -156,6 +158,18 @@ export class DeathReport {
     this.timers.push(window.setTimeout(finish, revealAt));
 
     show(this.root, true);
+  }
+
+  /** Patch AI-generated recap lines without rebuilding the whole screen. */
+  patchRecap(recapLineFor: (b: RecapBeat) => string): void {
+    if (!this.recapBeats.length) return;
+    const lines = this.bodyEl.querySelectorAll<HTMLElement>('.recap-l');
+    let i = 0;
+    for (const b of this.recapBeats) {
+      const el = lines[i++];
+      if (!el) break;
+      el.textContent = recapLineFor(b);
+    }
   }
 
   hide(): void {

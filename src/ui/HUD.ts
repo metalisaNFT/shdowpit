@@ -424,6 +424,11 @@ export class HUD {
    * lower-priority message, so it gets out of the way rather than drawing
    * through the arrival card.
    */
+  /** Hide without discarding content — restored when the lane frees up. */
+  setAreaBannerVisible(visible: boolean): void {
+    show(this.banner, visible);
+  }
+
   clearAreaBanner(): void {
     this.bannerTimer = 0;
     show(this.banner, false);

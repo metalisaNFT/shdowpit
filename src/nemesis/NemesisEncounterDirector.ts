@@ -169,6 +169,7 @@ export class NemesisEncounterDirector {
     }
 
     if (isIntroKind(kind) && !this.isSafe(this.lastSafety) && e.entranceKind !== 'immediate') {
+      if (this.queued) this.queued.enemy.introHold = false;
       e.introHold = true;
       this.queued = { enemy: e, kind, salt, ctx, waiting: 0 };
       return kind;
@@ -223,6 +224,16 @@ export class NemesisEncounterDirector {
     }
   }
 
+  /** Clear introHold on named enemies the director is no longer presenting. */
+  watchIntroHolds(enemies: Enemy[]): void {
+    const held = new Set<number>();
+    if (this.active?.enemy.alive) held.add(this.active.enemy.uid);
+    if (this.queued?.enemy.alive) held.add(this.queued.enemy.uid);
+    for (const e of enemies) {
+      if (e.named && e.introHold && !held.has(e.uid)) e.introHold = false;
+    }
+  }
+
   private isSafe(s: EncounterSafety): boolean {
     if (s.playerHpFrac < 0.35) return false;
     if (s.playerStaggered) return false;
@@ -234,6 +245,10 @@ export class NemesisEncounterDirector {
   private start(e: Enemy, kind: EncounterKind, salt: number, shortened: boolean): void {
     const d = this.deps;
     if (!d) return;
+    if (this.active && this.active.enemy !== e) {
+      this.active.enemy.introHold = false;
+      this.active = null;
+    }
     const n = e.nemesis;
     const overlay = d.tauntFor(n, salt);
     let line = encounterLine(n, kind, salt, overlay);
