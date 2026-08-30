@@ -312,12 +312,12 @@ export function randomDef(kind: ItemKindFilter, age = 1): ItemDef {
 
 export type ItemKindFilter = 'weapon' | 'armor' | 'relic' | 'run' | 'trophy';
 
-export function runLootChoices(age: number): ItemDef[] {
+export function runLootChoices(rng: { int(min: number, max: number): number }, age: number): ItemDef[] {
   const pool = RUN_ITEM_IDS.map((id) => ITEM_MAP.get(id)!).filter(Boolean);
   const out: ItemDef[] = [];
   const left = pool.slice();
   while (out.length < 3 && left.length) {
-    const i = Math.floor(Math.random() * left.length);
+    const i = rng.int(0, left.length - 1);
     out.push(left.splice(i, 1)[0]);
   }
   void age;

@@ -110,6 +110,8 @@ export interface DebugHooks {
   forceEscape(id: string): void;
   forceBetrayal(id: string): void;
   forceResurrection(id: string): void;
+  grantArmor(): boolean;
+  openBook(id: string): void;
   giveAbility(id: PowerId): void;
   teleport(areaId: string): void;
   toggleInvulnerable(): boolean;

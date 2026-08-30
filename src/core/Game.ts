@@ -8,7 +8,7 @@ import { GameLoop } from './GameLoop';
 import { Input } from './Input';
 import { SaveSystem, type Quality, type Settings } from './SaveSystem';
 import { createBus, type Bus } from './Events';
-import { RNG, randomSeed } from './RNG';
+import { RNG, randomSeed, hashString as seedFromString } from './RNG';
 import { Telemetry } from './Telemetry';
 
 import { Arena } from '../world/Arena';
@@ -1190,6 +1190,7 @@ export class Game {
     this.mgr.data.playerMeta.runs++;
     this.mgr.fillRanks();
     this.world.startRun(this.player);
+    this.rng = new RNG(this.world.run.runSeed);
     const perkNotes = applyStartingPerks(this.mgr.data.playerMeta, this.world.run);
     this.combatOverlayNote = '';
     this.encounterAiContext = {};
@@ -3646,7 +3647,7 @@ export class Game {
   /** Pick-one run modifiers — same offer shell as boons. */
   private offerRunLoot(subtitle: string): void {
     const owned = new Set(this.world.run.runLoot);
-    const options = runLootChoices(this.mgr.age)
+    const options = runLootChoices(this.rng, this.mgr.age)
       .filter((d) => !owned.has(d.id))
       .map((d) => this.runLootCard(d));
     if (!options.length) return;
@@ -3863,7 +3864,7 @@ export class Game {
 
   private offerNemesisReward(n: Nemesis, executed: boolean): void {
     const vendetta = this.world.run.vendetta?.complete && this.world.run.vendetta.targetId === n.id;
-    const rng = new RNG(this.world.run.runSeed ^ n.id.length * 997);
+    const rng = new RNG(this.world.run.runSeed ^ seedFromString(n.id));
     const choices = nemesisRewardChoices(n, rng, { vendetta: !!vendetta, executed, farms: n.playerRewardFarms ?? 0 });
     this.requestModal('NEMESIS TROPHY', () => this.openNemesisReward(n, executed, choices));
   }
@@ -4493,7 +4494,7 @@ export class Game {
     this.lowFpsTime = 0;
     const next: Quality = this.quality === 'high' ? 'medium' : 'low';
     this.mgr.data.settings.quality = next;
-    this.applyQuality(next, true);
+    this.applyQuality(next);
     this.ui.hud.toast(`RENDER QUALITY LOWERED TO ${next.toUpperCase()}`, 'neutral', 5);
     console.info('[SHDOWPIT] auto quality ->', next);
   }
@@ -4553,7 +4554,12 @@ export class Game {
           n.alive = true;
           n.diedOnTurn = null;
         }
-        if (g.mode === 'playing') g.world.spawnNamed(n, g.player, true);
+        const resurrected = n.memory[n.memory.length - 1]?.type === 'I_RETURNED_FROM_DEATH';
+        if (g.mode === 'playing') {
+          const px = g.player.position.x + 6;
+          const pz = g.player.position.z + 6;
+          g.world.spawnNamed(n, g.player, true, px, pz, { resurrected });
+        }
       },
       spawnGrunt() {
         if (g.mode !== 'playing') return;
@@ -4767,6 +4773,25 @@ export class Game {
         // Coming back from the dead changes how they look and how they are
         // written about; without this the cached portrait would stick.
         g.myth(n, 'returned_from_death');
+      },
+      grantArmor(): boolean {
+        const meta = g.mgr.data.playerMeta;
+        const before = g.player.stats.maxHp;
+        const prevVigour = meta.vigour;
+        meta.vigour = Math.min(HEAL_ECON.maxVigour, meta.vigour + HEAL_ECON.vigourPerStep);
+        if (meta.vigour === prevVigour) return false;
+        const ratio = g.player.stats.maxHp > 0 ? g.player.stats.hp / g.player.stats.maxHp : 1;
+        g.player.stats.reset(meta.vigour, g.player.stats.weaponId);
+        g.player.stats.hp = Math.max(1, Math.round(g.player.stats.maxHp * ratio));
+        g.mgr.persist();
+        return g.player.stats.maxHp > before;
+      },
+      openBook(id: string) {
+        if (g.mode === 'playing') g.openHierarchy();
+        if (g.mode !== 'hierarchy') return;
+        g.ui.hierarchy.setTab('book');
+        g.ui.hierarchy.focusCharacter(id, 'book');
+        g.ui.hierarchy.refreshIfOpen();
       },
       giveAbility(id: PowerId) {
         g.player.stats.addPower(id);
