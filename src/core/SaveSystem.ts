@@ -381,7 +381,7 @@ export function migrateEventLog(data: SaveData): void {
   data.nextEventId = Math.max(next, data.nextEventId ?? 1);
 }
 
-const SECRET_KEYS = ['apiKey', 'openaiKey', 'key', 'token', 'secret'];
+const SECRET_KEYS = ['apiKey', 'openaiKey', 'token', 'secret'];
 
 /**
  * Remove anything that looks like a credential before it can be written to

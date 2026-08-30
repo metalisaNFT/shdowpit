@@ -26,7 +26,7 @@ export class ComicQueue {
   enqueue(job: QueueJob): void {
     this.pending.push(job);
     this.notify();
-    void this.drain();
+    queueMicrotask(() => void this.drain());
   }
 
   clear(): void {

@@ -172,7 +172,10 @@ export class AIStatus {
     // Never let the panel grow into the play area.
     while (this.notices.length > 3) {
       const dropped = this.notices.shift();
-      dropped?.root.remove();
+      if (dropped) {
+        this.seen.delete(dropped.requestId);
+        dropped.root.remove();
+      }
     }
   }
 

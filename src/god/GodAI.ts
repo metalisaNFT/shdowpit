@@ -23,6 +23,7 @@ import {
   situationPrompt,
 } from '../ai/AIPromptBuilder';
 import type { GodActorFact, GodFacts, MythEventKind, StoryFacts } from '../ai/AITypes';
+import { storyInvented } from '../story/StoryAI';
 import { getPersonality } from '../data/personalities';
 import { traitName } from '../data/traits';
 import { SCAR_NAMES } from '../nemesis/NemesisMemory';
@@ -297,9 +298,10 @@ export function validateLegend(raw: string, facts: GodFacts): string {
   return t;
 }
 
-function validateStoryOverlay(raw: string, _facts: StoryFacts, min: number, max: number): string {
+function validateStoryOverlay(raw: string, facts: StoryFacts, min: number, max: number): string {
   const t = clean(raw).split(/(?<=[.!?])\s+/)[0] ?? clean(raw);
   if (t.length < min || t.length > max) return '';
+  if (storyInvented(t, facts)) return '';
   return t;
 }
 

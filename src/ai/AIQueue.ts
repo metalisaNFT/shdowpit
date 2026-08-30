@@ -24,6 +24,13 @@ export interface QueueTask {
   run: () => Promise<void>;
 }
 
+interface FailureRecord {
+  fails: number;
+  nextAt: number;
+}
+
+const IMAGE_KINDS = new Set<AIRequestKind>(['portrait']);
+
 export class AIQueue {
   private pending: Array<{ task: QueueTask; req: AIRequest }> = [];
   private active = 0;
@@ -32,6 +39,10 @@ export class AIQueue {
   private log: AIRequest[] = [];
   /** Cache keys currently queued or running, so we never ask twice. */
   private inFlight = new Set<string>();
+  /** Per-key failure memory so a dead backend cannot hot-loop the title screen. */
+  private failures = new Map<string, FailureRecord>();
+  /** Active jobs by kind, for slot reservation. */
+  private runningKinds: AIRequestKind[] = [];
 
   maxConcurrent = 2;
 
@@ -64,6 +75,13 @@ export class AIQueue {
 
   has(cacheKey: string): boolean {
     return this.inFlight.has(cacheKey);
+  }
+
+  /** True when a failed key is still in its backoff window (~3 tries per version). */
+  canRetry(cacheKey: string): boolean {
+    const f = this.failures.get(cacheKey);
+    if (!f) return true;
+    return Date.now() >= f.nextAt;
   }
 
   /**
@@ -156,28 +174,67 @@ export class AIQueue {
     }
   }
 
+  private isImageKind(kind: AIRequestKind): boolean {
+    return IMAGE_KINDS.has(kind);
+  }
+
+  private activeImages(): number {
+    return this.runningKinds.filter((k) => this.isImageKind(k)).length;
+  }
+
+  private textWaiting(): boolean {
+    return this.pending.some((p) => !this.isImageKind(p.task.kind));
+  }
+
+  private canStart(task: QueueTask): boolean {
+    if (this.active >= this.maxConcurrent) return false;
+    if (!this.isImageKind(task.kind)) return true;
+    // Reserve one slot for text when portraits would otherwise starve taunts.
+    if (this.textWaiting() && this.activeImages() >= this.maxConcurrent - 1) return false;
+    return true;
+  }
+
+  private noteFailure(cacheKey: string): void {
+    const f = this.failures.get(cacheKey) ?? { fails: 0, nextAt: 0 };
+    f.fails++;
+    const delay = Math.min(30_000, 1000 * 2 ** Math.min(f.fails, 5));
+    f.nextAt = Date.now() + delay;
+    this.failures.set(cacheKey, f);
+  }
+
+  private noteSuccess(cacheKey: string): void {
+    this.failures.delete(cacheKey);
+  }
+
   private async drain(): Promise<void> {
     while (this.active < this.maxConcurrent && this.pending.length) {
-      const next = this.pending.shift();
+      const idx = this.pending.findIndex((p) => this.canStart(p.task));
+      if (idx < 0) break;
+      const next = this.pending.splice(idx, 1)[0];
       if (!next) break;
       this.active++;
       const { task, req } = next;
       req.startedAt = Date.now();
       this.setState(req, 'generating');
+      this.runningKinds.push(task.kind);
 
       // Fire and forget, with every failure path contained.
       void (async () => {
         try {
           await task.run();
           req.state = 'complete';
+          this.noteSuccess(task.cacheKey);
         } catch (err) {
           req.state = 'failed';
           req.error = String((err as Error)?.message ?? err).slice(0, 120);
+          this.noteFailure(task.cacheKey);
         } finally {
           req.finishedAt = Date.now();
           req.latencyMs = req.finishedAt - req.startedAt;
           this.active--;
-          this.inFlight.delete(req.cacheKey);
+          const ri = this.runningKinds.lastIndexOf(task.kind);
+          if (ri >= 0) this.runningKinds.splice(ri, 1);
+          this.inFlight.delete(task.cacheKey);
           this.notify();
           void this.drain();
         }
@@ -188,6 +245,7 @@ export class AIQueue {
   clear(): void {
     for (const p of this.pending) this.inFlight.delete(p.req.cacheKey);
     this.pending = [];
+    this.failures.clear();
     this.notify();
   }
 }

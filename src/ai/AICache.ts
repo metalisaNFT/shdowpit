@@ -134,11 +134,18 @@ export class AIPortraitStore {
     if (this.db) return Promise.resolve(this.db);
     if (this.opening) return this.opening;
     this.opening = new Promise((resolve) => {
+      let settled = false;
+      const finish = (db: IDBDatabase | null) => {
+        if (settled) return;
+        settled = true;
+        this.opening = null;
+        resolve(db);
+      };
       let req: IDBOpenDBRequest;
       try {
         req = indexedDB.open(DB_NAME, 1);
       } catch {
-        resolve(null);
+        finish(null);
         return;
       }
       req.onupgradeneeded = () => {
@@ -147,11 +154,11 @@ export class AIPortraitStore {
       };
       req.onsuccess = () => {
         this.db = req.result;
-        resolve(this.db);
+        finish(this.db);
       };
-      req.onerror = () => resolve(null);
+      req.onerror = () => finish(null);
       // Private-browsing modes can hang here; do not block the game on it.
-      setTimeout(() => resolve(this.db), 3000);
+      setTimeout(() => finish(this.db), 3000);
     });
     return this.opening;
   }
@@ -202,9 +209,23 @@ export class AIPortraitStore {
     return this.known.size;
   }
 
+  async delete(key: string): Promise<void> {
+    this.memory.delete(key);
+    this.known.delete(key);
+    const db = await this.open();
+    if (!db) return;
+    try {
+      const tx = db.transaction(DB_STORE, 'readwrite');
+      tx.objectStore(DB_STORE).delete(key);
+    } catch {
+      /* ignore */
+    }
+  }
+
   async clear(): Promise<void> {
     this.memory.clear();
     this.known.clear();
+    this.opening = null;
     const db = await this.open();
     if (!db) return;
     try {

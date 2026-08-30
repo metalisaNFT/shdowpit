@@ -54,6 +54,8 @@ export interface WorldContext {
   turn: number;
   age: number;
   ageName: string;
+  /** Baked into cache keys so a new world never inherits another world's AI content. */
+  worldSeed: number;
   nameOf(id: string | null): string;
 }
 
@@ -80,7 +82,7 @@ export class AIContentService {
   private nullImage = new NullImageProvider();
 
   private settings: AISettings = defaultAISettings();
-  private world: WorldContext = { turn: 1, age: 1, ageName: 'THE WASTES', nameOf: () => '' };
+  private world: WorldContext = { turn: 1, age: 1, ageName: 'THE WASTES', worldSeed: 1, nameOf: () => '' };
   private events: AIServiceEvents = {};
 
   private hasGeneratedThisSession = false;
@@ -195,7 +197,7 @@ export class AIContentService {
   private key(n: Nemesis, kind: string): string {
     const a = this.ai(n);
     const version = kind === 'portrait' ? a.visualVersion : a.eventVersion;
-    return hashKey(n.id, kind, version, kind === 'portrait' ? a.visualVersion : n.rank);
+    return hashKey(this.world.worldSeed, n.id, kind, version, kind === 'portrait' ? a.visualVersion : n.rank);
   }
 
   /* ============================================================
@@ -238,7 +240,14 @@ export class AIContentService {
       const hit = this.portraits.peek(p.key);
       if (hit) return hit;
       void this.portraits.get(p.key).then((v) => {
-        if (v) this.events.onContentReady?.(n.id, 'portrait');
+        if (v) {
+          this.events.onContentReady?.(n.id, 'portrait');
+          return;
+        }
+        // IndexedDB miss — regenerate instead of showing a stale save reference forever.
+        if (this.canImage() && !this.queue.has(p.key) && this.queue.canRetry(p.key)) {
+          this.generateNemesisPortrait(n, null, 12);
+        }
       });
     }
     return proceduralPortrait(n);
@@ -252,6 +261,9 @@ export class AIContentService {
 
   portraitHistory(n: Nemesis): Array<{ title: string; turn: number; src: string }> {
     const hist = n.ai?.portraitHistory ?? [];
+    for (const h of hist) {
+      if (!this.portraits.peek(h.key)) void this.portraits.get(h.key);
+    }
     return hist.map((h) => ({
       title: h.title,
       turn: h.turn,
@@ -335,7 +347,7 @@ export class AIContentService {
       this.events.onDirty?.();
       return;
     }
-    if (this.queue.has(key)) return;
+    if (this.queue.has(key) || !this.queue.canRetry(key)) return;
 
     const facts = buildFacts(n, this.world, this.world.nameOf, trigger);
     const { system, user } = identityPrompt(facts);
@@ -379,7 +391,7 @@ export class AIContentService {
       this.events.onDirty?.();
       return;
     }
-    if (this.queue.has(key)) return;
+    if (this.queue.has(key) || !this.queue.canRetry(key)) return;
 
     const facts = buildFacts(n, this.world, this.world.nameOf, trigger);
     const { system, user } = tauntPrompt(facts);
@@ -423,7 +435,7 @@ export class AIContentService {
       this.events.onDirty?.();
       return;
     }
-    if (this.queue.has(key)) return;
+    if (this.queue.has(key) || !this.queue.canRetry(key)) return;
 
     const facts = buildFacts(n, this.world, this.world.nameOf, trigger);
     const { system, user } = chroniclePrompt(facts);
@@ -456,8 +468,8 @@ export class AIContentService {
     if (!this.canImage()) return;
     const a = this.ai(n);
     const key = this.key(n, 'portrait');
-    if (a.portrait && a.portrait.key === key && !a.portrait.procedural) return;
-    if (this.queue.has(key)) return;
+    if (a.portrait && a.portrait.key === key && !a.portrait.procedural && this.portraits.peek(key)) return;
+    if (this.queue.has(key) || !this.queue.canRetry(key)) return;
 
     const title = this.titleFor(n);
 
@@ -504,7 +516,10 @@ export class AIContentService {
         // save holds one of these per portrait per nemesis.
         a.portraitHistory.push({ ...a.portrait, prompt: '' });
       }
-      if (a.portraitHistory.length > 8) a.portraitHistory.splice(0, a.portraitHistory.length - 8);
+      if (a.portraitHistory.length > 8) {
+        const dropped = a.portraitHistory.splice(0, a.portraitHistory.length - 8);
+        for (const h of dropped) void this.portraits.delete(h.key);
+      }
     }
     a.portrait = entry;
     void fromCache;
@@ -583,7 +598,7 @@ export class AIContentService {
       this.events.onContentReady?.(opts.subjectId, opts.kind);
       return;
     }
-    if (this.queue.has(opts.cacheKey)) return;
+    if (this.queue.has(opts.cacheKey) || !this.queue.canRetry(opts.cacheKey)) return;
     if (opts.priority < 70 && this.queue.queuedCount >= 8) return;
 
     const scope = this.scope;
@@ -666,11 +681,29 @@ export class AIContentService {
    * from the dead, and having killed the player. A false negative here is
    * harmless flavour; a false positive just means we keep the local text.
    */
-  private assertsUnknownFact(text: string, n: Nemesis): boolean {
-    const t = text.toLowerCase();
+  private scrubFactTokens(text: string, n: Nemesis): string {
+    let t = text;
+    const strip: string[] = [n.name, this.world.ageName];
+    for (const id of n.rivalries ?? []) strip.push(this.world.nameOf(id));
+    if (n.master) strip.push(this.world.nameOf(n.master));
+    for (const id of n.allies ?? []) strip.push(this.world.nameOf(id));
+    for (const item of n.stolen) strip.push(item.name);
+    for (const raw of strip.filter(Boolean).sort((a, b) => b.length - a.length)) {
+      if (raw.length < 2) continue;
+      t = t.replace(new RegExp(raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), ' ');
+    }
+    return t;
+  }
 
-    const burned = n.scars.some((s) => s.id === 'burn') || n.strengths.includes('fire_resist');
-    if (/\b(fire|burn|burnt|burned|flame|ash|cinder|ember|scorch)\w*/.test(t) && !burned) return true;
+  private assertsUnknownFact(text: string, n: Nemesis): boolean {
+    const t = this.scrubFactTokens(text, n).toLowerCase();
+
+    const burned =
+      n.scars.some((s) => s.id === 'burn') ||
+      n.strengths.includes('fire_resist') ||
+      n.memory.some((m) => m.type === 'PLAYER_BURNED_ME');
+    if (/\b(fire|burn|burnt|burned|flame|cinder|ember|scorch)\w*/.test(t) && !burned) return true;
+    if (/\bash\b/.test(t) && !burned) return true;
 
     const lostEye = n.scars.some((s) => s.id === 'missing_eye');
     if (/\b(eye|eyeless|blind|socket)\w*/.test(t) && !lostEye) return true;
@@ -732,10 +765,10 @@ export class AIContentService {
       if (this.queue.busy) return 'busy';
       return 'idle';
     }
-    const s = this.backend.status;
-    if (!s.connected) return 'error';
+    const textOk = this.backend.textAvailable;
+    if ((this.settings.mode === 'text' || this.settings.mode === 'full') && !textOk) return 'error';
     if (this.queue.busy) return 'busy';
-    if (s.error) return 'error';
+    if (this.backend.status.error && !textOk) return 'error';
     return 'idle';
   }
 

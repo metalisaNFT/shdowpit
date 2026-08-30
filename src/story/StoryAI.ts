@@ -36,18 +36,40 @@ function namesFromActors(mgr: NemesisManager, ids: string[]): string[] {
   return [...new Set(ids.map((id) => mgr.byId(id)?.name.toUpperCase()).filter(Boolean) as string[])];
 }
 
-function invented(text: string, facts: StoryFacts): boolean {
-  const t = text.toLowerCase();
+export function storyInvented(text: string, facts: StoryFacts): boolean {
   const allowed = new Set(facts.names.map((n) => n.toLowerCase()));
-  const tokens = t.match(/\b[A-Z][a-z]{2,}\b/g) ?? [];
+  const skip = new Set([
+    'you',
+    'your',
+    'they',
+    'their',
+    'the',
+    'who',
+    'and',
+    'but',
+    'for',
+    'with',
+    'from',
+    'not',
+    'has',
+    'had',
+    'was',
+    'were',
+  ]);
+  const tokens = text.match(/\b[A-Z][a-z]{2,}\b/g) ?? [];
   for (const tok of tokens) {
-    if (!allowed.has(tok.toLowerCase()) && !['you', 'your', 'they', 'their', 'the', 'who'].includes(tok.toLowerCase())) {
-      return false;
-    }
+    const low = tok.toLowerCase();
+    if (skip.has(low)) continue;
+    if (!allowed.has(low)) return true;
   }
+  const t = text.toLowerCase();
   if (/\b(killed you|murdered you)\b/.test(t) && !facts.line?.toLowerCase().includes('killed you')) return true;
   if (/\b(stole|stolen)\b/.test(t) && !/stole|stolen|claimed|took/.test((facts.line ?? '').toLowerCase())) return true;
   return false;
+}
+
+function invented(text: string, facts: StoryFacts): boolean {
+  return storyInvented(text, facts);
 }
 
 function validateStoryLine(raw: string, facts: StoryFacts, min: number, max: number): string {

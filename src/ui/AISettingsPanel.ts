@@ -100,6 +100,7 @@ export class AISettingsPanel {
     const interval = this.lastLocal?.progress?.state === 'installing' ? 0.5 : 1.25;
     if (this.localPollAccum >= interval && !this.localPolling) {
       this.localPollAccum = 0;
+      if (!this.hooks?.status().backendReachable) return;
       this.localPolling = true;
       void this.hooks
         .localStatus()
