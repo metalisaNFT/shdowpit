@@ -12,11 +12,13 @@
  * condition — the game runs happily without one.
  */
 
-import type { AIProviderMode, ConnectionStatus, LocalAIStatus } from './AITypes';
+import type { AIProviderMode, CloudConnectionStatus, ConnectionStatus, LocalAIStatus } from './AITypes';
 
 const TIMEOUT_MS = 60_000;
 /** Local image generation on CPU can be slow; the backend enforces real limits. */
 const LOCAL_IMAGE_TIMEOUT_MS = 320_000;
+
+type CloudProvider = 'openai' | 'groq';
 
 async function post<T>(path: string, body: unknown, timeout = TIMEOUT_MS): Promise<T | null> {
   const ac = new AbortController();
@@ -43,6 +45,10 @@ export class AIBackend {
     provider: 'openai',
     connected: false,
     verified: false,
+    cloud: {
+      openai: { connected: false, verified: false },
+      groq: { connected: false, verified: false },
+    },
     error: '',
   };
 
@@ -64,11 +70,31 @@ export class AIBackend {
   onChange: (() => void) | null = null;
 
   get status(): ConnectionStatus {
-    return { ...this.state };
+    return { ...this.state, cloud: { ...this.state.cloud } };
   }
 
   get connected(): boolean {
     return this.state.connected;
+  }
+
+  get openaiConnected(): boolean {
+    return this.state.cloud.openai.connected;
+  }
+
+  get groqConnected(): boolean {
+    return this.state.cloud.groq.connected;
+  }
+
+  get openaiVerified(): boolean {
+    return this.state.cloud.openai.verified;
+  }
+
+  get groqVerified(): boolean {
+    return this.state.cloud.groq.verified;
+  }
+
+  get cloudStatus(): CloudConnectionStatus {
+    return { ...this.state.cloud };
   }
 
   get reachable(): boolean {
@@ -85,25 +111,38 @@ export class AIBackend {
     this.update({});
   }
 
+  /** Which cloud provider the settings UI should show connection state for. */
+  activeCloudProvider(): CloudProvider | null {
+    if (this.providerMode === 'openai') return 'openai';
+    if (this.providerMode === 'groq') return 'groq';
+    return null;
+  }
+
   /**
    * Can a text/image request succeed right now, given the provider mode?
    * This is what gates generation — an OpenAI key OR a ready local engine
    * counts, depending on routing.
    */
   get textAvailable(): boolean {
-    if (this.providerMode === 'openai') return this.state.connected;
+    if (this.providerMode === 'openai') return this.openaiConnected;
+    if (this.providerMode === 'groq') return this.groqConnected;
     if (this.providerMode === 'local') return this.localTextReady;
-    return this.state.connected || this.localTextReady;
+    return this.localTextReady || this.groqConnected || this.openaiConnected;
   }
 
   get imageAvailable(): boolean {
-    if (this.providerMode === 'openai') return this.state.connected;
+    if (this.providerMode === 'openai') return this.openaiConnected;
+    if (this.providerMode === 'groq') return this.localImageReady;
     if (this.providerMode === 'local') return this.localImageReady;
-    return this.state.connected || this.localImageReady;
+    return this.localImageReady || this.openaiConnected;
   }
 
   private update(patch: Partial<ConnectionStatus>): void {
-    this.state = { ...this.state, ...patch };
+    this.state = {
+      ...this.state,
+      ...patch,
+      cloud: patch.cloud ?? this.state.cloud,
+    };
     try {
       this.onChange?.();
     } catch {
@@ -120,6 +159,7 @@ export class AIBackend {
         connected?: boolean;
         verified?: boolean;
         provider?: string;
+        cloud?: CloudConnectionStatus;
         local?: { installed?: boolean; running?: boolean; textReady?: boolean; imageReady?: boolean };
       };
       this.backendReachable = true;
@@ -127,9 +167,14 @@ export class AIBackend {
       this.localRunning = Boolean(json.local?.running);
       this.localTextReady = Boolean(json.local?.textReady);
       this.localImageReady = Boolean(json.local?.imageReady);
+      const cloud = json.cloud ?? {
+        openai: { connected: Boolean(json.connected), verified: Boolean(json.verified) },
+        groq: { connected: false, verified: false },
+      };
       this.update({
         connected: Boolean(json.connected),
         verified: Boolean(json.verified),
+        cloud,
         provider: json.provider ?? 'openai',
         error: '',
       });
@@ -138,7 +183,15 @@ export class AIBackend {
       this.localRunning = false;
       this.localTextReady = false;
       this.localImageReady = false;
-      this.update({ connected: false, verified: false, error: '' });
+      this.update({
+        connected: false,
+        verified: false,
+        cloud: {
+          openai: { connected: false, verified: false },
+          groq: { connected: false, verified: false },
+        },
+        error: '',
+      });
     }
     return this.status;
   }
@@ -212,10 +265,10 @@ export class AIBackend {
    * Hand the key to the backend. `key` is not retained here in any form after
    * this call returns.
    */
-  async connect(key: string): Promise<{ ok: boolean; error: string }> {
+  async connect(key: string, provider: CloudProvider = 'openai'): Promise<{ ok: boolean; error: string }> {
     const res = await post<{ ok: boolean; connected: boolean; error?: string }>(
       '/api/ai/connect',
-      { key },
+      { key, provider },
       15_000
     );
     if (!res) {
@@ -230,20 +283,34 @@ export class AIBackend {
       this.update({ connected: false, verified: false, error });
       return { ok: false, error };
     }
-    this.update({ connected: true, verified: false, error: '' });
+    const cloud = { ...this.state.cloud };
+    cloud[provider] = { connected: true, verified: false };
+    this.update({
+      connected: cloud.openai.connected || cloud.groq.connected,
+      verified: cloud.openai.verified || cloud.groq.verified,
+      cloud,
+      error: '',
+    });
     return { ok: true, error: '' };
   }
 
-  async disconnect(): Promise<void> {
-    await post('/api/ai/disconnect', {}, 10_000);
-    this.update({ connected: false, verified: false, error: '' });
+  async disconnect(provider: CloudProvider = 'openai'): Promise<void> {
+    await post('/api/ai/disconnect', { provider }, 10_000);
+    const cloud = { ...this.state.cloud };
+    cloud[provider] = { connected: false, verified: false };
+    this.update({
+      connected: cloud.openai.connected || cloud.groq.connected,
+      verified: cloud.openai.verified || cloud.groq.verified,
+      cloud,
+      error: '',
+    });
   }
 
   /** Round-trips a cheap real call so "CONNECTED" means something. */
-  async test(): Promise<{ ok: boolean; error: string; latencyMs: number }> {
+  async test(provider: CloudProvider = 'openai'): Promise<{ ok: boolean; error: string; latencyMs: number }> {
     const res = await post<{ ok: boolean; error?: string; latencyMs?: number }>(
       '/api/ai/test',
-      {},
+      { provider },
       30_000
     );
     if (!res) {
@@ -255,10 +322,19 @@ export class AIBackend {
     this.backendReachable = true;
     if (!res.ok) {
       const error = res.error ?? 'Connection failed';
-      this.update({ verified: false, error });
+      const cloud = { ...this.state.cloud };
+      cloud[provider] = { ...cloud[provider], verified: false };
+      this.update({ cloud, error });
       return { ok: false, error, latencyMs: 0 };
     }
-    this.update({ connected: true, verified: true, error: '' });
+    const cloud = { ...this.state.cloud };
+    cloud[provider] = { connected: true, verified: true };
+    this.update({
+      connected: true,
+      verified: cloud.openai.verified || cloud.groq.verified,
+      cloud,
+      error: '',
+    });
     return { ok: true, error: '', latencyMs: res.latencyMs ?? 0 };
   }
 
@@ -280,7 +356,9 @@ export class AIBackend {
   }
 
   async image(prompt: string): Promise<{ ok: boolean; dataUrl: string; error: string; latencyMs: number }> {
-    const local = this.providerMode !== 'openai' && this.localImageReady;
+    const local =
+      (this.providerMode === 'local' || this.providerMode === 'groq' || this.providerMode === 'auto') &&
+      this.localImageReady;
     const res = await post<{
       ok: boolean;
       dataUrl?: string;

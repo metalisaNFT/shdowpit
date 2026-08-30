@@ -22,11 +22,13 @@ export type AIMode = 'off' | 'text' | 'full';
 
 /**
  * Which backend does the generating:
- *   openai — the existing OpenAI path (key held by the local game server)
+ *   openai — OpenAI for text and images (key held by the local game server)
+ *   groq   — Groq for text only; portraits use Local AI or procedural fallback
  *   local  — the LOCAL AI ENGINE on 127.0.0.1 (no key, no cloud, works offline)
- *   auto   — local first when it is running, otherwise OpenAI
+ *   auto   — per-modality fallback: text Local → Groq → OpenAI;
+ *            images Local → OpenAI
  */
-export type AIProviderMode = 'openai' | 'local' | 'auto';
+export type AIProviderMode = 'openai' | 'groq' | 'local' | 'auto';
 
 export interface AISettings {
   mode: AIMode;
@@ -157,6 +159,22 @@ export interface NemesisFacts {
   trigger: MythEventKind | null;
 }
 
+/** Extended fact projection for relationship-aware chronicles and contextual dialogue. */
+export interface RichNemesisFacts extends NemesisFacts {
+  /** memory lines with subject names resolved */
+  resolvedMemory: string[];
+  /** top story threads this NPC appears in */
+  storyArcs: Array<{ title: string; kind: string; state: string; next: string; characters: string[] }>;
+  /** recent world-log events involving this NPC */
+  recentWorldEvents: Array<{ turn: number; type: string; text: string; payloadSummary: string }>;
+  /** optional god-mode sim slice — goal, deeds, not mechanical authority */
+  simGoal?: string;
+  simDeeds?: string[];
+  simKills?: number;
+  /** compact archived chronicle summaries from prior ages */
+  chronicleArchives?: string[];
+}
+
 /**
  * Read-only projection of a long-game moment. Built in `src/god/GodAI.ts`
  * from simulation state; consumed only as prompt input. Nothing here is
@@ -254,6 +272,9 @@ export type AIRequestKind =
   | 'identity'
   | 'taunt'
   | 'chronicle'
+  | 'relationship_chronicle'
+  | 'contextual_line'
+  | 'exchange'
   | 'portrait'
   | 'dossier'
   | 'beat'
@@ -286,6 +307,9 @@ export const STORY_AI_KINDS: ReadonlySet<AIRequestKind> = new Set([
   'journey',
   'arc',
   'encounter',
+  'contextual_line',
+  'exchange',
+  'relationship_chronicle',
 ]);
 
 export type AIRequestState = 'queued' | 'generating' | 'complete' | 'failed' | 'cached';
@@ -388,10 +412,17 @@ export interface AIImageProvider {
   generate(prompt: string): Promise<AIImageResult>;
 }
 
+export interface CloudConnectionStatus {
+  openai: { connected: boolean; verified: boolean };
+  groq: { connected: boolean; verified: boolean };
+}
+
 export interface ConnectionStatus {
   provider: string;
+  /** true when any cloud key is connected */
   connected: boolean;
   verified: boolean;
+  cloud: CloudConnectionStatus;
   /** last human-readable error from a connection attempt, never a key */
   error: string;
 }

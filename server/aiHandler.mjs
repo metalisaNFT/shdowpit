@@ -3,9 +3,9 @@
  *
  * SECURITY CONTRACT — read before changing anything in this file.
  *
- *  - The OpenAI API key lives ONLY in the `keyStore` closure below, in this
- *    process's memory. It is never written to disk, never returned to the
- *    browser, never logged, and never placed in an error message.
+ *  - Cloud API keys live ONLY in the `openaiKeyStore` / `groqKeyStore` closures
+ *    below, in this process's memory. They are never written to disk, never
+ *    returned to the browser, never logged, and never placed in an error message.
  *  - `sanitiseError` is the only path by which a provider failure reaches the
  *    client. It maps to a fixed vocabulary of strings. Upstream error bodies
  *    are never forwarded, because OpenAI echoes the key prefix in some of them.
@@ -23,7 +23,9 @@ import { fileURLToPath } from 'node:url';
 import { stopEngineSync, readAuthToken } from '../local-ai-engine/lib.mjs';
 
 const OPENAI_BASE = 'https://api.openai.com/v1';
+const GROQ_BASE = 'https://api.groq.com/openai/v1';
 const TEXT_MODEL = process.env.SHDOWPIT_TEXT_MODEL ?? 'gpt-4o-mini';
+const GROQ_TEXT_MODEL = process.env.SHDOWPIT_GROQ_TEXT_MODEL ?? 'llama-3.3-70b-versatile';
 const IMAGE_MODEL = process.env.SHDOWPIT_IMAGE_MODEL ?? 'gpt-image-1';
 const TIMEOUT_MS = 45_000;
 
@@ -114,20 +116,41 @@ async function localHealth(force = false) {
 }
 
 function normalizeProvider(p) {
-  return p === 'local' || p === 'auto' ? p : 'openai';
+  if (p === 'local' || p === 'auto' || p === 'groq') return p;
+  return 'openai';
 }
 
-/** Ordered candidate list for a request. */
-async function providerOrder(body) {
+function normalizeCloudProvider(p) {
+  return p === 'groq' ? 'groq' : 'openai';
+}
+
+/** Ordered text candidates for a request. */
+async function textProviderOrder(body) {
   const want = normalizeProvider(body?.provider);
   if (want === 'openai') return ['openai'];
+  if (want === 'groq') return ['groq'];
   if (want === 'local') return ['local'];
-  const openaiFirst = body?.autoOrder === 'openai_first';
   const h = await localHealth();
-  if (openaiFirst) return keyStore.key ? ['openai', 'local'] : ['local'];
-  // local_first (the default): only try local when it looks alive; a dead
-  // engine costs one cached health probe, not a request timeout.
-  return h.running ? ['local', 'openai'] : ['openai', 'local'];
+  const openaiFirst = body?.autoOrder === 'openai_first';
+  const localText = h.textReady ? ['local'] : [];
+  const groq = groqKeyStore.key ? ['groq'] : [];
+  const openai = openaiKeyStore.key ? ['openai'] : [];
+  if (openaiFirst) return [...openai, ...groq, ...localText];
+  return [...localText, ...groq, ...openai];
+}
+
+/** Ordered image candidates — Groq has no image API. */
+async function imageProviderOrder(body) {
+  const want = normalizeProvider(body?.provider);
+  if (want === 'openai') return ['openai'];
+  if (want === 'groq') return ['local'];
+  if (want === 'local') return ['local'];
+  const h = await localHealth();
+  const openaiFirst = body?.autoOrder === 'openai_first';
+  const localImage = h.imageReady ? ['local'] : [];
+  const openai = openaiKeyStore.key ? ['openai'] : [];
+  if (openaiFirst) return [...openai, ...localImage];
+  return [...localImage, ...openai];
 }
 
 async function localTextCall(body) {
@@ -304,7 +327,7 @@ function readInstallProgress() {
    in-memory key store
    ============================================================ */
 
-const keyStore = {
+const openaiKeyStore = {
   /** @type {string|null} */
   key: null,
   /** true once a real call to OpenAI has succeeded with this key */
@@ -312,18 +335,37 @@ const keyStore = {
   connectedAt: 0,
 };
 
+const groqKeyStore = {
+  /** @type {string|null} */
+  key: null,
+  verified: false,
+  connectedAt: 0,
+};
+
 /**
- * An env key is a convenience for local dev only. It is still only ever held
- * in memory and never echoed back.
+ * Env keys are a convenience for local dev only. Still only ever held in
+ * memory and never echoed back.
  */
 if (process.env.OPENAI_API_KEY) {
-  keyStore.key = process.env.OPENAI_API_KEY;
-  keyStore.connectedAt = Date.now();
+  openaiKeyStore.key = process.env.OPENAI_API_KEY;
+  openaiKeyStore.connectedAt = Date.now();
+}
+if (process.env.GROQ_API_KEY) {
+  groqKeyStore.key = process.env.GROQ_API_KEY;
+  groqKeyStore.connectedAt = Date.now();
 }
 
 /** Shape check only — never a substring of the key, never logged. */
-function looksLikeKey(k) {
+function looksLikeOpenAIKey(k) {
   return typeof k === 'string' && /^sk-[A-Za-z0-9_\-]{16,}$/.test(k.trim());
+}
+
+function looksLikeGroqKey(k) {
+  return typeof k === 'string' && /^gsk_[A-Za-z0-9_\-]{16,}$/.test(k.trim());
+}
+
+function anyCloudKey() {
+  return Boolean(openaiKeyStore.key || groqKeyStore.key);
 }
 
 /* ============================================================
@@ -407,7 +449,7 @@ function sanitiseError(err, status) {
    ============================================================ */
 
 async function callOpenAI(path, body, method = 'POST') {
-  if (!keyStore.key) {
+  if (!openaiKeyStore.key) {
     const e = new Error('not connected');
     e.shdowpitStatus = 401;
     throw e;
@@ -419,7 +461,7 @@ async function callOpenAI(path, body, method = 'POST') {
     res = await fetch(OPENAI_BASE + path, {
       method,
       headers: {
-        Authorization: `Bearer ${keyStore.key}`,
+        Authorization: `Bearer ${openaiKeyStore.key}`,
         'Content-Type': 'application/json',
       },
       body: method === 'GET' ? undefined : JSON.stringify(body),
@@ -440,6 +482,39 @@ async function callOpenAI(path, body, method = 'POST') {
   return res.json();
 }
 
+async function callGroq(path, body, method = 'POST') {
+  if (!groqKeyStore.key) {
+    const e = new Error('not connected');
+    e.shdowpitStatus = 401;
+    throw e;
+  }
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  let res;
+  try {
+    res = await fetch(GROQ_BASE + path, {
+      method,
+      headers: {
+        Authorization: `Bearer ${groqKeyStore.key}`,
+        'Content-Type': 'application/json',
+      },
+      body: method === 'GET' ? undefined : JSON.stringify(body),
+      signal: ac.signal,
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    throw err;
+  }
+  clearTimeout(timer);
+
+  if (!res.ok) {
+    const e = new Error('upstream ' + res.status);
+    e.shdowpitStatus = res.status;
+    throw e;
+  }
+  return res.json();
+}
+
 /* ============================================================
    routes
    ============================================================ */
@@ -447,14 +522,14 @@ async function callOpenAI(path, body, method = 'POST') {
 /* ---- provider-specific calls, shared by the routed endpoints ---- */
 
 async function openaiTextCall(body) {
-  if (MOCK && keyStore.key) {
+  if (MOCK && openaiKeyStore.key) {
     const mocked = await mockRoute('/api/ai/text', body);
     if (mocked) {
-      keyStore.verified = true;
+      openaiKeyStore.verified = true;
       return { ...mocked, provider: 'openai' };
     }
   }
-  if (!keyStore.key) return { ok: false, error: 'No API key connected', code: 'no_key' };
+  if (!openaiKeyStore.key) return { ok: false, error: 'No API key connected', code: 'no_key' };
   const system = String(body?.system ?? '').slice(0, 6000);
   const user = String(body?.user ?? '').slice(0, 12000);
   const maxTokens = Math.min(1200, Math.max(16, Number(body?.maxTokens) || 300));
@@ -472,7 +547,7 @@ async function openaiTextCall(body) {
       temperature: typeof body?.temperature === 'number' ? body.temperature : 0.9,
       response_format: body?.json ? { type: 'json_object' } : undefined,
     });
-    keyStore.verified = true;
+    openaiKeyStore.verified = true;
     const text = json?.choices?.[0]?.message?.content ?? '';
     if (!text) return { ok: false, error: 'API returned nothing', code: 'empty' };
     return { ok: true, text, latencyMs: Date.now() - t0, provider: 'openai' };
@@ -482,15 +557,51 @@ async function openaiTextCall(body) {
   }
 }
 
+async function groqTextCall(body) {
+  if (MOCK && groqKeyStore.key) {
+    const mocked = await mockRoute('/api/ai/text', body);
+    if (mocked) {
+      groqKeyStore.verified = true;
+      return { ...mocked, provider: 'groq' };
+    }
+  }
+  if (!groqKeyStore.key) return { ok: false, error: 'No API key connected', code: 'no_key' };
+  const system = String(body?.system ?? '').slice(0, 6000);
+  const user = String(body?.user ?? '').slice(0, 12000);
+  const maxTokens = Math.min(1200, Math.max(16, Number(body?.maxTokens) || 300));
+  if (!user) return { ok: false, error: 'Empty request', code: 'bad_request' };
+
+  try {
+    const t0 = Date.now();
+    const json = await callGroq('/chat/completions', {
+      model: GROQ_TEXT_MODEL,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      max_tokens: maxTokens,
+      temperature: typeof body?.temperature === 'number' ? body.temperature : 0.9,
+      response_format: body?.json ? { type: 'json_object' } : undefined,
+    });
+    groqKeyStore.verified = true;
+    const text = json?.choices?.[0]?.message?.content ?? '';
+    if (!text) return { ok: false, error: 'API returned nothing', code: 'empty' };
+    return { ok: true, text, latencyMs: Date.now() - t0, provider: 'groq' };
+  } catch (err) {
+    const s = sanitiseError(err, err?.shdowpitStatus);
+    return { ok: false, ...s };
+  }
+}
+
 async function openaiImageCall(body) {
-  if (MOCK && keyStore.key) {
+  if (MOCK && openaiKeyStore.key) {
     const mocked = await mockRoute('/api/ai/image', body);
     if (mocked) {
-      keyStore.verified = true;
+      openaiKeyStore.verified = true;
       return { ...mocked, provider: 'openai' };
     }
   }
-  if (!keyStore.key) return { ok: false, error: 'No API key connected', code: 'no_key' };
+  if (!openaiKeyStore.key) return { ok: false, error: 'No API key connected', code: 'no_key' };
   const prompt = String(body?.prompt ?? '').slice(0, 4000);
   if (!prompt) return { ok: false, error: 'Empty prompt', code: 'bad_request' };
   const size = ['1024x1024', '1024x1536', '1536x1024'].includes(body?.size) ? body.size : '1024x1024';
@@ -505,7 +616,7 @@ async function openaiImageCall(body) {
       // gpt-image-1 always returns b64_json; keeping the bytes server-side
       // of the browser means no third-party URL ends up in the save.
     });
-    keyStore.verified = true;
+    openaiKeyStore.verified = true;
     const b64 = json?.data?.[0]?.b64_json;
     const url = json?.data?.[0]?.url;
     if (b64) return { ok: true, dataUrl: `data:image/png;base64,${b64}`, latencyMs: Date.now() - t0, provider: 'openai' };
@@ -522,9 +633,13 @@ const routes = {
     const local = await localHealth();
     return {
       provider: 'openai',
-      connected: Boolean(keyStore.key),
-      verified: keyStore.verified,
-      textModel: TEXT_MODEL,
+      connected: anyCloudKey(),
+      verified: openaiKeyStore.verified || groqKeyStore.verified,
+      cloud: {
+        openai: { connected: Boolean(openaiKeyStore.key), verified: openaiKeyStore.verified },
+        groq: { connected: Boolean(groqKeyStore.key), verified: groqKeyStore.verified },
+      },
+      textModel: { openai: TEXT_MODEL, groq: GROQ_TEXT_MODEL },
       imageModel: IMAGE_MODEL,
       // Deliberately no key, no prefix, no length, no hash.
       local: {
@@ -538,46 +653,87 @@ const routes = {
   },
 
   'POST /api/ai/connect': async (body) => {
+    const provider = normalizeCloudProvider(body?.provider);
     const raw = typeof body?.key === 'string' ? body.key.trim() : '';
-    if (!looksLikeKey(raw)) {
+    if (provider === 'groq') {
+      if (!looksLikeGroqKey(raw)) {
+        return { ok: false, connected: false, error: 'That does not look like a Groq key (gsk_...)' };
+      }
+      groqKeyStore.key = raw;
+      groqKeyStore.verified = false;
+      groqKeyStore.connectedAt = Date.now();
+      return { ok: true, connected: true };
+    }
+    if (!looksLikeOpenAIKey(raw)) {
       return { ok: false, connected: false, error: 'That does not look like an OpenAI key (sk-...)' };
     }
-    keyStore.key = raw;
-    keyStore.verified = false;
-    keyStore.connectedAt = Date.now();
+    openaiKeyStore.key = raw;
+    openaiKeyStore.verified = false;
+    openaiKeyStore.connectedAt = Date.now();
     return { ok: true, connected: true };
   },
 
-  'POST /api/ai/disconnect': async () => {
-    keyStore.key = null;
-    keyStore.verified = false;
-    keyStore.connectedAt = 0;
-    return { ok: true, connected: false };
+  'POST /api/ai/disconnect': async (body) => {
+    const provider = normalizeCloudProvider(body?.provider);
+    if (provider === 'groq') {
+      groqKeyStore.key = null;
+      groqKeyStore.verified = false;
+      groqKeyStore.connectedAt = 0;
+    } else {
+      openaiKeyStore.key = null;
+      openaiKeyStore.verified = false;
+      openaiKeyStore.connectedAt = 0;
+    }
+    return { ok: true, connected: anyCloudKey() };
   },
 
-  'POST /api/ai/test': async () => {
-    if (!keyStore.key) {
+  'POST /api/ai/test': async (body) => {
+    const provider = normalizeCloudProvider(body?.provider);
+    if (provider === 'groq') {
+      if (!groqKeyStore.key) {
+        return { ok: false, connected: false, error: 'No API key connected' };
+      }
+      if (MOCK) {
+        const mocked = await mockRoute('/api/ai/test', body);
+        if (mocked) {
+          groqKeyStore.verified = true;
+          return mocked;
+        }
+      }
+      try {
+        const t0 = Date.now();
+        await callGroq('/models', null, 'GET');
+        groqKeyStore.verified = true;
+        return { ok: true, connected: true, latencyMs: Date.now() - t0 };
+      } catch (err) {
+        groqKeyStore.verified = false;
+        const s = sanitiseError(err, err?.shdowpitStatus);
+        return { ok: false, connected: Boolean(groqKeyStore.key), ...s };
+      }
+    }
+    if (!openaiKeyStore.key) {
       return { ok: false, connected: false, error: 'No API key connected' };
     }
     try {
       const t0 = Date.now();
       await callOpenAI('/models', null, 'GET');
-      keyStore.verified = true;
+      openaiKeyStore.verified = true;
       return { ok: true, connected: true, latencyMs: Date.now() - t0 };
     } catch (err) {
-      keyStore.verified = false;
+      openaiKeyStore.verified = false;
       const s = sanitiseError(err, err?.shdowpitStatus);
-      return { ok: false, connected: Boolean(keyStore.key), ...s };
+      return { ok: false, connected: Boolean(openaiKeyStore.key), ...s };
     }
   },
 
   'POST /api/ai/text': async (body) => {
     const user = String(body?.user ?? '').slice(0, 12000);
     if (!user) return { ok: false, error: 'Empty request', code: 'bad_request' };
-    const order = await providerOrder(body);
+    const order = await textProviderOrder(body);
     let last = { ok: false, error: 'No AI provider available', code: 'no_provider' };
     for (const p of order) {
-      last = p === 'local' ? await localTextCall(body) : await openaiTextCall(body);
+      last =
+        p === 'local' ? await localTextCall(body) : p === 'groq' ? await groqTextCall(body) : await openaiTextCall(body);
       if (last.ok) return last;
     }
     return last;
@@ -586,7 +742,7 @@ const routes = {
   'POST /api/ai/image': async (body) => {
     const prompt = String(body?.prompt ?? '').slice(0, 4000);
     if (!prompt) return { ok: false, error: 'Empty prompt', code: 'bad_request' };
-    const order = await providerOrder(body);
+    const order = await imageProviderOrder(body);
     let last = { ok: false, error: 'No AI provider available', code: 'no_provider' };
     for (const p of order) {
       last = p === 'local' ? await localImageCall(body) : await openaiImageCall(body);
@@ -764,12 +920,17 @@ export async function handleAiRequest(req, res) {
   // Mock still requires a "connection", so the tests exercise the same gating.
   // Text/image mocks moved INSIDE the OpenAI provider calls so provider
   // routing (OPENAI | LOCAL | AUTO) behaves identically under test.
-  if (MOCK && keyStore.key && url === '/api/ai/test') {
-    const mocked = await mockRoute(url, body);
-    if (mocked) {
-      keyStore.verified = true;
-      send(res, 200, mocked);
-      return true;
+  if (MOCK && url === '/api/ai/test') {
+    const provider = normalizeCloudProvider(body?.provider);
+    const hasKey = provider === 'groq' ? groqKeyStore.key : openaiKeyStore.key;
+    if (hasKey) {
+      const mocked = await mockRoute(url, body);
+      if (mocked) {
+        if (provider === 'groq') groqKeyStore.verified = true;
+        else openaiKeyStore.verified = true;
+        send(res, 200, mocked);
+        return true;
+      }
     }
   }
 

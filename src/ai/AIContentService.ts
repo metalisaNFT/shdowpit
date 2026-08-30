@@ -19,6 +19,7 @@ import { rankIndex, type Nemesis, type Rank } from '../nemesis/Nemesis';
 import {
   GOD_AI_KINDS,
   MYTH_PRIORITY,
+  STORY_AI_KINDS,
   defaultAISettings,
   emptyAIContent,
   type AIImageProvider,
@@ -37,11 +38,13 @@ import { AIPortraitStore, AITextCache, hashKey } from './AICache';
 import { AIQueue } from './AIQueue';
 import {
   buildFacts,
+  buildRichFacts,
   chroniclePrompt,
   identityPrompt,
   portraitPrompt,
   tauntPrompt,
 } from './AIPromptBuilder';
+import type { NemesisFactSlice } from '../story/NemesisFactsProjection';
 import { HarnessTextProvider, type AIHarnessConfig } from './AIHarness';
 import {
   fallbackChronicle,
@@ -57,6 +60,10 @@ export interface WorldContext {
   /** Baked into cache keys so a new world never inherits another world's AI content. */
   worldSeed: number;
   nameOf(id: string | null): string;
+  /** Optional story-layer projection for relationship-aware chronicles. */
+  richFactsFor?(n: Nemesis): NemesisFactSlice | undefined;
+  /** Optional god-mode sim slice for dossiers and rich facts. */
+  simFor?(n: Nemesis): { goal: string; deeds: string[]; kills: number } | undefined;
 }
 
 export interface AIServiceEvents {
@@ -151,6 +158,15 @@ export class AIContentService {
     if (this.settings.mode === 'off') return false;
     if (!this.settings[category]) return false;
     return this.provider().isAvailable();
+  }
+
+  private canExpress(kind: AIRequestKind): boolean {
+    if (kind === 'contextual_line' || kind === 'exchange' || kind === 'taunt') return this.canText('dialogue');
+    if (STORY_AI_KINDS.has(kind)) {
+      if (kind === 'encounter') return this.canText('dialogue');
+      return this.canText('chronicles');
+    }
+    return this.canText('chronicles');
   }
 
   /** Images are FULL only. */
@@ -437,7 +453,9 @@ export class AIContentService {
     }
     if (this.queue.has(key) || !this.queue.canRetry(key)) return;
 
-    const facts = buildFacts(n, this.world, this.world.nameOf, trigger);
+    const slice = this.world.richFactsFor?.(n);
+    const sim = this.world.simFor?.(n);
+    const facts = buildRichFacts(n, this.world, this.world.nameOf, trigger, slice, sim);
     const { system, user } = chroniclePrompt(facts);
 
     const scope = this.scope;
@@ -588,7 +606,7 @@ export class AIContentService {
     maxTokens: number;
     validate: (raw: string) => string;
   }): void {
-    if (!this.canText('chronicles')) return;
+    if (!this.canExpress(opts.kind)) return;
     if (this.overlays.has(opts.cacheKey)) return;
 
     const cached = this.textCache.get(opts.cacheKey);
@@ -743,7 +761,7 @@ export class AIContentService {
     const s = this.backend.status;
     const harnessOn = Boolean(this.harness);
     return {
-      provider: harnessOn ? this.harness!.name : s.provider,
+      provider: harnessOn ? this.harness!.name : (this.settings.provider ?? 'auto'),
       connected: harnessOn ? this.harness!.isAvailable() : s.connected,
       verified: harnessOn ? this.harness!.isAvailable() : s.verified,
       mode: this.settings.mode,

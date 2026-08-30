@@ -16,12 +16,15 @@
  */
 
 import type { Nemesis } from '../nemesis/Nemesis';
-import type { GodFacts, MythEventKind, NemesisFacts, StoryFacts } from './AITypes';
+import type { GodFacts, MythEventKind, NemesisFacts, RichNemesisFacts, StoryFacts } from './AITypes';
 import { SCAR_NAMES, MEMORY_TEXT } from '../nemesis/NemesisMemory';
 import { getPersonality } from '../data/personalities';
 import { traitName } from '../data/traits';
 import { accentColorFor } from '../nemesis/NemesisAppearance';
 import { AREA_NAMES } from '../data/names';
+import type { LineContext } from '../data/dialogue';
+import type { EncounterKind } from '../nemesis/EncounterKind';
+import type { NemesisFactSlice } from '../story/NemesisFactsProjection';
 
 /* ============================================================
    memory compression
@@ -130,6 +133,58 @@ export function buildFacts(
   };
 }
 
+/** Merge base nemesis facts with story arcs, world events, and optional sim slice. */
+export function buildRichFacts(
+  n: Nemesis,
+  world: { turn: number; age: number; ageName: string },
+  nameOf: (id: string | null) => string,
+  trigger: MythEventKind | null = null,
+  slice?: NemesisFactSlice,
+  sim?: { goal: string; deeds: string[]; kills: number }
+): RichNemesisFacts {
+  const base = buildFacts(n, world, nameOf, trigger);
+  return {
+    ...base,
+    resolvedMemory: slice?.resolvedMemory.map((m) => m.text) ?? base.recentEvents,
+    storyArcs: slice?.arcs ?? [],
+    recentWorldEvents: slice?.worldEvents ?? [],
+    chronicleArchives: slice?.chronicleArchives,
+    simGoal: sim?.goal,
+    simDeeds: sim?.deeds,
+    simKills: sim?.kills,
+  };
+}
+
+function richFactBlock(f: RichNemesisFacts): string {
+  const lines = [factBlock(f)];
+  if (f.resolvedMemory.length) {
+    lines.push(`RESOLVED MEMORY:\n  ${f.resolvedMemory.slice(-8).join('\n  ')}`);
+  }
+  if (f.storyArcs.length) {
+    lines.push(
+      'STORY THREADS:\n' +
+        f.storyArcs
+          .map((a) => `  ${a.title} (${a.kind}): ${a.state} — ${a.next} [${a.characters.join(', ')}]`)
+          .join('\n')
+    );
+  }
+  if (f.recentWorldEvents.length) {
+    lines.push(
+      'WORLD EVENTS:\n' +
+        f.recentWorldEvents
+          .map((e) => `  T${e.turn} ${e.type}: ${e.text}${e.payloadSummary ? ' (' + e.payloadSummary + ')' : ''}`)
+          .join('\n')
+    );
+  }
+  if (f.simGoal) lines.push(`SIM GOAL: ${f.simGoal}`);
+  if (f.simDeeds?.length) lines.push(`SIM DEEDS:\n  ${f.simDeeds.slice(-4).join('\n  ')}`);
+  if (f.simKills !== undefined) lines.push(`SIM KILLS: ${f.simKills}`);
+  if (f.chronicleArchives?.length) {
+    lines.push(`CHRONICLE ARCHIVE:\n  ${f.chronicleArchives.join('\n  ')}`);
+  }
+  return lines.join('\n');
+}
+
 /* ============================================================
    shared framing
    ============================================================ */
@@ -208,16 +263,74 @@ export function tauntPrompt(f: NemesisFacts): { system: string; user: string } {
 }
 
 export function chroniclePrompt(f: NemesisFacts): { system: string; user: string } {
+  return relationshipChroniclePrompt(f as RichNemesisFacts);
+}
+
+export function relationshipChroniclePrompt(f: RichNemesisFacts): { system: string; user: string } {
   return {
-    system: `${VOICE}\n${HARD_RULE}\nYou summarise histories. You never add events.`,
+    system: `${VOICE}\n${HARD_RULE}\nYou summarise histories using relationship threads. You never add events.`,
     user:
       `Summarise the history between the player and ${f.name}.\n\n` +
       `RULES:\n` +
       `- 2 to 4 sentences, second person, addressed to the player ("You burned him...").\n` +
-      `- Every clause must correspond to a fact or event listed below.\n` +
+      `- Every clause must correspond to a fact, memory line, arc, or world event listed below.\n` +
+      `- You may weave in STORY THREADS when they involve the player — do not invent new threads.\n` +
       `- Do not invent a first meeting, a location, or a motive that is not listed.\n` +
       `- No preamble, no heading. Just the summary.\n\n` +
-      `FACTS\n${factBlock(f)}`,
+      `FACTS\n${richFactBlock(f)}`,
+  };
+}
+
+export function encounterLinePrompt(opts: {
+  f: RichNemesisFacts;
+  encounterKind: EncounterKind;
+  lineContext: LineContext;
+  fallbackLine: string;
+  legacyKind?: string;
+  legacyHeadline?: string;
+  turnIndex?: number;
+}): { system: string; user: string } {
+  const { f, encounterKind, lineContext, fallbackLine, legacyKind, legacyHeadline, turnIndex } = opts;
+  const extra: string[] = [];
+  extra.push(`ENCOUNTER: ${encounterKind}`);
+  extra.push(`CONTEXT: ${lineContext}`);
+  if (legacyKind) extra.push(`LEGACY: ${legacyKind}`);
+  if (legacyHeadline) extra.push(`LEGACY LINE: ${legacyHeadline}`);
+  if (turnIndex !== undefined) extra.push(`EXCHANGE TURN: ${turnIndex}`);
+  extra.push(`FALLBACK (same facts): ${fallbackLine}`);
+  return {
+    system: `${VOICE}\n${HARD_RULE}\nYou write one combat bark. Sparse. Not a chatbot.`,
+    user:
+      `Write one thing ${f.name} says in this moment.\n\n` +
+      `RULES:\n` +
+      `- One line only, maximum 12 words, no quotation marks.\n` +
+      `- Ground it in FACTS — a scar, a theft, an arc thread, a world event, or the fallback line's meaning.\n` +
+      `- Match CONTEXT (${lineContext}). Do not invent events.\n` +
+      `- Output ONLY the line.\n\n` +
+      `${extra.join('\n')}\n\n` +
+      `FACTS\n${richFactBlock(f)}`,
+  };
+}
+
+export function exchangePrompt(opts: {
+  f: RichNemesisFacts;
+  lineContext: LineContext;
+  turnIndex: number;
+  speaker: 'nemesis' | 'player';
+  fallbackLine: string;
+}): { system: string; user: string } {
+  const { f, lineContext, turnIndex, speaker, fallbackLine } = opts;
+  return {
+    system: `${VOICE}\n${HARD_RULE}\nYou voice one turn in a fixed two-party exchange. Not free chat.`,
+    user:
+      `Rewrite turn ${turnIndex + 1} for ${speaker === 'nemesis' ? f.name : 'the player'}.\n\n` +
+      `RULES:\n` +
+      `- One line, maximum ${speaker === 'player' ? 8 : 12} words, no quotation marks.\n` +
+      `- Same meaning as FALLBACK. Do not add actors or outcomes.\n` +
+      `- CONTEXT: ${lineContext}\n` +
+      `- Output ONLY the line.\n\n` +
+      `FALLBACK: ${fallbackLine}\n\n` +
+      `FACTS\n${richFactBlock(f)}`,
   };
 }
 
