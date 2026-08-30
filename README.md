@@ -38,6 +38,9 @@ Other scripts:
 ```bash
 npm run typecheck  # tsc --noEmit, strict
 npm run build      # typecheck + production bundle into dist/
+npm run lint       # ESLint on src/ (warnings-only)
+npm run test:unit  # Vitest — sim, story, save migrations
+npm run test:ci    # fast browser tier (preview + wiring/backend/simreg/story)
 npm run preview    # serve the production build on :4173 (includes /api/ai)
 npm run serve      # same thing from a plain node server, no vite
 
@@ -51,7 +54,8 @@ LAN static hosting; the AI key routes stay loopback-gated.
 # then platform fallbacks. If none: npx playwright install chromium
 
 npm test               # headless playtest (tools/playtest.mjs)
-npm run test:god       # THE LONG GAME vertical slice (75 checks)
+npm run test:god       # THE LONG GAME vertical slice (~98 checks)
+npm run test:simreg    # unified worldTurn / god+pit regression (seed 424242)
 npm run test:emergence # do stories actually emerge? (accelerated runs)
 npm run test:depth     # save migrate / Heat / Remnants / sim hooks
 npm run test:story     # story graph, recap, Web
@@ -61,6 +65,25 @@ npm run test:slice     # Tower Commander vertical slice
 npm run test:backend   # AI backend security suite
 npm run test:ai        # AI + nemesis continuity suite
 npm run test:ai-success # AI success path (needs preview:mock)
+```
+
+### CI
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR:
+
+```text
+npm ci → playwright install chromium → typecheck → build
+→ test:unit → lint → test:ci
+```
+
+`test:ci` starts `vite preview` on `:4173` via `tools/run-with-preview.mjs`, then runs
+`test:wiring`, `test:backend`, `test:simreg`, and `test:story`. Nightly/heavy suites
+(`test:god`, `test` playtest, `qa`, `test:emergence`) stay manual for now.
+
+Sim regression baseline lives at `tools/fixtures/sim-baseline.json`. To update intentionally:
+
+```bash
+UPDATE_SIM_BASELINE=1 npm run test:simreg
 ```
 
 Desktop browsers, keyboard + mouse. The game asks for pointer lock when a run starts; press `Esc`
@@ -181,14 +204,18 @@ your build.
 
 ### World simulation
 
-`src/world/WorldSimulation.ts` runs a seeded turn when you die. It picks weighted events — duels,
-challenges upward, betrayals, alliances, assassinations, territory grabs, injuries, mutations,
-weapon theft, recruitment — resolves them against power, personality and luck, then reconciles the
-hierarchy. Beating someone above you takes their rank *and* pushes them down, so the crown genuinely
-changes hands. Roughly six different Overlords per hundred turns in testing.
+The offscreen world uses the **same utility engine** as THE LONG GAME (`Autonomy.simulateCycle()`),
+routed through `src/sim/OffscreenBeat.ts`. When you die, a background tick fires, or the Overlord
+falls and succession runs, the game advances one **world beat** (`worldTurn`): every living
+character scores their options, one acts, skirmishes and returns resolve, then `reconcileWorld()`
+closes ranks and territories. There is no separate weighted-event table — duels, betrayals, seizures,
+and promotions emerge from the same scoring the oracle uses.
 
-Returns from death are deliberately rare: two turns buried minimum, weighted by personality and
-unresolved grudge, at most one per turn.
+God cycles and pit offscreen beats share `worldTurn` (one cycle ≡ one beat). Silent beats skip the
+feed; chronicle and `Nemesis.sim` still update. See [`docs/SIM_LAYER.md`](docs/SIM_LAYER.md).
+
+Returns from death stay rare: two cycles buried minimum, personality- and grudge-weighted, at most
+one per beat.
 
 ### Ages
 
@@ -220,8 +247,11 @@ src/
              Duel + Combatant (headless combat off the real tables), Interventions + Conditions
              (the player's only reach into it), Influence, Factions, Arc, Crisis, Situations,
              Feed, Legends, Unlocks
+  sim/       Unified offscreen engine — OffscreenBeat, BackgroundTick, Reconcile, ChronicleArchive,
+             PitSimBridge, CombatOutcome, TimeModel (worldTurn / god.cycle / worldAge)
   core/      Game.ts (wiring + UI state machine), GameLoop, Input, SaveSystem, EventBus, Events, RNG
-  world/     Arena (geometry + collision), World (run director), WorldSimulation, WorldEvent
+  world/     Arena (geometry + collision), World (run director), WorldSimulation (thin wrapper → sim/),
+             WorldEvent
   nemesis/   Nemesis (model), NemesisManager (roster + hierarchy), Generator, Appearance,
              Memory, Relationships
   player/    Player, PlayerController, PlayerCombat, PlayerStats
@@ -352,16 +382,23 @@ server at all, play is unaffected.
 local backend, and that backend holds it in memory for the lifetime of the process:
 
 ```
-settings UI  ->  POST /api/ai/connect  ->  in-memory keyStore  ->  OpenAI
+settings UI  ->  POST /api/ai/connect  ->  in-memory key store  ->  OpenAI / Groq
 ```
 
 It is never written to `localStorage`, the save file, the console, the F1 panel, a log line, or an
 error message. `SaveSystem` additionally scrubs anything key-shaped on the way in and out, as a
 guard against a future edit. Restart the server and you re-enter the key; that is intended.
 
+**OpenAI** handles both text and images. **Groq** is text-only — when Groq is selected, portraits
+use the Local AI Engine when it is running, otherwise the procedural SVG fallback. In **AUTO**
+mode, text tries Local → Groq → OpenAI; images try Local → OpenAI.
+
+Environment variables work for local convenience: `OPENAI_API_KEY`, `GROQ_API_KEY`. Get keys from
+[OpenAI](https://platform.openai.com/api-keys) or [Groq](https://console.groq.com/keys); see
+[OpenAI docs](https://platform.openai.com/docs) or the [Groq quickstart](https://console.groq.com/docs/quickstart).
+
 `server/aiHandler.mjs` is the whole backend and is mounted three ways from one implementation:
 as Vite middleware in `dev` and `preview`, and by `server/index.mjs` as a standalone server.
-`OPENAI_API_KEY` in the environment works too, for local convenience.
 
 Upstream failures are mapped to a fixed vocabulary — `Invalid API key`, `Network unavailable`,
 `Request timed out`, `API unavailable`, `Rate limited` — and the upstream body is discarded rather
@@ -390,7 +427,7 @@ Nothing outside `src/ai/` names a vendor.
 
 Named enemies can offer a **Vendetta** — one optional personal objective with a previewed reward. **Heat** is the readable pursuit meter; thresholds telegraph hunters and lockdowns, never spawning on top of you. **Remnants** are a run-only drop (not Essence): heal (vulnerable), reroll offers, pay extraction, or block a fake death. Territories impose **one law** from the current holder; liberation is temporary and the law follows the new holder after simulation. After a named victory you pick **one** reward derived from their real traits. Mercy, tribute, humiliation and betrayal are available when a named foe is broken and the fight is safe enough. Weapons are sidegrades with unlockable **techniques**. Power **families** and up to three **reactions** change verbs, not just numbers.
 
-AI remains optional and presentation-only. Saves are version **7**; older worlds migrate with defaults.
+AI remains optional and presentation-only. Saves are version **9** (adds optional `biomes` and `npcQuests`); older worlds migrate with defaults.; older worlds migrate with defaults.
 
 ### Tower Commander vertical slice (human playtest)
 
@@ -429,10 +466,10 @@ It cannot display the API key, because the key is not in the browser.
 
 ## Save data
 
-One versioned JSON blob in `localStorage` under `shdowpit.world.v1` (`saveVersion` 7). It holds the
+One versioned JSON blob in `localStorage` under `shdowpit.world.v1` (`saveVersion` 9). It holds the
 roster, appearance seeds, memory, relationships, hierarchy, territories, liberation mods, event log, world turn and
 Age, player meta (Essence, Vigour cap 30, techniques, Vendetta history), optional mid-run snapshot, the
-suspended long-game run, the Book of Legends, the god-layer unlocks, and settings. Unknown or
+suspended long-game run, the Book of Legends, the god-layer unlocks, per-area **biomes** (ecology, resources, dungeon sites), the **npcQuests** ledger, and settings. Unknown or
 missing fields are filled by `SaveSystem.migrate()` rather than crashing, and a corrupt save is
 archived aside instead of silently destroyed.
 

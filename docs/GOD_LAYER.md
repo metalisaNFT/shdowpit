@@ -206,7 +206,35 @@ screen or the rail, for players who would rather read. `SKIP TUTORIALS` in the
 pause menu switches off both games' teaching at once; `REPLAY TUTORIALS` and
 the primer's own button restart it.
 
-## 7. DESCEND
+## 7. Unified simulation bridge
+
+THE LONG GAME and the pit share one engine. Visible god cycles and silent offscreen beats both call
+`Autonomy.simulateCycle()`; only presentation and persistence differ.
+
+**Authoritative map:** [`SIM_LAYER.md`](SIM_LAYER.md) — time axes, entry points, pit bridges,
+reconciliation, chronicle trim, verification harnesses.
+
+| Concern | God run | Offscreen (death, background, succession) |
+| --- | --- | --- |
+| Caller | `GodRun.advanceCycle()` | `resolveOffscreenBeat()` via `sim/OffscreenBeat.ts` |
+| Feed / NOW card | Yes | No (`ctx.silent`) |
+| RNG | Persisted `GodState.rngState` | `mgr.simRng` or ephemeral god |
+| Act pressure | `Arc.effectiveAct()` on `god.cycle` | Offscreen act profile on `worldTurn` / `worldAge` |
+
+**Offscreen act profile.** Pit-side beats call `offscreenActFor(mgr)` in `OffscreenBeat.ts` instead of
+a flat `PIT_ACT` constant — turn- and age-scaled `ActDef` pressure so late Ages feel sharper even
+when you are only in the pit. Details: `SIM_LAYER.md` §5.
+
+**Pit bridges (do not swap these):**
+
+- `src/sim/PitSimBridge.ts` — pit combat → `Nemesis.sim` (kills, escapes, scars).
+- `src/god/PitBridge.ts` — god conditions and Book legacies → live combat tilts.
+
+**Save trim.** `Beat.why` payloads are stripped from beats older than the most recent 80 by
+`trimWhy()` in `Explain.ts`, called from `serialiseGod()` before every persist — keeps long runs
+within localStorage quota (G-12).
+
+## 8. DESCEND
 
 The third-person game was not deleted; it became an intervention. `DESCEND`
 costs 7 influence and 12 chaos, drops the player into the existing 3D run
@@ -214,12 +242,13 @@ against one character, and advances two cycles while they are down there. The
 board is waiting when they come back and the world has moved. Nothing about the
 run below is special-cased — only where it returns to.
 
-## 8. Verification
+## 9. Verification
 
 ```bash
 npm run build && npx vite preview --port 4173 &
 
 npm run test:god          # the vertical slice + the teaching layer (~98 checks)
+npm run test:simreg       # deterministic worldTurn / mixed god+pit paths (see SIM_LAYER.md)
 npm run test:emergence    # does the simulation actually write stories?
 ```
 
@@ -250,7 +279,7 @@ the ones that do happen worthless. `WHISPER` exists to buy the reason.
 
 If a pattern stops occurring, improve the simulation — not the presentation.
 
-## 9. Things that are easy to break
+## 10. Things that are easy to break
 
 - **`Nemesis.sim` is a namespace, like `Nemesis.ai`.** Nothing in `src/ai/`
   may write it and nothing presentational may read it as a fact.
@@ -272,7 +301,7 @@ If a pattern stops occurring, improve the simulation — not the presentation.
   sentence. If a lesson's trigger cannot be measured, measure it — do not
   pattern-match the feed text.
 
-## 10. AI is voice, not authority
+## 11. AI is voice, not authority
 
 `AIContentService` is the only talker. THE LONG GAME uses the same queue,
 cache, validation, and fallbacks as the 3D game. `GodAI.ts` decides which

@@ -401,3 +401,20 @@ Format: **ID · severity · verified/suspected — title** · where · what · w
 5. **LAN hosting (A-1).** `host: true` was presumably added for testing on another device; if that is still wanted, keep it and gate the four key-bearing routes with the existing `isLoopback` (or a page-minted token) instead of removing it.
 
 Recommended first commit, in this order: 0-A, 0-C, 0-E, 0-D, then 1-A and 1-B — about a day, after which the harnesses can start telling the truth about the rest.
+
+---
+
+## 7. Addressed — Long Game Simulation Upgrade
+
+The following simulation-related items from this audit are in scope for the **Long Game Simulation Upgrade** pass (code + docs). This appendix tracks closure against §4.3 / Phase 4–5, not the full Maestro backlog.
+
+| ID | Finding (short) | Addressed by |
+| --- | --- | --- |
+| **G-3** | Fight actions overwrite `goalTargetId` / reset grudge clock | `Autonomy.ts` — `goalTargetId` only updates on nemesis fight targets; revenge `goalAge` preserved across non-grudge actions. Assertion in `test:simreg` / emergence harness. |
+| **W-1** | Slain Overlord returns during succession and retakes crown | Succession immunity window in `rollReturns` / `simulateSuccession` — skip recent Overlord corpses; optional re-entry one rank down. Harness: no corpse re-crown in `test:simreg`. |
+| **G-12** | `trimWhy` documented but not called; save bloat from `Beat.why` | **`trimWhy(feed)`** in `Explain.ts`, invoked from `GodRun.serialiseGod()` and `persist()`. Docs updated in `GOD_LAYER.md` §7. |
+| **Doc drift** | README still described weighted events; no `src/sim/` doc | **`docs/SIM_LAYER.md`** (authoritative); README §World simulation + architecture tree; `GOD_LAYER.md` §7 bridge. |
+| **Dynamic act profile** | Static `PIT_ACT` for all offscreen beats | **`offscreenActFor(mgr)`** in `OffscreenBeat.ts` — turn/age-scaled `ActDef` replaces `PIT_ACT`; documented in `SIM_LAYER.md` §5. |
+| **Background tick headlines** | Generic toast only; no lead event surfaced | `BackgroundTick` returns optional `headline` from lead chronicle event; `Game.ts` toasts it for promotion / succession / return / crisis. Check in `test:god`. |
+
+Items **not** closed by this pass: G-1, G-2, G-4–G-11, W-2–W-12, harness red baseline (T-2), and Phase 0 combat/core freezes — see §4.2.
