@@ -34,6 +34,8 @@ import {
   PID_PATH,
   ensureDirs,
   loadConfig,
+  saveConfig,
+  ensureAuthToken,
   logLine,
   httpJson,
   isOurEngine,
@@ -47,6 +49,8 @@ if (!cfg) {
   console.error('LOCAL_AI_NOT_INSTALLED — run `node local-ai-engine/install.mjs` first.');
   process.exit(3);
 }
+ensureAuthToken(cfg);
+saveConfig(cfg);
 const FAKE = cfg.fakeRuntime || process.env.SHDOWPIT_LOCAL_AI_FAKE === '1';
 
 const state = {
@@ -83,13 +87,39 @@ function errBody(message, code) {
   return { error: { message, type: 'local_ai_error', param: null, code } };
 }
 
-function send(res, status, obj, headers = {}) {
+/** Echo loopback origins only — never wildcard CORS (A-11). */
+function corsOrigin(req) {
+  const origin = req?.headers?.origin;
+  if (!origin) return null;
+  try {
+    const h = new URL(origin).hostname.toLowerCase();
+    if (h === 'localhost' || h === '127.0.0.1' || h === '[::1]') return origin;
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function corsHeaders(req, extra = {}) {
+  const h = { 'Cache-Control': 'no-store', ...extra };
+  const origin = corsOrigin(req);
+  if (origin) h['Access-Control-Allow-Origin'] = origin;
+  return h;
+}
+
+function authOk(req) {
+  const token = cfg.authToken;
+  if (!token) return true;
+  const auth = String(req.headers.authorization ?? '');
+  const got = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+  return got === token;
+}
+
+function send(res, status, obj, req, headers = {}) {
   const body = JSON.stringify(obj);
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': '*',
-    'Cache-Control': 'no-store',
-    ...headers,
+    ...corsHeaders(req, headers),
   });
   res.end(body);
 }
@@ -612,14 +642,15 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Priority',
+      ...corsHeaders(req, {
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Priority',
+      }),
     });
     return res.end();
   }
 
-  if (req.method === 'GET' && url === '/health') return send(res, 200, healthBody());
+  if (req.method === 'GET' && url === '/health') return send(res, 200, healthBody(), req);
 
   if (req.method === 'GET' && url === '/v1/models') {
     const data = [];
@@ -628,54 +659,61 @@ const server = http.createServer(async (req, res) => {
       data.push({ id: 'local-balanced', object: 'model', owned_by: 'local' });
     }
     if (cfg.image.enabled) data.push({ id: 'local-image-fast', object: 'model', owned_by: 'local' });
-    return send(res, 200, { object: 'list', data });
+    return send(res, 200, { object: 'list', data }, req);
   }
 
   if (req.method === 'GET' && url.startsWith('/generated/')) {
     const name = path.basename(url); // no traversal: basename only
     const file = path.join(DIRS.generated, name);
     if (!/^[a-f0-9]{40}\.png$/.test(name) || !fs.existsSync(file)) {
-      return send(res, 404, errBody('No such image.', 'INVALID_REQUEST'));
+      return send(res, 404, errBody('No such image.', 'INVALID_REQUEST'), req);
     }
-    res.writeHead(200, { 'Content-Type': 'image/png', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'max-age=86400' });
+    res.writeHead(200, {
+      'Content-Type': 'image/png',
+      ...corsHeaders(req, { 'Cache-Control': 'max-age=86400' }),
+    });
     return fs.createReadStream(file).pipe(res);
   }
 
   if (req.method === 'POST' && url === '/heartbeat') {
-    return send(res, 200, { ok: true });
+    if (!authOk(req)) return send(res, 401, errBody('Unauthorized.', 'INVALID_REQUEST'), req);
+    return send(res, 200, { ok: true }, req);
   }
 
   if (req.method === 'POST' && url === '/goodbye') {
     const remote = req.socket.remoteAddress ?? '';
-    if (!/^(::1|127\.|::ffff:127\.)/.test(remote)) return send(res, 403, errBody('Forbidden.', 'INVALID_REQUEST'));
+    if (!/^(::1|127\.|::ffff:127\.)/.test(remote)) return send(res, 403, errBody('Forbidden.', 'INVALID_REQUEST'), req);
+    if (!authOk(req)) return send(res, 401, errBody('Unauthorized.', 'INVALID_REQUEST'), req);
     scheduleGoodbye();
-    return send(res, 200, { ok: true, delayMs: GOODBYE_MS });
+    return send(res, 200, { ok: true, delayMs: GOODBYE_MS }, req);
   }
 
   if (req.method === 'POST' && url === '/shutdown') {
     // Loopback-only server, but double-check anyway.
     const remote = req.socket.remoteAddress ?? '';
-    if (!/^(::1|127\.|::ffff:127\.)/.test(remote)) return send(res, 403, errBody('Forbidden.', 'INVALID_REQUEST'));
-    send(res, 200, { ok: true });
+    if (!/^(::1|127\.|::ffff:127\.)/.test(remote)) return send(res, 403, errBody('Forbidden.', 'INVALID_REQUEST'), req);
+    if (!authOk(req)) return send(res, 401, errBody('Unauthorized.', 'INVALID_REQUEST'), req);
+    send(res, 200, { ok: true }, req);
     return void shutdown();
   }
 
   if (req.method === 'POST' && ['/v1/chat/completions', '/v1/completions', '/v1/images/generations'].includes(url)) {
+    if (!authOk(req)) return send(res, 401, errBody('Unauthorized.', 'INVALID_REQUEST'), req);
     const body = await readBody(req);
-    if (body === null) return send(res, 400, errBody('Malformed JSON body.', 'INVALID_REQUEST'));
+    if (body === null) return send(res, 400, errBody('Malformed JSON body.', 'INVALID_REQUEST'), req);
     try {
       const out =
         url === '/v1/images/generations'
           ? await handleImage(body, req)
           : await handleChat(body, req, url === '/v1/chat/completions');
-      return send(res, out.status, out.body);
+      return send(res, out.status, out.body, req);
     } catch (err) {
       logLine('engine.log', `unhandled ${url} ${String(err?.message ?? err)}`);
-      return send(res, 500, errBody('Internal engine error.', url.includes('images') ? 'IMAGE_GENERATION_FAILED' : 'TEXT_MODEL_LOAD_FAILED'));
+      return send(res, 500, errBody('Internal engine error.', url.includes('images') ? 'IMAGE_GENERATION_FAILED' : 'TEXT_MODEL_LOAD_FAILED'), req);
     }
   }
 
-  send(res, 404, errBody(`No such endpoint: ${req.method} ${url}`, 'INVALID_REQUEST'));
+  send(res, 404, errBody(`No such endpoint: ${req.method} ${url}`, 'INVALID_REQUEST'), req);
 });
 
 async function shutdown() {

@@ -37,6 +37,7 @@ import {
   gb,
   download,
   fileLooksValid,
+  hashFile,
   extract,
   findBinary,
   httpJson,
@@ -50,6 +51,7 @@ import {
   readProgress,
   sleep,
   logLine,
+  ensureAuthToken,
 } from './lib.mjs';
 import { TEXT_MODEL, IMAGE_MODEL, TEXT_RUNTIMES, IMAGE_RUNTIMES, runtimeCandidates, ENGINE_VERSION } from './manifest.mjs';
 
@@ -122,6 +124,39 @@ function renderBar(pct) {
    runtime install helper
    ============================================================ */
 
+async function runtimeArchiveOk(archive, part) {
+  if (!fs.existsSync(archive)) return false;
+  const sidecar = `${archive}.sha256`;
+  if (part.sha256) {
+    try {
+      return (await hashFile(archive)) === part.sha256;
+    } catch {
+      return false;
+    }
+  }
+  if (fs.existsSync(sidecar)) {
+    try {
+      const expected = fs.readFileSync(sidecar, 'utf8').trim();
+      return (await hashFile(archive)) === expected;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+async function recordRuntimeArchive(archive, part) {
+  try {
+    const hash = await hashFile(archive);
+    fs.writeFileSync(`${archive}.sha256`, hash);
+    if (part.sha256 && hash !== part.sha256) {
+      console.log(`  warning: runtime archive hash mismatch for ${part.file}`);
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
 async function installRuntime(kind, table, keys, destDir, stepNo) {
   for (const key of keys) {
     const spec = table[key];
@@ -134,12 +169,19 @@ async function installRuntime(kind, table, keys, destDir, stepNo) {
     let ok = true;
     for (const part of spec.parts) {
       const archive = path.join(DIRS.cache, part.file);
-      const r = await download(part.url, archive, { label: `${kind} runtime (${key})`, onProgress: onDownloadProgress });
-      process.stdout.write('\n');
-      if (!r.ok) {
-        ok = false;
-        console.log(`  ${key}: download failed (${r.code}) — trying next candidate`);
-        break;
+      if (!(await runtimeArchiveOk(archive, part))) {
+        const r = await download(part.url, archive, {
+          label: `${kind} runtime (${key})`,
+          onProgress: onDownloadProgress,
+          sha256: part.sha256 ?? '',
+        });
+        process.stdout.write('\n');
+        if (!r.ok) {
+          ok = false;
+          console.log(`  ${key}: download failed (${r.code}) — trying next candidate`);
+          break;
+        }
+        await recordRuntimeArchive(archive, part);
       }
       if (!(await extract(archive, markerDir))) {
         ok = false;
@@ -313,6 +355,7 @@ async function install() {
     cfg.image.steps = Math.min(cfg.image.steps, 2);
   }
   cfg.threads = Math.max(1, Math.min(8, os.cpus().length));
+  ensureAuthToken(cfg);
   saveConfig(cfg);
   step(9, 'complete', `port ${cfg.port}, ${cpuOnly ? 'CPU profile' : 'GPU profile'}`);
 

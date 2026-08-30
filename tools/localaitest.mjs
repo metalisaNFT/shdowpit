@@ -25,6 +25,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readAuthToken } from '../local-ai-engine/lib.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const ENGINE = path.join(ROOT, 'local-ai-engine');
@@ -48,10 +49,12 @@ function run(args, opts = {}) {
 }
 
 async function j(url, opts = {}) {
+  const token = readAuthToken();
+  const auth = token ? { Authorization: `Bearer ${token}` } : {};
   try {
     const res = await fetch(url, {
       method: opts.method ?? (opts.body ? 'POST' : 'GET'),
-      headers: { 'Content-Type': 'application/json', ...(opts.headers ?? {}) },
+      headers: { 'Content-Type': 'application/json', ...auth, ...(opts.headers ?? {}) },
       body: opts.body ? JSON.stringify(opts.body) : undefined,
     });
     return { status: res.status, json: await res.json().catch(() => null), res };

@@ -75,11 +75,25 @@ export const IMAGE_MODEL = {
    extracted tree, so upstream layout changes cannot break us.
 */
 
-function llama(asset, approxMB) {
-  return { url: `${LLAMA_BASE}/${asset}`, file: asset, approxMB, binary: ['llama-server', 'llama-server.exe'] };
+function llama(asset, approxMB, sha256 = '') {
+  return {
+    url: `${LLAMA_BASE}/${asset}`,
+    file: asset,
+    approxMB,
+    expectedSize: 0,
+    sha256,
+    binary: ['llama-server', 'llama-server.exe'],
+  };
 }
-function sd(asset, approxMB) {
-  return { url: `${SD_BASE}/${asset}`, file: asset, approxMB, binary: ['sd', 'sd.exe', 'sd-cli', 'sd-cli.exe'] };
+function sd(asset, approxMB, sha256 = '') {
+  return {
+    url: `${SD_BASE}/${asset}`,
+    file: asset,
+    approxMB,
+    expectedSize: 0,
+    sha256,
+    binary: ['sd', 'sd.exe', 'sd-cli', 'sd-cli.exe'],
+  };
 }
 
 export const TEXT_RUNTIMES = {

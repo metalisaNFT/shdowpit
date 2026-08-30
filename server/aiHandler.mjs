@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { stopEngineSync } from '../local-ai-engine/lib.mjs';
+import { stopEngineSync, readAuthToken } from '../local-ai-engine/lib.mjs';
 
 const OPENAI_BASE = 'https://api.openai.com/v1';
 const TEXT_MODEL = process.env.SHDOWPIT_TEXT_MODEL ?? 'gpt-4o-mini';
@@ -62,6 +62,14 @@ function localPort() {
 
 function localBaseUrl() {
   return `http://127.0.0.1:${localPort()}`;
+}
+
+function localAuthHeaders() {
+  const token = readAuthToken();
+  return {
+    Authorization: token ? `Bearer ${token}` : 'Bearer local',
+    'Content-Type': 'application/json',
+  };
 }
 
 function localInstalled() {
@@ -132,11 +140,7 @@ async function localTextCall(body) {
     const t = setTimeout(() => ac.abort(), LOCAL_TEXT_TIMEOUT_MS);
     const res = await fetch(`${localBaseUrl()}/v1/chat/completions`, {
       method: 'POST',
-      headers: {
-        // A harmless placeholder — NEVER an OpenAI key. See the contract above.
-        Authorization: 'Bearer local',
-        'Content-Type': 'application/json',
-      },
+      headers: localAuthHeaders(),
       body: JSON.stringify({
         model: 'local-fast',
         messages: [
@@ -178,7 +182,7 @@ async function localImageCall(body) {
     const t = setTimeout(() => ac.abort(), LOCAL_IMAGE_TIMEOUT_MS);
     const res = await fetch(`${localBaseUrl()}/v1/images/generations`, {
       method: 'POST',
-      headers: { Authorization: 'Bearer local', 'Content-Type': 'application/json' },
+      headers: localAuthHeaders(),
       body: JSON.stringify({
         model: 'local-image-fast',
         prompt,
@@ -255,7 +259,7 @@ function requestOriginAllowed(req) {
 function pingEngine(pathname, timeoutMs = 1500) {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), timeoutMs);
-  return fetch(`${localBaseUrl()}${pathname}`, { method: 'POST', signal: ac.signal })
+  return fetch(`${localBaseUrl()}${pathname}`, { method: 'POST', headers: localAuthHeaders(), signal: ac.signal })
     .catch(() => null)
     .finally(() => clearTimeout(t));
 }

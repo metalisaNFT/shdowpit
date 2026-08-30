@@ -104,7 +104,21 @@ export function defaultConfig() {
     idleTimeoutSeconds: 120,
     /** After the game tab sends /goodbye, wait this long so a refresh can cancel. */
     goodbyeDelaySeconds: 8,
+
+    /** Per-install secret — required on mutating HTTP routes (A-11). */
+    authToken: '',
   };
+}
+
+/** Mint or preserve the install token; persisted in config.json. */
+export function ensureAuthToken(cfg) {
+  if (!cfg.authToken) cfg.authToken = crypto.randomBytes(32).toString('hex');
+  return cfg.authToken;
+}
+
+export function readAuthToken() {
+  const cfg = loadConfig();
+  return cfg?.authToken ?? '';
 }
 
 export function loadConfig() {
