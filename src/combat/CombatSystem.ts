@@ -1188,9 +1188,18 @@ export class CombatSystem {
     }
     if (hasTriggeredPower(stats.powers.ids(), 'parasite') && allow('parasite') && target.named && target.nemesis.strengths.length &&
         this.effects.trigger('ON_EXECUTION', this.combatClock, { scope: 'parasite', cooldown: 0.4 })) {
-      const stealable = new Set(['brutal', 'blood_fury', 'relentless', 'iron_hide', 'thick_plate', 'quick', 'swift_step']);
+      const stealable = new Set([
+        'brutal', 'blood_fury', 'relentless', 'iron_hide', 'thick_plate', 'quick', 'swift_step',
+        'fire_resist', 'vigorous', 'blade_ward', 'arrow_ward', 'bulwark', 'immovable', 'hard_to_kill',
+      ]);
       const stolen = target.nemesis.strengths.find((s) => stealable.has(s)) ?? target.nemesis.strengths[0];
-      if (stolen && !stats.stolenTraits.includes(stolen)) stats.stolenTraits.push(stolen);
+      if (stolen && !stats.stolenTraits.includes(stolen)) {
+        stats.stolenTraits.push(stolen);
+        if (stolen === 'vigorous') {
+          stats.addGearStat('maxHp', 18);
+          stats.hp = Math.min(stats.maxHp, stats.hp + 18);
+        }
+      }
       if (hasReaction(stats.powers, 'parasite_debt') && target.nemesis.killsAgainstPlayer > 0) {
         stats.stolenTraits.push('brutal');
         this.cb.onProcNote?.('BLOOD TITHE');

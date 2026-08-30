@@ -530,7 +530,8 @@ export class Player implements Combatant {
       this.burnTick -= dt;
       if (this.burnTick <= 0) {
         this.burnTick = 0.5;
-        this.stats.hp = Math.max(0, this.stats.hp - 2);
+        const burnDmg = 2 * this.stats.fireResistMul();
+        this.stats.hp = Math.max(0, this.stats.hp - burnDmg);
         if (this.stats.hp <= 0) this.combat.die();
       }
     }

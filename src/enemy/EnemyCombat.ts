@@ -355,7 +355,7 @@ export class EnemyCombat {
           this.state = 'ready';
           this.t = 0;
           this.current = null;
-          const agg = 1 - Math.min(0.8, mods.windupMul > 0 ? 0 : 0);
+          const agg = 1 - Math.min(0.55, Math.max(0, mods.speedMul - 0.85) * ENEMY.aggressionRecoveryScale);
           this.cooldown = ENEMY.recoveryMin + Math.random() * (ENEMY.recoveryMax - ENEMY.recoveryMin) * agg;
         }
         break;

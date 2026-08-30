@@ -401,7 +401,6 @@ export const HEAL_ECON = {
   vultureBase: 22,
   vultureFalloff: 0.55,
   regenVsSevere: 0.35,
-  recoverableFraction: 0.7,
   maxVigour: 30,
   vigourEssenceStep: 80,
   vigourPerStep: 2,
@@ -410,7 +409,6 @@ export const HEAL_ECON = {
 export const DODGE_RULES = {
   cooldownFloor: 0.35,
   blinkIFrameEndBonus: 0.1,
-  chainPrimaryOnly: true,
 } as const;
 
 export const EXECUTION_RULES = {

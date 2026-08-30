@@ -227,7 +227,7 @@ function copyFor(id: VendettaPatternId, f: VendettaFacts): { title: string; desc
 function rewardFor(id: VendettaPatternId, _f: VendettaFacts): VendettaRewardPreview {
   switch (id) {
     case 'break_posture_twice':
-      return { kind: 'essence', text: '+45 Essence and a posture technique chance' };
+      return { kind: 'essence', text: '+45 Essence on completion' };
     case 'defeat_recovered_weapon':
       return { kind: 'technique', text: 'Unlock a technique on the recovered weapon' };
     case 'force_flee':

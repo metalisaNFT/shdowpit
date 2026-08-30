@@ -221,7 +221,7 @@ export class PlayerStats {
     if (hasTriggeredPower(this.powers.ids(), 'momentum')) m *= 1 + this.momentum * 0.05;
     for (const t of this.stolenTraits) {
       if (t === 'brutal') m *= 1.12;
-      if (t === 'blood_fury') m *= 1.08;
+      if (t === 'blood_fury' && this.maxHp > 0 && this.hp / this.maxHp <= 0.45) m *= 1.08;
       if (t === 'relentless') m *= 1.06;
     }
     return m;
@@ -245,8 +245,21 @@ export class PlayerStats {
     for (const t of this.stolenTraits) {
       if (t === 'iron_hide') m *= 0.92;
       if (t === 'thick_plate') m *= 0.95;
+      if (t === 'blade_ward') m *= 0.94;
+      if (t === 'arrow_ward') m *= 0.92;
+      if (t === 'bulwark') m *= 0.96;
     }
     return m;
+  }
+
+  /** Stolen fire resistance from PARASITE. */
+  fireResistMul(): number {
+    return this.stolenTraits.includes('fire_resist') ? 0.35 : 1;
+  }
+
+  /** Extra max HP from stolen VIGOROUS. */
+  stolenVigourBonus(): number {
+    return this.stolenTraits.includes('vigorous') ? 18 : 0;
   }
 
   moveSpeedMultiplier(): number {
