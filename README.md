@@ -103,7 +103,7 @@ from afar while captions land on the NOW card.
 
 1. **OBSERVE.** One load-bearing situation at a time — a grudge about to act, a house
    coming apart, someone climbing too fast. The full board and feed live in drawers.
-2. **INTERFERE.** Spend Influence. Twelve interventions write *conditions*, not
+2. **INTERFERE.** Spend Influence. Thirteen interventions write *conditions*, not
    outcomes (`BLESS`, `CURSE`, `WHISPER`, `PRICE THEIR HEAD`, `DESCEND`, …). The clock
    waits until you advance after a spend.
 3. **SIMULATE.** Characters score every option from personality, relationships,
@@ -118,7 +118,7 @@ from afar while captions land on the NOW card.
 
 **Learning it.** The first run walks six guided steps. After that, at most one short
 lesson per cycle. **WHY** on decision beats opens the arithmetic. `THE PRIMER` on the
-title screen is the rules on one page.
+god teaching rail is the rules on one page.
 
 `docs/GOD_LAYER.md` is the map of `src/god/`.
 
@@ -195,7 +195,7 @@ gives it back. That is the whole feature: a personal objective the game did not 
 
 ### Powers
 
-Twenty run-scoped powers, all mechanical rather than percentage bumps — `BLINK`, `REVERSAL`,
+Forty-three run-scoped powers are defined (thirty-one appear in offers), all mechanical rather than percentage bumps — `BLINK`, `REVERSAL`,
 `PREDATOR`, `PARASITE`, `BLOOD DEBT`, `SHOCKWAVE`, `CHAIN`, `PHANTOM`, `EMBER`, `RIPOSTE`, `TERROR`,
 `ECHO`, `STAMPEDE` and friends. Offered at shrines and after every captain-or-above kill.
 
@@ -216,8 +216,14 @@ src/
   player/    Player, PlayerController, PlayerCombat, PlayerStats
   enemy/     Enemy, EnemyAI, EnemyCombat
   combat/    CombatSystem (resolves every blow), Hitbox, Types
+  ai/        AIContentService, AIBackend, AIQueue, comic portrait pipeline
+  anim/      Rig, Animator, ClipLibrary (clips.json)
+  comic/     ComicService, capture queue
+  progress/  Progression, OfferRoller, skill tree
+  run/       RunState types
+  story/     StoryAI, StoryModel, arcs
   camera/    ThirdPersonCamera
-  abilities/ AbilityManager
+  abilities/ AbilityRuntime, OfferRoller, Reactions, SkillTargeting
   ui/        HUD, HierarchyScreen, DeathReport, NemesisIntro, TitleScreen, PowerSelect,
              PauseScreen, DebugOverlay, GodScreen, LegendsScreen, Dom
   audio/     AudioManager (fully synthesised, no assets)
@@ -238,8 +244,9 @@ Deliberate boundaries worth keeping:
 
 ### Performance notes
 
-The whole map is a handful of `InstancedMesh` draws — around 50–120 draw calls and under 3k
-triangles with a full arena and a crowd. Point lights are a **fixed pool of four** that get moved to
+The whole map is a handful of `InstancedMesh` draws. At quality=low with six enemies the
+harness sees ~130 draw calls and ~5k triangles — higher than the early prototype target, still
+modest for WebGL. Point lights are a **fixed pool of four** that get moved to
 whichever sources are nearest the player: Three.js recompiles every material when the light *count*
 changes, so the count never changes.
 

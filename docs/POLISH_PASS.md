@@ -238,7 +238,7 @@ aisuccess crashed, qa 0/3 MAJOR.
   fixed the damage it was doing, but an optional side objective arguably should
   not stop the world at all. A non-blocking HUD offer would be the better
   design and is a contained change.
-- **Bundle is a single 1.5 MB chunk** (463 KB gzipped) and Vite warns about it.
+- **Bundle is ~1.8 MB JS (~570 KB gzipped)** after `vite build` (2026-08-30); `clips.json` is the largest gzip contributor. Vite warns about chunk size.
   Code-splitting the story/AI/hierarchy layers behind dynamic imports would cut
   time-to-first-frame. Not attempted here — it touches module boundaries and
   the brief said not to destabilise working systems.

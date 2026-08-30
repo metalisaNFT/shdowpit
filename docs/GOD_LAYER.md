@@ -40,7 +40,7 @@ A run is 25–32 cycles and takes a few minutes at ×20. Endings are roughly
 | `Actions.ts` | eighteen things a character can decide to do, each enumerating its own targets and scoring them |
 | `Autonomy.ts` | the SIMULATE phase: initiative order, the fight ration, drift, returns from death, faction settlement |
 | `Conditions.ts` | the only thing the player writes. Ten kinds, all with a decay. |
-| `Interventions.ts` | twelve interventions. **Nothing in this file may change `alive`, `rank`, `power`, who holds ground, or who fights whom.** |
+| `Interventions.ts` | thirteen interventions. **Nothing in this file may change `alive`, `rank`, `power`, who holds ground, or who fights whom.** |
 | `Influence.ts` | the two resources and the five chaos tiers |
 | `Factions.ts` | houses: leader, members, ground, stability. They fracture, they re-form. |
 | `Arc.ts` | the four acts. The only authored thing in the layer, and it authors *pressure*, not events. |
@@ -209,7 +209,7 @@ run below is special-cased — only where it returns to.
 ```bash
 npm run build && npx vite preview --port 4173 &
 
-npm run test:god          # the vertical slice + the teaching layer, 99 checks
+npm run test:god          # the vertical slice + the teaching layer (~98 checks)
 npm run test:emergence    # does the simulation actually write stories?
 ```
 

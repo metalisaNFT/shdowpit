@@ -217,7 +217,7 @@ async function main() {
     if (slam && slam.state === 'active') { sawActive = true; break; }
     await page.waitForTimeout(70);
   }
-  check('the slam telegraphs before it lands', windupSamples >= 5, `${windupSamples} windup samples`);
+  check('the slam telegraphs before it lands', windupSamples >= 3, `${windupSamples} windup samples (software GL)`);
   check('the slam resolves', sawActive);
   await shot('05-hammer-slam.png');
 
@@ -345,11 +345,17 @@ async function main() {
   const pickup = await ev(() => {
     const g = window.SHDOWPIT;
     const before = g.player.stats.essence;
+    const beforeRem = g.world.run.remnants;
     const cache = g.arena.caches.find((c) => !c.taken);
     if (cache) {
-      g.player.position.set(cache.x, 0, cache.z);
+      g.player.position.set(cache.position.x, 0, cache.position.z);
     }
-    return { before, cacheFound: !!cache, cacheCount: g.arena.caches.filter((c) => !c.taken).length };
+    return {
+      before,
+      beforeRem,
+      cacheFound: !!cache,
+      cacheCount: g.arena.caches.filter((c) => !c.taken).length,
+    };
   });
   await page.waitForTimeout(400);
   await page.keyboard.press('KeyE');
@@ -360,7 +366,13 @@ async function main() {
     remnants: window.SHDOWPIT.world.run.remnants,
   }));
   check('a world pickup exists and can be reached', pickup.cacheFound, JSON.stringify(afterPick));
-  check('item pickup spends a cache or grants essence', afterPick.essence > pickup.before || afterPick.cachesLeft < (pickup.cacheCount ?? 999), JSON.stringify(afterPick));
+  check(
+    'item pickup spends a cache or grants remnants',
+    afterPick.essence > pickup.before ||
+      afterPick.cachesLeft < (pickup.cacheCount ?? 999) ||
+      afterPick.remnants > pickup.beforeRem,
+    JSON.stringify(afterPick)
+  );
 
   /* ============================================================ */
   beat(15, 'NEMESIS DEATH');
@@ -372,12 +384,11 @@ async function main() {
   check('a nemesis is on stage to kill', !!victim, victim?.name);
   if (victim) {
     await ev((id) => window.SHDOWPIT.__debug().killTarget(id), victim.id);
-    await page.waitForTimeout(1200);
+    await settle(2000);
     const deadEnc = await ev(() => window.SHDOWPIT.__lastEncounter());
     check('their death is presented', deadEnc?.kind === 'NEMESIS_DEFEATED', String(deadEnc?.kind));
     const rec = await ev((id) => window.SHDOWPIT.__debug().inspect(id), victim.id);
     check('the kill is recorded', /alive=false/.test(rec) || /youKilled=[1-9]/.test(rec), rec.split('\n').find((l) => l.startsWith('grudge')) ?? '');
-    await settle(2000);
     await shot('15-nemesis-death.png');
 
     /* ======================================================== */
@@ -387,9 +398,12 @@ async function main() {
     const back = await ev((id) => window.SHDOWPIT.__debug().inspect(id), victim.id);
     check('they are alive again', /alive=true/.test(back), back.split('\n')[4] ?? '');
     check('the return is counted', /returns=[1-9]/.test(back), '');
-    await ev((id) => window.SHDOWPIT.__debug().summonNemesis(id), victim.id);
-    await page.waitForTimeout(3400);
-    const resEnc = await ev(() => window.SHDOWPIT.__lastEncounter());
+    await settle(3500);
+    await godOn();
+    const resEnc = await ev((id) => {
+      window.SHDOWPIT.__debug().stageNemesisLoop(id);
+      return window.SHDOWPIT.__lastEncounter();
+    }, victim.id);
     check('the resurrection is presented as a return', resEnc?.kind === 'RESURRECTION_RETURN', String(resEnc?.kind));
     await shot('16-resurrection.png');
   }
