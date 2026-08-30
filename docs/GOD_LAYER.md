@@ -40,7 +40,7 @@ A run is 25–32 cycles and takes a few minutes at ×20. Endings are roughly
 | `Actions.ts` | eighteen things a character can decide to do, each enumerating its own targets and scoring them |
 | `Autonomy.ts` | the SIMULATE phase: initiative order, the fight ration, drift, returns from death, faction settlement |
 | `Conditions.ts` | the only thing the player writes. Ten kinds, all with a decay. |
-| `Interventions.ts` | thirteen interventions. **Nothing in this file may change `alive`, `rank`, `power`, who holds ground, or who fights whom.** |
+| `Interventions.ts` | thirteen interventions. **Nothing may change `alive`, `rank`, `power`, who holds ground, or who fights whom — except the three priced exceptions `raise`, `gift`, and `calamity`.** |
 | `Influence.ts` | the two resources and the five chaos tiers |
 | `Factions.ts` | houses: leader, members, ground, stability. They fracture, they re-form. |
 | `Arc.ts` | the four acts. The only authored thing in the layer, and it authors *pressure*, not events. |
@@ -123,11 +123,21 @@ the `opportunity` term on `hunt` for characters whose personality already
 leans that way, against a `danger` term they may still find too high.
 
 The distance between *"I put a price on his head"* and *"he died"* is the game.
-`tools/godtest.mjs` asserts this mechanically: it snapshots the roster, fires an
-intervention, and fails if any character's `alive` or `rank` changed.
+`tools/godtest.mjs` asserts this mechanically: it snapshots the roster, fires every
+catalogue entry, and fails on forbidden hard changes.
 
-`RAISE` is the single exception — a life is touched directly — and it costs ten
-chaos for exactly that reason.
+Three interventions are **priced exceptions** — they touch outcomes directly and
+cost heavily for it:
+
+- `RAISE` — restores a life (10 chaos).
+- `GIFT` — puts a weapon in someone's hand (+7 power via stolen gear).
+- `CALAMITY` — recruits a captain into the world (20 chaos).
+
+Everything else writes only conditions and nudges `SimState`.
+
+**THE THREADS** (`insight_lines` unlock) draws revenge hunt lines on the oracle
+map when `showThreads` is true. **THE HUNGRY AGE** (`world_hungry`) raises starting
+ambition and keeps ambition climbing faster each cycle in `Autonomy.driftState`.
 
 ## 5. Chaos
 

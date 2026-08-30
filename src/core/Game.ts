@@ -1079,10 +1079,11 @@ export class Game {
     }
     const urlQuality = new URLSearchParams(location.search).get('quality');
     if (urlQuality === 'low' || urlQuality === 'medium' || urlQuality === 'high') {
-      this.mgr.data.settings.quality = urlQuality;
-      this.mgr.data.settings.autoQuality = false;
+      // Session override only — do not persist URL quality into the save.
+      this.applySettings({ ...this.mgr.data.settings, quality: urlQuality, autoQuality: false });
+    } else {
+      this.applySettings(this.mgr.data.settings);
     }
-    this.applySettings(this.mgr.data.settings);
     ensureStarterGear(this.mgr.data.playerMeta);
     this.syncTelemetryOptIn();
     this.syncAIWorld();
@@ -3388,7 +3389,6 @@ export class Game {
       else this.offerBoons('THE PIT FEEDS YOU');
     }
     this.refreshPowerChips();
-    this.mgr.data.run = this.world.run;
   }
 
   private onNamedDefeated(e: Enemy, escaped: boolean): void {
@@ -3680,7 +3680,6 @@ export class Game {
         this.ui.hud.toast(`GAINED ${p.name}`, 'gold');
       }
       this.refreshPowerChips();
-      this.mgr.data.run = this.world.run;
       this.audio.play('pickup', { volume: 0.8 });
       this.resumeToPlaying();
     }, {

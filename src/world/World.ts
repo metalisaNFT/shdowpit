@@ -163,7 +163,6 @@ export class World {
     this.vendettaCounters = { posture: 0, interrupts: 0, parries: 0, weakness: false, adapted: false, loyalistSeparated: false };
     this.lawTold.clear();
     this.buildExtractSites();
-    this.mgr.data.run = this.run;
     this.refreshOccupancy();
 
     const start = this.arena.spawnPoint('pit', this.rng, 0.1, 0.35);

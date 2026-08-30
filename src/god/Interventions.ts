@@ -4,8 +4,9 @@
  * THE RULE, and it is the whole design: an intervention writes a CONDITION and
  * nudges a character's inner state. It never sets an outcome. Nothing in this
  * file may change `alive`, `rank`, `power`, who holds ground, or who fights
- * whom. `raise` is the one place a life is touched, and it costs ten chaos for
- * exactly that reason.
+ * whom — except three priced exceptions that cost heavily and are asserted in
+ * `tools/godtest.mjs`: `raise` restores a life, `gift` puts steel in someone's
+ * hand, and `calamity` recruits a beast into the world.
  *
  * The distance between "I put a price on his head" and "he died" is the whole
  * game. Everything in between is decided by people who are not you.

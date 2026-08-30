@@ -233,19 +233,22 @@ function toBreakdown(def: ActionDef, option: ActionOption, total: number): Score
    ============================================================ */
 
 /** Feelings move. Nothing here is an event; it is the weather. */
-function driftState(_ctx: GodContext, n: Nemesis): void {
+function driftState(ctx: GodContext, n: Nemesis): void {
   const s = simOf(n);
   const p = getPersonality(n.personality);
+  const hungry = (ctx.mgr.data.godUnlocks ?? []).includes('world_hungry');
   s.fear = Math.max(0, s.fear - 3);
   s.injury = Math.max(0, s.injury - 4);
-  s.confidence = clamp01to100(s.confidence + (s.wins - s.losses) * 0.4 - 0.5);
-  s.ambition = clamp01to100(s.ambition + (p.ambition - 1) * 2.2 + (rankIndex(n.rank) >= 3 ? -1 : 0.6));
+  s.confidence = clamp01to100(s.confidence + (s.wins - s.losses) * 0.4 * (hungry ? 1.25 : 1) - (hungry ? 0.8 : 0.5));
+  s.ambition = clamp01to100(
+    s.ambition + (p.ambition - 1) * 2.2 * (hungry ? 1.35 : 1) + (rankIndex(n.rank) >= 3 ? -1 : 0.6) * (hungry ? 1.4 : 1)
+  );
   // A treacherous nature erodes its own bonds. This is the slow fuse under
   // every alliance in the world, and it is why "swear to each other" is not a
   // permanent state.
   s.loyalty = clamp01to100(s.loyalty + (p.betray > 1.2 ? -3.4 : 0.8) - (s.reputation < 0 ? 1 : 0));
-  s.reputation = Math.max(-100, s.reputation - 0.5);
-  if (s.goalAge > 14 && s.goal !== 'revenge') {
+  s.reputation = Math.max(-100, s.reputation - (hungry ? 0.8 : 0.5));
+  if (s.goalAge > (hungry ? 10 : 14) && s.goal !== 'revenge') {
     s.goal = 'survive';
     s.goalAge = 0;
   }

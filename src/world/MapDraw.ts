@@ -36,10 +36,19 @@ export interface MapWarLine {
   colour: number;
 }
 
+/** Revenge / hunt thread between two actors (THE THREADS unlock). */
+export interface MapThreadLine {
+  x1: number;
+  z1: number;
+  x2: number;
+  z2: number;
+}
+
 export interface MapDrawInput {
   areas: MapAreaStyle[];
   actors?: MapActorDot[];
   wars?: MapWarLine[];
+  threads?: MapThreadLine[];
   landmarks?: Array<{ x: number; z: number }>;
 }
 
@@ -133,6 +142,19 @@ export function drawWorldMap(ctx: CanvasRenderingContext2D, input: MapDrawInput,
     ctx.moveTo(p1.x, p1.y);
     ctx.lineTo(p2.x, p2.y);
     ctx.stroke();
+  }
+
+  for (const t of input.threads ?? []) {
+    const p1 = worldToMap(t.x1, t.z1, size);
+    const p2 = worldToMap(t.x2, t.z2, size);
+    ctx.strokeStyle = 'rgba(255, 120, 80, 0.72)';
+    ctx.lineWidth = 1.2;
+    ctx.setLineDash([3, 4]);
+    ctx.beginPath();
+    ctx.moveTo(p1.x, p1.y);
+    ctx.lineTo(p2.x, p2.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
   }
 
   for (const lm of input.landmarks ?? []) {

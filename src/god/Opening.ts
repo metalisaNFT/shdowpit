@@ -88,6 +88,7 @@ export function stageTowerCommander(mgr: NemesisManager, god: GodState, rng: RNG
     magnitude: 0.85,
     duration: 6,
     note: `${fullName(commander)} holds the Tower and answers for it`,
+    source: 'world',
   });
 
   god.scenarioFlags = { ...(god.scenarioFlags ?? { towerCommander: false }), towerCommander: true };

@@ -41,6 +41,10 @@ npm run build      # typecheck + production bundle into dist/
 npm run preview    # serve the production build on :4173 (includes /api/ai)
 npm run serve      # same thing from a plain node server, no vite
 
+Preview and the standalone server bind to `127.0.0.1` by default. Key-bearing `/api/ai/*`
+routes accept loopback requests only. Set `HOST=0.0.0.0` on the standalone server if you need
+LAN static hosting; the AI key routes stay loopback-gated.
+
 # Browser suites need a preview server and Chromium:
 #   npm run build && npx vite preview --port 4173
 # Chromium resolution: PLAYWRIGHT_CHROMIUM, then Playwright's install,
@@ -66,7 +70,8 @@ to release it (that also pauses).
 
 Three settings — `high` / `medium` / `low` — change shadow resolution and pixel density only.
 Gameplay, enemy counts and map are identical at every setting. It auto-steps down if the frame rate
-cannot hold, and you can force one with `?quality=low` in the URL or from the pause menu.
+cannot hold, and you can force one for the current session with `?quality=low` in the URL (this does
+not write into your save) or from the pause menu.
 
 ---
 
@@ -133,7 +138,13 @@ god teaching rail is the rules on one page.
 6. Killing the Overlord ends the Age: a power vacuum, several turns of succession, a relic weapon
    for you, and a new set of world modifiers. This continues indefinitely.
 
-Your Nemesis world is never reset by death. Only `RESET WORLD` on the title screen destroys it.
+Your Nemesis world is never reset by death. On the title screen:
+
+- **NEW WORLD** reseeds the roster and chronicle but keeps banked meta (Essence, Cinders, relics,
+  techniques, the skill tree, the Book of Legends, and god unlocks). It requires a two-click confirm.
+- **RESET WORLD** wipes everything, including banked meta.
+
+Mid-run resume is not implemented: `run/` state is in-memory only for the current descent.
 
 ---
 

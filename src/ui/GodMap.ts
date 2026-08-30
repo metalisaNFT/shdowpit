@@ -14,15 +14,20 @@ import { getArea, AREAS } from '../data/areas';
 import { CONDITION_LABEL } from '../god/Conditions';
 import {
   MAP_SIZE,
+  actorMapPosition,
   areaAtMap,
   drawWorldMap,
+  mapToWorld,
   type MapAreaStyle,
   type MapActorDot,
+  type MapThreadLine,
   type MapWarLine,
 } from '../world/MapDraw';
 import type { GodRun } from '../god/GodRun';
 import type { Nemesis } from '../nemesis/Nemesis';
 import type { Condition } from '../god/GodTypes';
+import { simOf } from '../god/GodTypes';
+import { startingConditions } from '../god/Unlocks';
 
 const CONDITION_SHORT: Partial<Record<Condition['kind'], string>> = {
   bounty: 'PRICE',
@@ -180,7 +185,49 @@ export class GodMap {
       }
     }
 
-    drawWorldMap(ctx, { areas, actors, wars });
+    const threads: MapThreadLine[] = [];
+    if (startingConditions(run.mgr.data.godUnlocks ?? []).showThreads) {
+      const seen = new Set<string>();
+      for (const n of run.mgr.namedLiving()) {
+        const s = simOf(n);
+        if (s.goal === 'revenge' && s.goalTargetId) {
+          const target = run.mgr.byId(s.goalTargetId);
+          if (!target?.alive) continue;
+          const key = [n.id, target.id].sort().join('→');
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const fromArea = getArea(mapTerritoryFor(n, run));
+          const toArea = getArea(mapTerritoryFor(target, run));
+          const from = actorMapPosition(fromArea, { id: n.id, areaId: fromArea.id, accent: 0, rank: rankIndex(n.rank) });
+          const to = actorMapPosition(toArea, { id: target.id, areaId: toArea.id, accent: 0, rank: rankIndex(target.rank) });
+          const p1 = mapToWorld(from.x, from.y);
+          const p2 = mapToWorld(to.x, to.y);
+          threads.push({ x1: p1.x, z1: p1.z, x2: p2.x, z2: p2.z });
+        }
+      }
+      for (const c of run.god.conditions) {
+        if (c.kind !== 'bounty' || c.targetKind !== 'nemesis') continue;
+        const target = run.mgr.byId(c.targetId);
+        if (!target?.alive) continue;
+        for (const hunter of run.mgr.namedLiving()) {
+          if (hunter.id === target.id) continue;
+          const hs = simOf(hunter);
+          if (hs.goalTargetId !== target.id) continue;
+          const key = [hunter.id, target.id].sort().join('→');
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const fromArea = getArea(mapTerritoryFor(hunter, run));
+          const toArea = getArea(mapTerritoryFor(target, run));
+          const from = actorMapPosition(fromArea, { id: hunter.id, areaId: fromArea.id, accent: 0, rank: rankIndex(hunter.rank) });
+          const to = actorMapPosition(toArea, { id: target.id, areaId: toArea.id, accent: 0, rank: rankIndex(target.rank) });
+          const p1 = mapToWorld(from.x, from.y);
+          const p2 = mapToWorld(to.x, to.y);
+          threads.push({ x1: p1.x, z1: p1.z, x2: p2.x, z2: p2.z });
+        }
+      }
+    }
+
+    drawWorldMap(ctx, { areas, actors, wars, threads });
   }
 
   private updateStrip(): void {
