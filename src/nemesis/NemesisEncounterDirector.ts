@@ -152,6 +152,7 @@ export class NemesisEncounterDirector {
     this.deps?.clearSlowMo();
     this.active = null;
     this.queued = null;
+    this.last = null;
   }
 
   /**

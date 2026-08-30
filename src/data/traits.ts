@@ -168,7 +168,7 @@ export const TRAITS: TraitDef[] = [
 
   /* ---------------- ADAPTATIONS ----------------
      Earned by watching the player. Deliberately soft. */
-  def('delayed_strike', 'DELAYED STRIKE', 'adaptation', 'Holds attacks to break parry rhythm.', (m) => {
+  def('delayed_strike', 'DELAYED STRIKE', 'adaptation', 'Varies attack timing to disrupt parry rhythm.', (m) => {
     m.windupJitter = 0.34;
   }),
   def('fire_hardened', 'FIRE HARDENED', 'adaptation', 'Learned to survive the flames.', (m) => (m.vsFire *= 0.5)),

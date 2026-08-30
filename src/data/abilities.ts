@@ -101,7 +101,7 @@ export const POWERS: PowerDef[] = [
   p('leech', 'LEECH', 'DEFENCE', 'Utility', 'LIGHT HEALS', 'Light attacks return a small amount of health.', true),
   p('thorns', 'THORNS', 'DEFENCE', 'PerfectDefense', 'RETALIATE', 'Anything that strikes you takes damage in return.'),
   p('second_wind', 'SECOND WIND', 'DEFENCE', 'Utility', 'SURVIVE ONCE', 'Once per run, a fatal blow leaves you standing at a sliver of health.', false, 0.8),
-  p('hunters_mark', "HUNTER'S MARK", 'UTILITY', 'Revenge', 'TRACK NAMED', 'You always know where the nearest named enemy is, and they take more damage.'),
+  p('hunters_mark', "HUNTER'S MARK", 'UTILITY', 'Revenge', 'TRACK NAMED', 'Auto-locks the nearest named enemy and they take 20% more damage from you.'),
   p('stampede', 'STAMPEDE', 'MOVEMENT', 'Movement', 'SPRINT KNOCKS DOWN', 'Sprinting into an enemy knocks them flat.'),
   p('echo', 'ECHO', 'OFFENCE', 'Posture', 'HEAVY HITS TWICE', 'Heavy attacks land a second, delayed strike.'),
 

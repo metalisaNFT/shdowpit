@@ -24,5 +24,6 @@ export default defineConfig({
     outDir: 'dist',
     sourcemap: false,
     chunkSizeWarningLimit: 1200,
+    json: { stringify: true },
   },
 });

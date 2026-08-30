@@ -97,13 +97,12 @@ async function main() {
    */
   const awaitEncounter = async (pred, limitMs = 7000) => {
     const t0 = Date.now();
-    let last = null;
     while (Date.now() - t0 < limitMs) {
-      last = await ev(() => window.SHDOWPIT.__lastEncounter());
+      const last = await ev(() => window.SHDOWPIT.__lastEncounter());
       if (last && pred(last)) return last;
       await page.waitForTimeout(150);
     }
-    return last;
+    return null;
   };
 
   /* ============================================================ */
@@ -126,12 +125,12 @@ async function main() {
   beat(2, 'FIRST NEMESIS ENCOUNTER');
   await godOn();
   await ev(() => window.SHDOWPIT.__debug().spawnNemesis('captain'));
-  const enc = await awaitEncounter((e) => !!e.kind);
+  const named = await ev(() => window.SHDOWPIT.__namedOnStage());
+  const enc = await awaitEncounter((e) => e.nemesisId === named?.id && e.kind === 'FIRST_MEETING', 12000);
   check('an encounter was presented', !!enc, String(enc?.kind));
   check('it is a first meeting', enc?.kind === 'FIRST_MEETING', String(enc?.kind));
   check('the card carries a portrait', enc?.portrait === true, String(enc?.portrait));
   check('the intro line is short', (enc?.line ?? '').split(/\s+/).length <= 8, enc?.line);
-  const named = await ev(() => window.SHDOWPIT.__namedOnStage());
   check('the nemesis is on stage', !!named, named ? `${named.name} ${named.title}` : 'none');
   await shot('02-first-nemesis.png');
   const varkId = named?.id;

@@ -1,6 +1,6 @@
 /**
- * Everything that lives only for the current descent. Persisted so a reload
- * mid-run does not invent a new Vendetta or wipe Heat.
+ * Everything that lives only for the current descent. Written to the save for
+ * migration compatibility; mid-run resume is not implemented yet.
  */
 
 import type { VendettaInstance } from '../nemesis/Vendetta';

@@ -377,8 +377,10 @@ export class Game {
       comic: new ComicViewer(),
     };
     for (const k of Object.keys(this.ui) as Array<keyof typeof this.ui>) {
+      if (k === 'aiStatus') continue;
       uiRoot.append(this.ui[k].root);
     }
+    uiRoot.append(this.ui.aiStatus.root);
     this.ui.hud.root.append(this.damageNumbers.root);
     this.setupAI();
     this.bindEncounter();
@@ -709,9 +711,12 @@ export class Game {
     this.ai.bind({
       onStatusChange: () => {
         this.ui.aiStatus.setIndicator(this.ai.indicator());
-        // Connection (or the local engine) can appear after boot. If we are
-        // still on title with a real save, start filling the hierarchy then.
-        if (this.mode === 'title' && this.saveSys.exists()) this.warmTitleGeneration();
+        const st = this.ai.status();
+        const conn = st.connected || st.backendReachable;
+        if (this.aiConnectionWarm !== conn) {
+          this.aiConnectionWarm = conn;
+          if (conn && this.mode === 'title' && this.saveSys.exists()) this.warmTitleGeneration();
+        }
       },
       onContentReady: (id, kind) => {
         // A portrait or title landing while the Book is open should show up
@@ -813,12 +818,14 @@ export class Game {
   /** Set when generated content changed and the save is due a write. */
   private aiDirty = false;
   private aiSaveTimer = 0;
+  private aiConnectionWarm: boolean | null = null;
 
   private syncAIWorld(): void {
     this.ai.setWorld({
       turn: this.mgr.turn,
       age: this.mgr.age,
       ageName: this.mgr.ageState.name,
+      worldSeed: this.mgr.data.worldSeed,
       nameOf: (id) => {
         const n = this.mgr.byId(id);
         return n ? n.name.toUpperCase() : '';
@@ -1127,12 +1134,16 @@ export class Game {
       {
         onContinue: () => this.beginPlaying(),
         onNewWorld: () => {
+          this.ai.invalidateAllWork();
+          this.ai.clearCaches();
           this.mgr.reseedWorld(randomSeed());
           this.rebuildArena();
           this.godRun = null;
           this.openLongGame();
         },
         onReset: () => {
+          this.ai.invalidateAllWork();
+          this.ai.clearCaches();
           this.mgr.wipe();
           this.mgr.newWorld(randomSeed());
           this.rebuildArena();
@@ -1184,6 +1195,7 @@ export class Game {
     this.encounterAiContext = {};
     this.lastSpawnTuningNote = '';
     this.spawnTuningTimer = 0;
+    this.telemetry.resetKit();
     this.refreshSpawnTuning(true);
     this.combat.setEnemies(this.world.enemies);
     this.combat.run = this.world.run;
@@ -4502,10 +4514,37 @@ export class Game {
     const g = this;
     return {
       spawnNemesis(rank: Rank) {
+        for (const e of [...g.world.enemies]) {
+          if (e.alive && e.named) g.world.removeNamedFromStage(e.nemesis.id);
+        }
+        g.encounter.reset();
         const n = g.mgr.recruit(rank, true);
+        n.metPlayer = false;
+        n.killsAgainstPlayer = 0;
+        n.defeatsByPlayer = 0;
+        n.escapedPlayer = 0;
+        n.returns = 0;
+        n.memory = n.memory.filter(
+          (m) =>
+            !m.type.startsWith('PLAYER_') &&
+            m.type !== 'I_KILLED_PLAYER' &&
+            m.type !== 'I_ESCAPED_PLAYER' &&
+            m.type !== 'I_STOLE_PLAYER_WEAPON'
+        );
         n.territory = g.world.currentArea.id;
         g.mgr.persist();
-        if (g.mode === 'playing') g.world.spawnNamed(n, g.player, true);
+        if (g.mode === 'playing') {
+          const px = g.player.position.x + 7;
+          const pz = g.player.position.z + 7;
+          const e = g.world.spawnNamed(n, g.player, true, px, pz);
+          if (e) {
+            e.pendingIntro = false;
+            e.introHold = false;
+            e.introDelay = 0;
+            e.entranceKind = 'immediate';
+            g.encounter.playKind(e, 'FIRST_MEETING', g.mgr.turn);
+          }
+        }
       },
       summonNemesis(id: string) {
         const n = g.mgr.byId(id);

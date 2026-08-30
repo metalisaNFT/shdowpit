@@ -156,6 +156,10 @@ export class Telemetry {
     this.clock = 0;
     this.t0 = performance.now();
     this.enabled = true;
+  }
+
+  /** Cheap combat counters — reset each descent, not each telemetry toggle. */
+  resetKit(): void {
     this.kit = emptyKit();
     this.firstHitAt.clear();
   }
