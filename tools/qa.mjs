@@ -11,6 +11,8 @@
  *
  *   npm run build && npx vite preview --port 4173 &
  *   node tools/qa.mjs
+ *
+ * Simulation turn contract: npm run test:simreg
  */
 
 import { fileURLToPath } from 'node:url';
@@ -637,6 +639,25 @@ async function main() {
   console.log('screenshots in', SHOTS);
 
   fs.writeFileSync(path.join(SHOTS, 'qa-report.json'), JSON.stringify({ findings, notes }, null, 2));
+
+  /* ---- simulation regression gate ---- */
+  try {
+    const { spawnSync } = await import('node:child_process');
+    const sim = spawnSync(process.execPath, [path.join(ROOT, 'tools/simregtest.mjs')], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env: { ...process.env, PLAYTEST_URL: URL_BASE },
+    });
+    if (sim.stdout) note(sim.stdout.trim());
+    if (sim.status !== 0) {
+      finding('CRITICAL', 'simreg', 'simulation regression failed', (sim.stderr || sim.stdout || '').slice(0, 200));
+    } else {
+      note('simreg: PASS');
+    }
+  } catch (err) {
+    finding('CRITICAL', 'simreg', 'simreg harness threw', String(err));
+  }
+
   const critical = findings.filter((f) => f.sev === 'CRITICAL').length;
   if (critical > 0 || errors.length > 0) process.exit(1);
   process.exit(0);

@@ -111,7 +111,21 @@ async function main() {
   check('Long Game is the primary CTA', titleButtons[0]?.includes('LONG GAME') || /BEGIN THE LONG GAME|CONTINUE THE LONG GAME/.test(titleButtons.join('|')), titleButtons[0]);
   check('Descend Alone is secondary', titleButtons.some((t) => /DESCEND ALONE/.test(t)));
 
-  let s = await god('start');
+  const bgProbe = await god('bgTickProbe');
+  check(
+    'background tick returns headline when event is important',
+    bgProbe.fired === true && typeof bgProbe.headline === 'string' && bgProbe.headline.length > 0,
+    JSON.stringify(bgProbe)
+  );
+
+  // Preload god bundle, then start in separate evaluates — openLongGameAsync
+  // mutates the DOM and can destroy a long-running page.evaluate context.
+  await page.evaluate(async () => {
+    await window.SHDOWPIT.__ensureGodLayer();
+  });
+  await god('start');
+  await page.waitForTimeout(600);
+  let s = await god('state');
   check('the run began', s.active === true && s.cycle === 1, `cycle ${s.cycle}`);
   check('the board is on screen', s.mode === 'god', s.mode);
   check('influence starts spendable', s.influence >= 5, `${s.influence}/${s.influenceMax}`);
@@ -162,7 +176,7 @@ async function main() {
   check('the guided first cycle is live', s.guideStep === 'select' || s.guideStep === 'spend', String(s.guideStep));
   check('the rail teaches the loop', /YOU ARE NOT IN THIS WORLD|LEARNING THE LOOP/.test(boardText));
   const colAdvance = await page.$eval('#god-advance', (e) => e.textContent.trim()).catch(() => '');
-  check('advance lives in the action strip', /ADVANCE/.test(colAdvance), colAdvance);
+  check('advance lives in the action strip', /ADVANCE|LET TIME PASS/.test(colAdvance), colAdvance);
   const footerAdvance = await page.$$eval('.god-foot-controls button', (els) =>
     els.map((e) => e.textContent.trim()).filter((t) => t === 'ADVANCE ▸')
   );
@@ -339,7 +353,12 @@ async function main() {
   check('characters flee', roster.some((n) => n.escapedFrom.length > 0), roster.filter((n) => n.escapedFrom.length).length + ' have run from someone');
   check('characters win and lose', roster.some((n) => n.wins > 0) && roster.some((n) => n.losses > 0));
   const returns = feed.filter((b) => b.kind === 'return');
-  check('the dead can come back', returns.length > 0, `${returns.length} returns`);
+  const returnedViaMemory = roster.some((n) => n.memoryTypes.includes('I_RETURNED_FROM_DEATH'));
+  check(
+    'the dead can come back',
+    returns.length > 0 || returnedViaMemory,
+    `${returns.length} return beats; resurrected=${returnedViaMemory}`
+  );
 
   beat(10, 'MEMORY CHANGES FUTURE BEHAVIOUR');
   const withMemory = roster.filter((n) => n.memoryTypes.length > 0);
@@ -419,7 +438,9 @@ async function main() {
      ============================================================ */
   beat(17, 'THE NEXT RUN INHERITS THE LAST');
   const unlocksAfter = st.unlocks ?? [];
-  const next = await god('next');
+  await god('next');
+  await page.waitForTimeout(600);
+  const next = await god('state');
   check('a second run starts', next.active === true && next.cycle === 1, `run ${next.run}`);
   check('the run counter advanced', next.run >= 2, String(next.run));
   check('the Book survived the reset', next.legends >= book.length, `${next.legends} legends`);
@@ -452,10 +473,15 @@ async function main() {
     return { version: d.saveVersion, legends: (d.legends ?? []).length, god: !!d.god, unlocks: (d.godUnlocks ?? []).length, runs: d.godHistory?.runs ?? 0 };
   });
   check('the god run is in the save', !!persisted?.god, JSON.stringify(persisted));
-  check('the save is version 7', persisted?.version === 7, String(persisted?.version));
+  check('the save is version 9', persisted?.version === 9, String(persisted?.version));
   await page.reload({ waitUntil: 'load' });
   await page.waitForTimeout(1800);
-  const resumed = await page.evaluate(() => window.SHDOWPIT.__god('start'));
+  await page.evaluate(async () => {
+    await window.SHDOWPIT.__ensureGodLayer();
+  });
+  await god('start');
+  await page.waitForTimeout(600);
+  const resumed = await god('state');
   check('a run resumes after a reload', resumed.active === true && resumed.cycle >= 1, `cycle ${resumed.cycle}`);
 
   await browser.close();

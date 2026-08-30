@@ -37,6 +37,10 @@ async function main() {
   console.log(self.log);
   check('story self-test suite', self.failed === 0, `${self.passed} passed / ${self.failed} failed`);
 
+  const runStory = await page.evaluate(() => window.SHDOWPIT.__runStorySelfTest());
+  console.log(runStory.log);
+  check('run story self-test suite', runStory.failed === 0, `${runStory.passed} passed / ${runStory.failed} failed`);
+
   const btn = await page.$('#title-descend');
   if (btn) {
     await btn.click();

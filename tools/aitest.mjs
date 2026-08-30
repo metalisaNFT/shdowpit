@@ -146,6 +146,9 @@ async function main() {
     aiHeads.join(' | ')
   );
 
+  const provChips = await page.$$eval('#pause-screen .ai-prov', (e) => e.map((x) => x.textContent.trim()));
+  check('provider chips include GROQ', provChips.includes('GROQ'), provChips.join(', '));
+
   const modeChips = await page.$$eval('#pause-screen .ai-chip', (e) => e.map((x) => x.textContent.trim()));
   check(
     'AI CONTENT offers OFF / TEXT ONLY / FULL',
@@ -194,7 +197,7 @@ async function main() {
   const needsSetup = /DISCONNECTED|NOT RUNNING|SERVER UNAVAILABLE/i.test(connBeforeFull);
   check(
     'FULL without a connection explains itself',
-    !needsSetup || /AI content requires an OpenAI API connection/.test(setupMsg),
+    !needsSetup || /AI content requires an OpenAI or Groq API connection/.test(setupMsg),
     setupMsg.slice(0, 70) || connBeforeFull
   );
   check('and offers USE LOCAL GENERATION', !needsSetup || /USE LOCAL GENERATION/.test(setupMsg));
@@ -249,7 +252,7 @@ async function main() {
   await page.waitForTimeout(900);
   const debugText = await page.$eval('#debug', (e) => e.textContent).catch(() => '');
   check('F1 panel has an AI STATUS block', /AI STATUS/.test(debugText));
-  check('F1 panel shows provider and connection', /PROVIDER\s+OPENAI/.test(debugText) && /CONNECTION/.test(debugText));
+  check('F1 panel shows provider and connection', /PROVIDER\s+AUTO/.test(debugText) && /CONNECTION/.test(debugText));
   check('F1 panel shows queue / active / cached', /QUEUE/.test(debugText) && /ACTIVE/.test(debugText) && /CACHED TEXT/.test(debugText));
   check('F1 panel shows the live readout', /FPS/.test(debugText) && /WORLD TURN/.test(debugText) && /PLAYER STATE/.test(debugText));
   check('F1 panel never shows the key', !debugText.includes(FAKE_KEY.slice(0, 10)) && !/sk-/.test(debugText));

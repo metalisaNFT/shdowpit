@@ -15,6 +15,7 @@ const BASE = process.env.PLAYTEST_URL_BASE ?? 'http://localhost:4173';
 
 /** A syntactically valid but fake key. Never a real one. */
 const FAKE_KEY = 'sk-' + 'A1b2C3d4E5f6G7h8J9k0L1m2N3o4P5q6';
+const FAKE_GROQ_KEY = 'gsk_' + 'A1b2C3d4E5f6G7h8J9k0L1m2N3o4P5q6';
 
 const checks = [];
 function check(name, ok, detail = '') {
@@ -55,6 +56,7 @@ async function main() {
   check('status endpoint responds', r.status === 200 && r.json !== null, String(r.status));
   check('status reports a provider', r.json?.provider === 'openai', String(r.json?.provider));
   check('status has no key field', !('key' in (r.json ?? {})) && !('apiKey' in (r.json ?? {})));
+  check('status reports cloud.openai and cloud.groq', r.json?.cloud?.openai && r.json?.cloud?.groq);
   assertNoKey('status', r.text);
 
   /* ---- test with no key ---- */
@@ -72,23 +74,45 @@ async function main() {
   check('image without a key fails cleanly', r.json?.ok === false, r.json?.error);
 
   /* ---- reject junk keys ---- */
-  r = await call('/api/ai/connect', { key: 'not-a-key' });
-  check('malformed key rejected', r.json?.ok === false && r.json?.connected === false, r.json?.error);
-  r = await call('/api/ai/connect', { key: '' });
+  r = await call('/api/ai/connect', { key: 'not-a-key', provider: 'openai' });
+  check('malformed OpenAI key rejected', r.json?.ok === false && r.json?.connected === false, r.json?.error);
+  r = await call('/api/ai/connect', { key: '', provider: 'openai' });
   check('empty key rejected', r.json?.ok === false, r.json?.error);
+  r = await call('/api/ai/connect', { key: 'sk-short', provider: 'openai' });
+  check('short OpenAI key rejected', r.json?.ok === false, r.json?.error);
+  r = await call('/api/ai/connect', { key: 'not-gsk', provider: 'groq' });
+  check('malformed Groq key rejected', r.json?.ok === false, r.json?.error);
+  r = await call('/api/ai/connect', { key: FAKE_KEY, provider: 'groq' });
+  check('OpenAI-shaped key rejected for Groq provider', r.json?.ok === false, r.json?.error);
 
   /* ---- connect with a well-formed fake key ---- */
-  r = await call('/api/ai/connect', { key: FAKE_KEY });
-  check('well-formed key accepted for storage', r.json?.ok === true && r.json?.connected === true);
+  r = await call('/api/ai/connect', { key: FAKE_KEY, provider: 'openai' });
+  check('well-formed OpenAI key accepted for storage', r.json?.ok === true && r.json?.connected === true);
   assertNoKey('connect-response', r.text);
 
   r = await call('/api/ai/status', null, 'GET');
   check('status now reports connected', r.json?.connected === true);
+  check('status cloud.openai connected', r.json?.cloud?.openai?.connected === true);
   check('status still reports unverified', r.json?.verified === false);
   assertNoKey('status-after-connect', r.text);
 
+  /* ---- Groq connect / test / disconnect ---- */
+  r = await call('/api/ai/connect', { key: FAKE_GROQ_KEY, provider: 'groq' });
+  check('well-formed Groq key accepted for storage', r.json?.ok === true && r.json?.connected === true);
+  assertNoKey('groq-connect-response', r.text);
+  r = await call('/api/ai/status', null, 'GET');
+  check('status cloud.groq connected', r.json?.cloud?.groq?.connected === true);
+  r = await call('/api/ai/test', { provider: 'groq' });
+  check('Groq test with bad key fails cleanly', r.json?.ok === false && typeof r.json?.error === 'string', r.json?.error);
+  assertNoKey('groq-test-with-bad-key', r.text);
+  r = await call('/api/ai/disconnect', { provider: 'groq' });
+  check('Groq disconnect succeeds', r.json?.ok === true);
+  r = await call('/api/ai/status', null, 'GET');
+  check('status cloud.groq disconnected', r.json?.cloud?.groq?.connected === false);
+  check('OpenAI key survives Groq disconnect', r.json?.cloud?.openai?.connected === true);
+
   /* ---- the real failure path ---- */
-  r = await call('/api/ai/test', {});
+  r = await call('/api/ai/test', { provider: 'openai' });
   const err = r.json?.error ?? '';
   const known = [
     'Invalid API key',
@@ -109,7 +133,7 @@ async function main() {
   assertNoKey('text-with-bad-key', r.text);
 
   /* ---- disconnect forgets it ---- */
-  r = await call('/api/ai/disconnect', {});
+  r = await call('/api/ai/disconnect', { provider: 'openai' });
   check('disconnect succeeds', r.json?.ok === true && r.json?.connected === false);
   r = await call('/api/ai/status', null, 'GET');
   check('status reports disconnected after disconnect', r.json?.connected === false);

@@ -53,20 +53,21 @@ function check(name, ok, detail = '', category = 'wired') {
 
 function main() {
   const game = read('core/Game.ts');
+  const lazyBundles = exists('core/LazyBundles.ts') ? read('core/LazyBundles.ts') : '';
   const events = read('core/Events.ts');
 
   /* Regression — must stay true */
 
   const uiScreens = [
-    'new HUD()',
-    'new TitleScreen()',
-    'new GodScreen()',
-    'new ComicViewer()',
-    'new BuildScreen()',
-    'new LegendsScreen()',
+    { label: 'new HUD()', ok: game.includes('new HUD()') },
+    { label: 'new TitleScreen()', ok: game.includes('new TitleScreen()') },
+    { label: 'new GodScreen()', ok: /new\s+(L\.)?GodScreen\s*\(/.test(game + lazyBundles) },
+    { label: 'new ComicViewer()', ok: /new\s+(pipe\.)?ComicViewer\s*\(/.test(game + lazyBundles) },
+    { label: 'new BuildScreen()', ok: game.includes('new BuildScreen()') },
+    { label: 'new LegendsScreen()', ok: /new\s+(L\.)?LegendsScreen\s*\(/.test(game + lazyBundles) },
   ];
   for (const s of uiScreens) {
-    check(`Game mounts ${s}`, game.includes(s), '', 'wired');
+    check(`Game mounts ${s.label}`, s.ok, '', 'wired');
   }
 
   check('worldEvent listener in Game', /bus\.on\(['"]worldEvent['"]/.test(game), '', 'wired');

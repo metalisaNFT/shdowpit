@@ -13,10 +13,22 @@
  */
 
 import { launchChromium } from './browser.mjs';
+import { godEval, godStart } from './godHarness.mjs';
 
 const URL_BASE = process.env.PLAYTEST_URL ?? 'http://localhost:4173/?quality=low';
 const RUNS = Number(process.env.RUNS ?? 10);
 const VERBOSE = process.env.VERBOSE === '1';
+const WORLD_SEED = process.env.WORLD_SEED ? Number(process.env.WORLD_SEED) : null;
+const MIN_RATE = process.env.MIN_RATE
+  ? Object.fromEntries(
+      process.env.MIN_RATE.split(',').map((pair) => {
+        const [key, val] = pair.split(':');
+        return [key.trim(), Number(val)];
+      })
+    )
+  : {};
+if (process.env.MIN_RATE_grudge_chain) MIN_RATE.grudge_chain = Number(process.env.MIN_RATE_grudge_chain);
+if (process.env.MIN_RATE_ally_turned) MIN_RATE.ally_turned = Number(process.env.MIN_RATE_ally_turned);
 
 /** The eight patterns, each with the question it is really asking. */
 const PATTERNS = [
@@ -46,10 +58,14 @@ async function main() {
 
   await page.goto(URL_BASE, { waitUntil: 'load' });
   await page.waitForTimeout(2000);
-  const god = (cmd, a, b, c) => page.evaluate(([x, y, z, w]) => window.SHDOWPIT.__god(x, y, z, w), [cmd, a, b, c]);
+  const god = (cmd, a, b, c) => godEval(page, cmd, a, b, c);
 
   await page.evaluate(() => window.SHDOWPIT.__debug().resetSave());
   await page.waitForTimeout(300);
+  if (WORLD_SEED != null && !Number.isNaN(WORLD_SEED)) {
+    await god('simregReset', String(WORLD_SEED));
+    await page.waitForTimeout(300);
+  }
   await page.reload({ waitUntil: 'load' });
   await page.waitForTimeout(1600);
 
@@ -57,7 +73,7 @@ async function main() {
   const t0 = Date.now();
 
   for (let r = 0; r < RUNS; r++) {
-    let st = await god('start');
+    let st = await godStart(page);
     const startRoster = new Map((await god('roster')).list.map((n) => [n.id, n]));
     const invested = new Map(); // id -> count of player interventions aimed at them
     let guard = 0;
@@ -115,6 +131,9 @@ async function main() {
     }
 
     found.ally_turned += feed.filter((b) => b.kind === 'betrayal').length;
+    if (!found.ally_turned) {
+      found.ally_turned += roster.filter((n) => n.memoryTypes.includes('I_BETRAYED_ALLY')).length;
+    }
     found.leader_overthrown += feed.filter((b) => b.kind === 'faction').length;
 
     const body = st.crisis?.body ? roster.find((n) => n.name === st.crisis.body) : null;
@@ -191,6 +210,16 @@ async function main() {
     }
   }
   if (missing || errors.length || weakPatterns.length) process.exit(1);
+
+  const minRateWarns = [];
+  for (const [key, minRuns] of Object.entries(MIN_RATE)) {
+    if (Number.isNaN(minRuns)) continue;
+    if ((runsWith[key] ?? 0) < minRuns) minRateWarns.push(`${key}: ${runsWith[key]}/${RUNS} < ${minRuns}`);
+  }
+  if (minRateWarns.length) {
+    console.log('\nMIN_RATE warnings (non-fatal):');
+    for (const w of minRateWarns) console.log('  WARN  ' + w);
+  }
 }
 
 main().catch((e) => {

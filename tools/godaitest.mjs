@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
 import { launchChromium } from './browser.mjs';
+import { godEval, godStart } from './godHarness.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const URL_BASE = process.env.PLAYTEST_URL ?? 'http://localhost:4173/?quality=low';
@@ -42,7 +43,7 @@ async function main() {
   });
   page.on('pageerror', (e) => errors.push('PAGEERROR: ' + e.message));
 
-  const god = (cmd, a, b, c) => page.evaluate(([x, y, z, w]) => window.SHDOWPIT.__god(x, y, z, w), [cmd, a, b, c]);
+  const god = (cmd, a, b, c) => godEval(page, cmd, a, b, c);
   const godAi = (cmd, a) => page.evaluate(([x, y]) => window.SHDOWPIT.__godAi(x, y), [cmd, a]);
   const harness = (cfg) => page.evaluate((c) => window.SHDOWPIT.__aiInstallHarness(c), cfg);
   const setMode = (m) => page.evaluate((x) => window.SHDOWPIT.__setAIMode(x), m);
@@ -84,7 +85,7 @@ async function main() {
      AI disabled
      ============================================================ */
   log('\n---------- AI DISABLED');
-  let s = await god('start');
+  let s = await godStart(page);
   check('run starts with AI off', s.active === true && s.cycle === 1, `cycle ${s.cycle}`);
 
   const stOff = await aiStatus();
@@ -360,7 +361,7 @@ async function main() {
   await page.evaluate(() => window.SHDOWPIT.__debug().resetSave());
   await page.reload({ waitUntil: 'load' });
   await page.waitForTimeout(1600);
-  await god('start');
+  await godStart(page);
   await harness({ delayMs: 40 });
   await setMode('text');
   const cacheId = ((await god('roster')).list.find((n) => n.alive) ?? target).id;
@@ -371,7 +372,7 @@ async function main() {
 
   await page.reload({ waitUntil: 'load' });
   await page.waitForTimeout(1800);
-  await god('start');
+  await godStart(page);
   await harness({ delayMs: 40 });
   await setMode('text');
   const cached2 = await godAi('inspect', cacheId);

@@ -33,6 +33,7 @@ const INSTALLER = path.join(ENGINE, 'install.mjs');
 const URL_BASE = process.env.PLAYTEST_URL ?? 'http://localhost:4173/?quality=low';
 const PREVIEW = URL_BASE.replace(/\/\?.*$/, '');
 const FAKE_KEY = 'sk-' + 'M0ckM0ckM0ckM0ckM0ckM0ckM0ckM0ck';
+const FAKE_GROQ_KEY = 'gsk_' + 'M0ckM0ckM0ckM0ckM0ckM0ckM0ckM0ck';
 
 const checks = [];
 const errors = [];
@@ -372,6 +373,7 @@ async function partB() {
   await page.waitForTimeout(700);
   const panelText = await page.$eval('#pause-screen', (e) => e.textContent);
   check('AI panel shows PROVIDER chips and the LOCAL AI section', /PROVIDER/.test(panelText) && /LOCAL AI/.test(panelText));
+  check('GROQ provider chip visible', /GROQ/.test(panelText));
   check('uninstalled state shows the one-button installer', /DOWNLOAD & RUN LOCAL AI ENGINE/.test(panelText));
 
   await page.$$eval('#pause-screen button', (els) => {
@@ -408,7 +410,7 @@ async function partB() {
 
   /* 22 — the OpenAI path still works, side by side (mock) */
   const conn = await page.evaluate(
-    (k) => fetch('/api/ai/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: k }) }).then((r) => r.json()),
+    (k) => fetch('/api/ai/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: k, provider: 'openai' }) }).then((r) => r.json()),
     FAKE_KEY
   );
   check('OpenAI (mock) connection still works alongside', conn.ok === true);
@@ -417,13 +419,30 @@ async function partB() {
   const viaLocal = await j(`${PREVIEW}/api/ai/text`, { body: { system: 's', user: 'ping', provider: 'local' } });
   check('provider=local routes to the engine (no key involved)', viaLocal.json?.ok === true && viaLocal.json?.provider === 'local');
 
-  /* 23 — AUTO prefers local, falls back to OpenAI when the engine dies */
+  /* 22b — Groq text routing + groq image routes to local */
+  const groqConn = await j(`${PREVIEW}/api/ai/connect`, { body: { key: FAKE_GROQ_KEY, provider: 'groq' } });
+  check('Groq (mock) connection works', groqConn.json?.ok === true);
+  const viaGroq = await j(`${PREVIEW}/api/ai/text`, { body: { system: 's', user: 'ping', provider: 'groq' } });
+  check('provider=groq routes text to Groq', viaGroq.json?.ok === true && viaGroq.json?.provider === 'groq');
+  const groqImage = await j(`${PREVIEW}/api/ai/image`, { body: { prompt: 'a portrait', provider: 'groq' } });
+  check('provider=groq routes images to local engine', groqImage.json?.ok === true && groqImage.json?.provider === 'local');
+  run(['--stop']);
+  await sleep(4500);
+  const groqImageDead = await j(`${PREVIEW}/api/ai/image`, { body: { prompt: 'a portrait', provider: 'groq' } });
+  check('provider=groq with dead local engine fails gracefully for images', groqImageDead.json?.ok === false);
+  run(['--start']);
+  await waitFor(async () => (await j(`http://127.0.0.1:${enginePort()}/health`)).json?.image?.ready === true, 20_000);
+
+  /* 23 — AUTO prefers local, falls back to Groq then OpenAI when the engine dies */
   const viaAuto = await j(`${PREVIEW}/api/ai/text`, { body: { system: 's', user: 'ping', provider: 'auto' } });
   check('AUTO uses the running local engine first', viaAuto.json?.ok === true && viaAuto.json?.provider === 'local');
   run(['--stop']);
   await sleep(4500); // outlive the server's health cache
   const autoFallback = await j(`${PREVIEW}/api/ai/text`, { body: { system: 's', user: 'ping', provider: 'auto' } });
-  check('AUTO falls back to OpenAI when the engine is down', autoFallback.json?.ok === true && autoFallback.json?.provider === 'openai');
+  check('AUTO falls back to Groq when local is down and Groq key present', autoFallback.json?.ok === true && autoFallback.json?.provider === 'groq');
+  await j(`${PREVIEW}/api/ai/disconnect`, { body: { provider: 'groq' } });
+  const autoOpenAI = await j(`${PREVIEW}/api/ai/text`, { body: { system: 's', user: 'ping', provider: 'auto' } });
+  check('AUTO falls back to OpenAI when local and Groq unavailable', autoOpenAI.json?.ok === true && autoOpenAI.json?.provider === 'openai');
   const openaiFirst = await j(`${PREVIEW}/api/ai/text`, { body: { system: 's', user: 'ping', provider: 'auto', autoOrder: 'openai_first' } });
   check('AUTO honours OPENAI_FIRST ordering', openaiFirst.json?.ok === true && openaiFirst.json?.provider === 'openai');
 

@@ -1,17 +1,22 @@
 import { defineConfig } from 'vite';
 // @ts-expect-error — plain .mjs backend, shared with the standalone server
 import { aiBackendPlugin } from './server/aiHandler.mjs';
+import { visualizer } from 'rollup-plugin-visualizer';
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   base: './',
-  // Mounts /api/ai/* in both `vite` and `vite preview`. The OpenAI key lives in
-  // this process's memory only — see server/aiHandler.mjs.
-  plugins: [aiBackendPlugin()],
+  plugins: [
+    aiBackendPlugin(),
+    mode === 'analyze' &&
+      visualizer({
+        filename: 'dist/stats.html',
+        gzipSize: true,
+        open: false,
+      }),
+  ].filter(Boolean),
   server: {
     port: 5173,
     watch: {
-      // Native CUDA binaries lock while llama-server is running; watching them
-      // crashes Vite with EBUSY on Windows.
       ignored: ['**/local-ai-engine/**'],
     },
   },
@@ -22,8 +27,18 @@ export default defineConfig({
   build: {
     target: 'es2022',
     outDir: 'dist',
-    sourcemap: false,
+    sourcemap: 'hidden',
     chunkSizeWarningLimit: 1200,
     json: { stringify: true },
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules/three')) return 'three';
+          if (id.includes('/src/god/') || id.includes('/src/ui/God')) return 'god';
+          if (id.includes('/src/story/')) return 'story';
+          if (id.includes('/src/comic/')) return 'comic';
+        },
+      },
+    },
   },
-});
+}));

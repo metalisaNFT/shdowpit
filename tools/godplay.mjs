@@ -35,7 +35,11 @@ async function main() {
 
   const primary = page.locator('#title-screen button').filter({ hasText: /LONG GAME/ }).first();
   await primary.click();
-  await page.waitForTimeout(800);
+  await page.waitForFunction(() => {
+    const el = document.querySelector('#god-screen');
+    return el && !el.classList.contains('hidden');
+  }, { timeout: 15000 });
+  await page.waitForTimeout(400);
 
   const godVisible = await page.$eval('#god-screen', (e) => !e.classList.contains('hidden')).catch(() => false);
   note(`god screen visible: ${godVisible}`);
