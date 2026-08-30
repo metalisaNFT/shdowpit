@@ -156,7 +156,7 @@ export function opportunityTerm(ctx: TermCtx, actor: Nemesis, target: Nemesis | 
     o += ctx.cond.weight(target.id, 'bounty') * 4.5;
     o += ctx.cond.weight(target.id, 'exposure') * 3.4;
     o += ctx.cond.weight(target.id, 'mark') * 2.6;
-    o += ctx.cond.between(actor.id, target.id, 'rumour') * 4;
+    o += ctx.cond.between(actor.id, target.id, 'rumour') * 4.4;
     o += ctx.cond.weight(target.id, 'opportunity') * 3;
   }
   return o;

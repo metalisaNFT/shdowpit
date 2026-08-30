@@ -16,18 +16,72 @@ import { AREA_NAMES } from '../data/names';
 import { fullName, rankIndex, type Nemesis } from '../nemesis/Nemesis';
 import { recomputePower } from '../nemesis/NemesisGenerator';
 import { applyScar } from '../nemesis/NemesisMemory';
-import { ACTIONS, type ActionDef, type ActionOption } from './Actions';
+import { ACTIONS, type ActionDef, type ActionOption, type ActionTarget } from './Actions';
 import { addCondition, expireConditions } from './Conditions';
 import type { GodContext } from './Context';
 import { declareWar, livingFactions, reconcileFactions, reformHouses, settleFactions } from './Factions';
 import { simOf, type Decision, type ScoreBreakdown } from './GodTypes';
 import { simulateSkirmishes } from './Skirmish';
+import { assignQuests, expireQuests } from './NpcQuests';
 import { sumParts, type TermCtx } from './Utility';
 
 /** Actions that consume the cycle's appetite for violence. */
 const FIGHT_ACTIONS = new Set(['attack', 'challenge', 'revenge', 'hunt', 'betray', 'seize', 'pursue_item', 'steal']);
 
+/** Actions that can retarget a held grudge when scored against a nemesis. */
+const GRUDGE_TARGET_ACTIONS = new Set(['revenge', 'attack', 'hunt', 'challenge', 'betray']);
+
+const OVERLORD_RETURN_IMMUNITY_TURNS = 3;
+
 const MAX_CONSIDERED = 7;
+
+function isNemesisTarget(target: ActionTarget): boolean {
+  return !!target.nemesis && !!target.id && !target.areaId;
+}
+
+/** Persist or advance grudge goals after an action is chosen (G-3). */
+export function applyGoalAfterAction(
+  s: ReturnType<typeof simOf>,
+  defId: string,
+  target: ActionTarget,
+  goalBefore: ReturnType<typeof simOf>['goal']
+): void {
+  // Seize and other non-nemesis picks must not touch grudge state.
+  if (!isNemesisTarget(target)) {
+    if (s.goal === goalBefore) s.goalAge++;
+    return;
+  }
+
+  if (!FIGHT_ACTIONS.has(defId)) {
+    if (s.goal === goalBefore) s.goalAge++;
+    return;
+  }
+
+  const tid = target.id!;
+  let goalAgeTicked = false;
+
+  if (s.goal === 'revenge' && s.goalTargetId) {
+    if (s.goalTargetId === tid) {
+      s.goalAge++;
+      goalAgeTicked = true;
+    } else if (defId === 'revenge') {
+      s.goalTargetId = tid;
+      s.goalAge = 0;
+      goalAgeTicked = true;
+    }
+  } else if (GRUDGE_TARGET_ACTIONS.has(defId)) {
+    if (s.goalTargetId === tid) {
+      s.goalAge++;
+      goalAgeTicked = true;
+    } else {
+      s.goalTargetId = tid;
+      s.goalAge = 0;
+      goalAgeTicked = true;
+    }
+  }
+
+  if (s.goal === goalBefore && !goalAgeTicked) s.goalAge++;
+}
 
 export interface CycleResult {
   cycle: number;
@@ -53,6 +107,9 @@ export function simulateCycle(ctx: GodContext): CycleResult {
   }
   ctx.refreshConditions();
 
+  expireQuests(ctx);
+  assignQuests(ctx);
+
   const term: TermCtx = {
     god,
     cond: ctx.cond,
@@ -65,6 +122,7 @@ export function simulateCycle(ctx: GodContext): CycleResult {
   const actors = orderOfPlay(ctx, rng);
   const decisions: Decision[] = [];
   let fightBudget = Math.max(4, Math.round(actors.length * 0.62 * ctx.act.tempo));
+  if (ctx.act.tempo >= 1.0 && ctx.god.chaos > 30) fightBudget += 1;
   let fights = 0;
   let skirmishes = 0;
 
@@ -133,17 +191,7 @@ export function simulateCycle(ctx: GodContext): CycleResult {
     const before = s.goal;
     s.lastActionId = picked.def.id;
     s.lastCycle = god.cycle;
-    if (picked.option.target.nemesis && FIGHT_ACTIONS.has(picked.def.id)) {
-      const tid = picked.option.target.id;
-      if (s.goal === 'revenge' || picked.def.id === 'attack' || picked.def.id === 'hunt' || picked.def.id === 'challenge' || picked.def.id === 'betray') {
-        if (s.goalTargetId === tid) s.goalAge++;
-        else {
-          s.goalTargetId = tid;
-          s.goalAge = 0;
-        }
-      }
-    }
-    if (s.goal === before) s.goalAge++;
+    applyGoalAfterAction(s, picked.def.id, picked.option.target, before);
 
     ctx.attributing = decision;
     try {
@@ -178,15 +226,6 @@ export function simulateCycle(ctx: GodContext): CycleResult {
   }
   rollFactionWar(ctx);
   seedUnrest(ctx);
-
-  /* ---- 6. the hierarchy makes itself consistent ---- */
-  for (const ev of ctx.mgr.fillRanks()) {
-    if (ev.type === 'promotion') {
-      ctx.emit('promotion', 'notable', ev.text, ['The order closed up around a gap.'], ev.actors, 'gold');
-    }
-  }
-  ctx.mgr.assignTerritories();
-  for (const n of ctx.mgr.roster) recomputePower(n);
 
   god.rngState = rng.state;
   return { cycle: god.cycle, deaths: ctx.deaths.slice(), decisions, fights, skirmishes, blessedLosers: ctx.blessedLosers.slice() };
@@ -266,6 +305,10 @@ function rollReturns(ctx: GodContext): void {
   const rng = ctx.rng;
   const base = ctx.mgr.mods.resurrection * (1 + ctx.god.chaos * 0.012);
   for (const n of ctx.mgr.dead()) {
+    if (n.rank === 'overlord' && n.diedOnTurn != null) {
+      if (ctx.mgr.turn - n.diedOnTurn < OVERLORD_RETURN_IMMUNITY_TURNS) continue;
+      if (ctx.mgr.suppressOverlordReturnsUntilTurn > ctx.mgr.turn) continue;
+    }
     const since = ctx.god.cycle - (simOf(n).lastCycle || 0);
     if (since < 2) continue;
     const s = simOf(n);

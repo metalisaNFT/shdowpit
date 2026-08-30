@@ -21,6 +21,8 @@ import { factionOf, livingFactions } from './Factions';
 import { bestHope, crisisLabel } from './Crisis';
 import { CONDITION_LABEL } from './Conditions';
 import { simOf, type Situation } from './GodTypes';
+import { aggregateStock, getBiome, biomeSentence } from '../world/BiomeState';
+import { houseNeedAreas, activeQuests } from './NpcQuests';
 import { TOWER_SITUATION_ID } from './Opening';
 
 const MAX_SITUATIONS = 9;
@@ -100,16 +102,19 @@ export function buildSituations(ctx: GodContext): Situation[] {
     }
 
     /* ---- a grudge that has had time to set ---- */
-    for (const id of s.revengeTargets) {
+    const grudgeTargets = new Set(s.revengeTargets);
+    if (s.goal === 'revenge' && s.goalTargetId) grudgeTargets.add(s.goalTargetId);
+    for (const id of grudgeTargets) {
       const t = ctx.mgr.byId(id);
       if (!t || !t.alive) continue;
       const key = [n.id, t.id].sort().join('>');
       if (seenPairs.has('rev' + key)) continue;
       seenPairs.add('rev' + key);
       const held = s.goalTargetId === id ? s.goalAge : 0;
+      const kind = held >= 6 ? 'grudge' : 'revenge';
       out.push({
         id: 'rev:' + n.id + ':' + id,
-        kind: 'revenge',
+        kind,
         headline: `${fullName(n)} WANTS ${fullName(t)}`,
         detail:
           (s.escapedFrom.includes(id)
@@ -244,6 +249,87 @@ export function buildSituations(ctx: GodContext): Situation[] {
     }
   }
 
+  /* ---- biome pressure on the board ---- */
+  for (const area of AREAS) {
+    if (area.id === 'pit') continue;
+    const biome = getBiome(ctx.mgr.data, area.id);
+    const label = AREA_NAMES[area.id] ?? area.name;
+    if (biome.faunaPressure > 0.72) {
+      out.push({
+        id: 'bio:feral:' + area.id,
+        kind: 'feral_surge',
+        headline: `${label} — FERAL SURGE`,
+        detail: biomeSentence(area.id, biome) + '. Hunters will be sent.',
+        actors: [],
+        urgency: 0.45 + biome.faunaPressure * 0.35,
+        suggest: ['bounty', 'bless'],
+      });
+    }
+    if (aggregateStock(biome) < 8) {
+      out.push({
+        id: 'bio:scarce:' + area.id,
+        kind: 'resource_scarce',
+        headline: `${label} — RESOURCES SCARCE`,
+        detail: 'Houses will send gatherers or start feuds over what is left.',
+        actors: [],
+        urgency: 0.4 + (1 - aggregateStock(biome) / 8) * 0.3,
+        suggest: ['gift', 'opportunity'],
+      });
+    }
+    if (aggregateStock(biome) > 28) {
+      out.push({
+        id: 'bio:growth:' + area.id,
+        kind: 'abundant_growth',
+        headline: `${label} — ABUNDANT GROWTH`,
+        detail: 'Stock is high; collectors and hoarders will notice.',
+        actors: [],
+        urgency: 0.35,
+        suggest: ['bless'],
+      });
+    }
+    for (const site of biome.activeSites) {
+      if (site.status === 'open' || site.status === 'repopulating') {
+        out.push({
+          id: 'bio:dungeon:' + area.id + ':' + site.siteId,
+          kind: 'dungeon_ready',
+          headline: `${label} — DUNGEON READY`,
+          detail: `Something under ${label} is ${site.status === 'repopulating' ? 'stirring again' : 'open'}.`,
+          actors: [],
+          urgency: 0.42,
+          suggest: ['bounty', 'curse'],
+        });
+        break;
+      }
+    }
+  }
+
+  for (const areaId of houseNeedAreas(ctx)) {
+    out.push({
+      id: 'house:need:' + areaId,
+      kind: 'house_need',
+      headline: `${AREA_NAMES[areaId] ?? areaId} — HOUSE NEED`,
+      detail: 'A house treasury is low; errands will be issued.',
+      actors: [],
+      urgency: 0.5,
+      suggest: ['gift', 'bless'],
+    });
+  }
+
+  for (const q of activeQuests(ctx.mgr.data)) {
+    if (q.deadlineTurn != null && q.deadlineTurn - ctx.mgr.turn <= 2) {
+      const assignee = ctx.mgr.byId(q.assigneeId);
+      out.push({
+        id: 'quest:' + q.id,
+        kind: 'quest_urgent',
+        headline: assignee ? `${fullName(assignee)} IS OUT OF TIME` : 'QUEST URGENT',
+        detail: `Errand in ${AREA_NAMES[q.targetAreaId] ?? q.targetAreaId} expires soon.`,
+        actors: assignee ? [assignee.id] : [],
+        urgency: 0.62,
+        suggest: ['bless', 'bounty'],
+      });
+    }
+  }
+
   /* ---- your conditions still on the board ---- */
   for (const c of ctx.god.conditions) {
     if (c.source !== 'god') continue;
@@ -265,11 +351,9 @@ export function buildSituations(ctx: GodContext): Situation[] {
 
   out.sort((a, b) => b.urgency - a.urgency);
   const capped = dedupeActors(out).slice(0, MAX_SITUATIONS);
-  // Early progressive disclosure still keeps full list in state for inspect/tests;
-  // the UI slices. Soft-cap only when the opening is still locked.
+  // Early progressive disclosure soft-caps count; focus ordering is UI-only
+  // (GodScreen / GodNowCard) so harnesses see a strict urgency sort.
   if (!ctx.god.boardUnlocked && !ctx.god.openingDone) {
-    const focus = capped.find((s) => s.id === ctx.god.focusSituationId);
-    if (focus) return [focus, ...capped.filter((s) => s.id !== focus.id)].slice(0, EARLY_MAX);
     return capped.slice(0, EARLY_MAX);
   }
   return capped;

@@ -24,6 +24,27 @@ export interface TimelineQuery {
 export function buildTimeline(data: SaveData, q: TimelineQuery = {}): TimelineItem[] {
   const roster = new Map(data.nemeses.map((n) => [n.id, n]));
   const items: TimelineItem[] = [];
+
+  for (const arch of data.chronicleArchives ?? []) {
+    if (q.age !== undefined && arch.age !== q.age) continue;
+    if (q.turn !== undefined && (arch.toTurn < q.turn || arch.fromTurn > q.turn)) continue;
+    items.push({
+      id: `arch-${arch.age}-${arch.fromTurn}`,
+      turn: arch.toTurn,
+      age: arch.age,
+      type: 'age_begins',
+      headline: arch.summary,
+      detail: arch.summary,
+      actors: [...new Set([...arch.deaths, ...arch.promotions])],
+      important: true,
+      witnessed: false,
+      known: true,
+      grouped: 0,
+      sourceIds: arch.keyEventIds,
+      tone: 'gold',
+    });
+  }
+
   const pending: WorldEvent[] = [];
 
   const flushGroup = () => {

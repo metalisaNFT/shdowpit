@@ -23,6 +23,8 @@ import {
   situationPrompt,
 } from '../ai/AIPromptBuilder';
 import type { GodActorFact, GodFacts, MythEventKind, StoryFacts } from '../ai/AITypes';
+import { arcSnippetsFor, runStoryFactsFor } from '../story/NemesisFactsProjection';
+import type { RunStorySummary } from '../story/RunStory/RunStoryTypes';
 import { storyInvented } from '../story/StoryAI';
 import { getPersonality } from '../data/personalities';
 import { traitName } from '../data/traits';
@@ -177,6 +179,10 @@ export function crisisKey(c: Crisis, god: GodState): string {
 
 export function recapKey(o: RunOutcome, run: number): string {
   return hashKey('god', 'recap', run, o.ending, o.cycles, o.crisis);
+}
+
+export function runStoryKey(story: RunStorySummary, run: number): string {
+  return hashKey('god', 'runstory', run, story.thesis, story.dominantMotif ?? '', story.acts.length);
 }
 
 export function legendKey(l: LegendRecord): string {
@@ -339,12 +345,14 @@ export function observeGodBeats(
 
 export function observeInspect(
   ai: AIContentService,
-  _mgr: NemesisManager,
+  mgr: NemesisManager,
   god: GodState,
   n: Nemesis
 ): void {
   ai.ensureFor(n, 95);
   const facts = baseFacts(god, 'dossier', [n], [factionFor(god, n)?.name ?? '']);
+  const arcs = arcSnippetsFor(mgr, n, 2);
+  if (arcs.length) facts.detail = arcs;
   const { system, user } = dossierPrompt(facts);
   ai.expressText({
     kind: 'dossier',
@@ -416,6 +424,38 @@ export function observeEnding(
     });
     if (n) ai.ensureFor(n, 50);
   }
+}
+
+export function observeRunStory(
+  ai: AIContentService,
+  mgr: NemesisManager,
+  god: GodState,
+  outcome: RunOutcome,
+  story: RunStorySummary
+): void {
+  const facts = runStoryFactsFor(mgr, god, outcome, story);
+  const champ = mgr.byId(god.championId);
+  const gf = baseFacts(
+    god,
+    'recap',
+    champ ? [champ] : [],
+    [outcome.slayerName, story.dominantThread ?? '']
+  );
+  gf.ending = outcome.ending;
+  gf.highlights = [story.thesis, ...story.acts.flatMap((a) => a.beats.map((b) => b.line))].slice(0, 6);
+  gf.detail = facts.plainEvidence;
+  const { system, user } = recapPrompt(gf);
+  ai.expressText({
+    kind: 'recap',
+    subjectId: `runstory:${god.run}`,
+    label: 'THE RUN STORY',
+    cacheKey: runStoryKey(story, god.run),
+    priority: 72,
+    system,
+    user,
+    maxTokens: 80,
+    validate: (raw) => validateRecap(raw, gf),
+  });
 }
 
 function expressBeat(ai: AIContentService, mgr: NemesisManager, god: GodState, b: Beat): void {
@@ -562,6 +602,22 @@ export function aftermathLinkFor(
   fallback: string
 ): string {
   return ai.peekOverlay(aftermathLinkKey(run, cycle, label, fallback)) ?? fallback;
+}
+
+export function runStoryVoiceFor(ai: AIContentService, story: RunStorySummary, run: number): string {
+  return ai.peekOverlay(runStoryKey(story, run)) ?? story.thesis;
+}
+
+/** End-screen subtitle + run-story thesis (AI polish when available). */
+export function endScreenVoicesFor(
+  ai: AIContentService,
+  outcome: RunOutcome,
+  run: number
+): { subtitle: string; thesis: string } {
+  return {
+    subtitle: recapLineFor(ai, outcome, run),
+    thesis: outcome.runStory ? runStoryVoiceFor(ai, outcome.runStory, run) : '',
+  };
 }
 
 export function situationVoiceFor(ai: AIContentService, s: Situation, god: GodState): string | null {

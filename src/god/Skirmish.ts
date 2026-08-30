@@ -6,9 +6,10 @@
  */
 
 import { mixSeed } from '../core/RNG';
-import { AREAS, getArea } from '../data/areas';
+import { AREAS, biomeProfile, getArea } from '../data/areas';
 import { generateGrunt } from '../nemesis/NemesisGenerator';
 import { displayName, fullName, isNamed, rankIndex, type Nemesis } from '../nemesis/Nemesis';
+import { getBiome } from '../world/BiomeState';
 import { livingFactions } from './Factions';
 import type { GodContext } from './Context';
 import { fightSpectacle } from './Context';
@@ -45,12 +46,20 @@ export function simulateSkirmishes(ctx: GodContext): number {
 
   for (const area of AREAS) {
     const pressure = areaPressure(ctx, area.id);
+    const biome = getBiome(ctx.mgr.data, area.id);
+    const profile = biomeProfile(area.id);
+    const feralBias = (area.id === 'forest' || area.id === 'caves') ? biome.faunaPressure * 0.22 : biome.faunaPressure * 0.08;
+    const holder = ctx.mgr.territoryHolder(area.id);
+    if (holder?.personality === 'hunter') biome.faunaPressure = Math.max(0, biome.faunaPressure - 0.02);
     const count = Math.max(2, Math.round((area.population / 2.8) * pressure));
     const locals = namedInArea(ctx, area.id);
 
     for (let i = 0; i < count; i++) {
       const roll = ctx.rng.next();
-      if (roll < 0.74 || !locals.length) {
+      if (profile.feralFauna.length && roll < feralBias) {
+        feralVsRabble(ctx, area.id, salt++);
+        fights++;
+      } else if (roll < 0.74 + feralBias || !locals.length) {
         rabbleVsRabble(ctx, area.id, salt++);
         fights++;
       } else if (roll < 0.93) {
@@ -61,6 +70,27 @@ export function simulateSkirmishes(ctx: GodContext): number {
   }
 
   return fights;
+}
+
+function feralVsRabble(ctx: GodContext, areaId: string, salt: number): void {
+  const profile = biomeProfile(areaId);
+  const beast = makeGrunt(ctx, areaId, salt + 5000);
+  beast.name = ctx.rng.pick(profile.feralFauna).toUpperCase();
+  const rabble = makeGrunt(ctx, areaId, salt + 5001);
+  ctx.skirmishMode = true;
+  const res = ctx.fight(beast, rabble, 'war');
+  ctx.skirmishMode = false;
+  const biome = getBiome(ctx.mgr.data, areaId);
+  biome.faunaPressure = Math.min(1, biome.faunaPressure + 0.03);
+  ctx.chronicle('feral_incident', `Feral beasts spilled into ${getArea(areaId).name}.`, [], false, 'bad');
+  ctx.emit(
+    'skirmish',
+    'background',
+    `FERALS IN ${getArea(areaId).name.toUpperCase()}. ${res.headline}`,
+    res.detail,
+    [],
+    'bad'
+  );
 }
 
 function rabbleVsRabble(ctx: GodContext, areaId: string, salt: number): void {
@@ -97,6 +127,11 @@ function rabbleVsNamed(ctx: GodContext, areaId: string, named: Nemesis, salt: nu
     const killerId = simOf(named).killedById;
     const elevated = killerId ? ctx.mgr.byId(killerId) : null;
     if (elevated && isNamed(elevated)) {
+      const promoText = `${displayName(elevated)} killed ${fullName(named)} and took their place.`;
+      const already = ctx.mgr.recentEvents(1).some((e) => e.type === 'promotion' && e.actors.includes(elevated.id));
+      if (!already) {
+        ctx.chronicle('promotion', promoText, [elevated.id, named.id], rankIndex(named.rank) >= 2, 'gold');
+      }
       const beat = ctx.emitFight(
         'skirmish',
         rankIndex(named.rank) >= 3 ? 'legendary' : 'major',
@@ -112,6 +147,22 @@ function rabbleVsNamed(ctx: GodContext, areaId: string, named: Nemesis, salt: nu
       beat.spectacle = fightSpectacle(elevated, named, 'war', res.duel);
       return;
     }
+    ctx.chronicle(
+      'death',
+      `${fullName(named)} fell to rabble. No name rose to take their place.`,
+      [named.id],
+      rankIndex(named.rank) >= 2,
+      'bad'
+    );
+    ctx.emit(
+      'skirmish',
+      rankIndex(named.rank) >= 3 ? 'major' : 'notable',
+      `${fullName(named).toUpperCase()} FELL TO THE RABBLE.`,
+      ['Nobody worth naming survived the scrum.'],
+      [named.id],
+      'bad'
+    );
+    return;
   }
 
   const w = displayName(res.winner);

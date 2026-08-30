@@ -62,6 +62,22 @@ export function composeWorldTurnRecap(data: SaveData, events: WorldEvent[], kill
     .map((e) => ({ e, s: scoreEvent(e, data.worldTurn, roster) }))
     .sort((a, b) => b.s.total - a.s.total);
 
+  if (!scored.length && (data.chronicleArchives?.length ?? 0) > 0) {
+    const arch = data.chronicleArchives![data.chronicleArchives!.length - 1];
+    return [
+      {
+        act: 'consequence' as const,
+        headline: `AGE ${arch.age} — ARCHIVED`,
+        line: arch.summary,
+        detail: arch.summary,
+        actors: [...arch.deaths, ...arch.promotions],
+        eventIds: arch.keyEventIds,
+        importance: 40,
+        vfx: 'age' as const,
+      },
+    ];
+  }
+
   const picked: typeof scored = [];
   const used = new Set<string>();
   const take = (pred: (x: (typeof scored)[0]) => boolean) => {

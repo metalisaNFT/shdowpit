@@ -59,6 +59,7 @@ export function seedFactions(god: GodState, mgr: NemesisManager, rng: RNG): Fact
       territories: [],
       strength: leader.power,
       stability: 70 + rng.int(0, 20),
+      treasury: {},
       aggression: 35 + rng.int(0, 40),
       warWith: [],
       bornCycle: god.cycle,
@@ -187,6 +188,13 @@ export function shakeFaction(god: GodState, id: string | null | undefined, amoun
   f.stability = Math.max(0, Math.min(100, f.stability + amount));
 }
 
+export function treasuryTotal(f: Faction): number {
+  const t = f.treasury ?? {};
+  let sum = 0;
+  for (const v of Object.values(t)) sum += v;
+  return sum;
+}
+
 export function declareWar(a: Faction, b: Faction): boolean {
   if (a.id === b.id || a.warWith.includes(b.id)) return false;
   a.warWith.push(b.id);
@@ -234,6 +242,7 @@ export function reformHouses(god: GodState, mgr: NemesisManager, rng: RNG, cycle
     territories: [],
     strength: leader.power,
     stability: 55 + rng.int(0, 20),
+    treasury: {},
     aggression: 40 + rng.int(0, 30),
     warWith: [],
     bornCycle: cycle,

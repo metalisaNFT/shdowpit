@@ -80,6 +80,7 @@ function save(n: Nemesis[], events: SaveData['eventLog'] = []): SaveData {
     ageName: 'THE WASTES',
     nemeses: n,
     eventLog: events,
+    chronicleArchives: [],
     territories,
     nextId: 20,
     nextEventId: 40,
@@ -260,11 +261,23 @@ export function runStorySelfTest(): { passed: number; failed: number; results: T
   }
   const fat = save([a, b, c, dead], many);
   fat.worldTurn = 400;
+  fat.chronicleArchives = [
+    {
+      age: 1,
+      fromTurn: 1,
+      toTurn: 200,
+      summary: 'Age 1, turns 1–200: 3 deaths reshaped the order across 200 beats.',
+      keyEventIds: ['e1', 'e2'],
+      deaths: ['n4'],
+      promotions: ['n2'],
+    },
+  ];
   const t0 = performance.now();
   const fatModel = buildStoryModel(fat);
   const dt = performance.now() - t0;
   check(results, 'long-history performance', dt < 250 && fatModel.visibleNodes.length <= 30, `${dt.toFixed(1)}ms nodes=${fatModel.visibleNodes.length}`);
   check(results, 'archived-character access', fatModel.nodes.some((n) => n.id === 'n4'), '');
+  check(results, 'chronicle archives in timeline', buildTimeline(fat).some((x) => x.id.startsWith('arch-')), '');
 
   const tline = buildTimeline(data, { nemesisId: 'n1' });
   check(results, 'selection and navigation', tline.every((x) => x.actors.includes('n1') || x.grouped), `${tline.length} items`);

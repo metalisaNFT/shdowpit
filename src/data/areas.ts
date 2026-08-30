@@ -205,3 +205,77 @@ export function angleNear(t: number, targets: readonly number[], window: number)
 }
 
 export const WORLD_HALF = 260;
+
+/* ============================================================
+   biome profiles — authored ecology per area (static)
+   ============================================================ */
+
+export interface DungeonSiteDef {
+  id: string;
+  name: string;
+  danger: number;
+  lootTable: string[];
+  repopulateTurns: number;
+}
+
+export interface BiomeProfile {
+  ecology: string;
+  resources: string[];
+  feralFauna: string[];
+  dungeonSites: DungeonSiteDef[];
+}
+
+export const BIOME_PROFILES: Record<string, BiomeProfile> = {
+  pit: {
+    ecology: 'transit hub',
+    resources: ['scrap', 'cages'],
+    feralFauna: [],
+    dungeonSites: [],
+  },
+  forest: {
+    ecology: 'dense cover, ambush',
+    resources: ['herbs', 'hide', 'timber'],
+    feralFauna: ['wolves', 'boar'],
+    dungeonSites: [
+      { id: 'root_cellar', name: 'ROOT CELLAR', danger: 2, lootTable: ['herbs', 'hide'], repopulateTurns: 6 },
+      { id: 'hunters_pit', name: "HUNTER'S PIT", danger: 3, lootTable: ['hide', 'timber'], repopulateTurns: 8 },
+    ],
+  },
+  caves: {
+    ecology: 'choke, darkness',
+    resources: ['ore', 'bone', 'fungus'],
+    feralFauna: ['crawlers', 'bats'],
+    dungeonSites: [
+      { id: 'throat_depths', name: 'THE THROAT DEPTHS', danger: 4, lootTable: ['ore', 'bone'], repopulateTurns: 10 },
+      { id: 'flooded_shaft', name: 'FLOODED SHAFT', danger: 3, lootTable: ['fungus', 'ore'], repopulateTurns: 7 },
+    ],
+  },
+  ruins: {
+    ecology: 'open sightlines',
+    resources: ['stone', 'relic_shards'],
+    feralFauna: ['scavenger packs'],
+    dungeonSites: [
+      { id: 'broken_nave_crypt', name: 'BROKEN NAVE CRYPT', danger: 3, lootTable: ['stone', 'relic_shards'], repopulateTurns: 9 },
+    ],
+  },
+  tower: {
+    ecology: 'exposed, wind',
+    resources: ['signal_fire', 'glass'],
+    feralFauna: ['harpies'],
+    dungeonSites: [
+      { id: 'spire_underworks', name: 'SPIRE UNDERWORKS', danger: 4, lootTable: ['glass', 'signal_fire'], repopulateTurns: 11 },
+    ],
+  },
+  fortress: {
+    ecology: 'fortified',
+    resources: ['arms', 'grain'],
+    feralFauna: ['kennel beasts'],
+    dungeonSites: [
+      { id: 'seat_dungeons', name: 'SEAT DUNGEONS', danger: 5, lootTable: ['arms', 'grain'], repopulateTurns: 12 },
+    ],
+  },
+};
+
+export function biomeProfile(areaId: string): BiomeProfile {
+  return BIOME_PROFILES[areaId] ?? BIOME_PROFILES.pit;
+}

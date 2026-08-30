@@ -57,10 +57,18 @@ export function groupByCycle(feed: readonly Beat[], floor: BeatPriority = 'notab
   return out;
 }
 
+/** Story beats win cycle summaries over background skirmish noise. */
+const STORY_LEAD_KINDS = new Set(['betrayal', 'return', 'revenge', 'grudge', 'duel', 'crisis', 'promotion', 'faction', 'quest', 'dungeon', 'deliver']);
+
+function storyLeadScore(b: Beat): number {
+  const biomeBoost = b.kind === 'quest' || b.kind === 'dungeon' || b.kind === 'deliver' ? 15 : 0;
+  return (STORY_LEAD_KINDS.has(b.kind) ? 100 : 0) + BEAT_RANK[b.priority] * 10 + biomeBoost;
+}
+
 export function leadOf(beats: readonly Beat[]): Beat | null {
   let best: Beat | null = null;
   for (const b of beats) {
-    if (!best || BEAT_RANK[b.priority] > BEAT_RANK[best.priority]) best = b;
+    if (!best || storyLeadScore(b) > storyLeadScore(best)) best = b;
   }
   return best;
 }

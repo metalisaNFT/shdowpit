@@ -1,6 +1,6 @@
 /**
  * Everything that lives only for the current descent. Written to the save for
- * migration compatibility; mid-run resume is not implemented yet.
+ * migration compatibility; mid-run resume via RunCheckpoint when saved.
  */
 
 import type { VendettaInstance } from '../nemesis/Vendetta';

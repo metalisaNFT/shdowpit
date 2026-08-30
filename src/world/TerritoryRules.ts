@@ -193,3 +193,11 @@ export function liberationRewardFor(personality: PersonalityType, archetype: Arc
 export function ruleIds(p: TerritoryPresentation): TerritoryRuleId[] {
   return p.rules.map((r) => r.id);
 }
+
+/** Pit entry copy echoing biome pressure — presentation only. */
+export function biomeArrivalEcho(faunaPressure: number, resourceLow: boolean): string | null {
+  if (faunaPressure > 0.68) return 'Feral sign is thick on the air.';
+  if (resourceLow) return 'The caches look picked clean.';
+  if (faunaPressure < 0.2) return 'The wilds are unusually quiet.';
+  return null;
+}

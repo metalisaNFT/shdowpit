@@ -32,7 +32,13 @@ export type WorldEventType =
   | 'humiliation'
   | 'bargain'
   | 'extraction'
-  | 'heat';
+  | 'heat'
+  | 'feral_incident'
+  | 'dungeon_delved'
+  | 'dungeon_cleared'
+  | 'dungeon_reopened'
+  | 'quest_complete'
+  | 'biome_gather';
 
 /** Facts that cannot be recovered from the display sentence. */
 export interface WorldEventPayload {

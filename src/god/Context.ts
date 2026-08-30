@@ -84,6 +84,8 @@ export class GodContext {
   acted = new Set<string>();
   /** Rabble fights are bloodier and less merciful. */
   skirmishMode = false;
+  /** When true, chronicle still writes but feed/UI beats are suppressed. */
+  silent = false;
 
   constructor(mgr: NemesisManager, god: GodState, rng: RNG, age: AgeModifier, act: ActDef) {
     this.mgr = mgr;
@@ -158,9 +160,11 @@ export class GodContext {
       if (attr.rationed) b.why.rationed = attr.rationed;
     }
     this.god.nextBeatId++;
-    this.beats.push(b);
-    this.god.feed.push(b);
-    if (this.god.feed.length > 400) this.god.feed.splice(0, this.god.feed.length - 400);
+    if (!this.silent) {
+      this.beats.push(b);
+      this.god.feed.push(b);
+      if (this.god.feed.length > 400) this.god.feed.splice(0, this.god.feed.length - 400);
+    }
     return b;
   }
 
@@ -320,7 +324,11 @@ export class GodContext {
 
     if (this.rng.chance(kill)) {
       let killer: Nemesis | null = winner;
-      if (!isNamed(winner) && isNamed(loser)) killer = this.elevateRabble(winner, loser);
+      if (!isNamed(winner) && isNamed(loser)) {
+        const gruntId = winner.id;
+        killer = this.elevateRabble(winner, loser);
+        this.rewriteGruntReferences(gruntId, killer.id);
+      }
       this.killOff(loser, killer, kind === 'betrayal' ? 'a knife in the dark' : 'the fight');
       return 'killed';
     }
@@ -615,6 +623,22 @@ export class GodContext {
       'bad'
     );
     return n;
+  }
+
+  /** Rabble ids from pre-elevation fights must not linger in grudges or rivalries. */
+  private rewriteGruntReferences(gruntId: string, elevatedId: string): void {
+    for (const n of this.mgr.living()) {
+      const swap = (list: string[]) => {
+        const i = list.indexOf(gruntId);
+        if (i >= 0) list[i] = elevatedId;
+      };
+      swap(n.rivalries);
+      swap(n.allies);
+      const s = simOf(n);
+      swap(s.revengeTargets);
+      if (s.goalTargetId === gruntId) s.goalTargetId = elevatedId;
+      if (n.master === gruntId) n.master = elevatedId;
+    }
   }
 
   rememberBetween(a: Nemesis, type: MemoryType, b: Nemesis): void {

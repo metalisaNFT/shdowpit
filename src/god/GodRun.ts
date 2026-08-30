@@ -29,7 +29,12 @@ import {
 } from './Interventions';
 import { applyLegacies, harvestLegends, recordLegends } from './Legends';
 import { simulateCycle } from './Autonomy';
+import { reconcileWorld } from '../sim/Reconcile';
+import { trimEventLog } from '../sim/ChronicleArchive';
+import { tickBiomes } from '../world/BiomeState';
+import { seedSimFromPitHistory } from '../sim/OffscreenBeat';
 import { buildSituations } from './Situations';
+import { summariseCycle } from './Feed';
 import { evaluateUnlocks, startingConditions, type StartingConditions } from './Unlocks';
 import { buildAftermath, intentionFromLastMove, type CycleSpend } from './Aftermath';
 import { actIntention, defaultDescentBrief, pickOpeningFocus, stageTowerCommander } from './Opening';
@@ -46,6 +51,10 @@ import {
   type RunOutcome,
   type Situation,
 } from './GodTypes';
+import { composeRunStory } from '../story/RunStory/RunStoryComposer';
+import { detectMotifs } from '../story/RunStory/MotifDetector';
+import { tickConversationLedger } from '../story/RunStory/ConversationLedger';
+import { trackThreads } from '../story/RunStory/ThreadTracker';
 
 export interface GodRunHooks {
   /** new beats produced by whatever just happened */
@@ -99,6 +108,8 @@ export function emptyGodState(seed: number, run: number, bonus = 0): GodState {
     scenarioFlags: { towerCommander: false },
     history: [],
     legacyEchoes: [],
+    conversations: [],
+    nextConversationId: 1,
     ended: false,
     outcome: null,
   };
@@ -114,6 +125,8 @@ export function migrateGodState(raw: GodState): GodState {
   if (g.lastAftermath === undefined) g.lastAftermath = null;
   if (g.lastDescentReport === undefined) g.lastDescentReport = null;
   if (!g.legacyEchoes) g.legacyEchoes = [];
+  if (!g.conversations) g.conversations = [];
+  if (g.nextConversationId === undefined) g.nextConversationId = 1;
   if (g.chaosTierAt === undefined) syncChaosTierAt(g);
   if (g.heresyThresholdAnnounced === undefined) {
     g.heresyThresholdAnnounced = g.chaos >= 45 || g.feed.some((b) => b.kind === 'chaos' && /THRESHOLD/.test(b.headline));
@@ -164,6 +177,7 @@ export class GodRun {
     this.rng = new RNG(mixSeed(seed, 0x9e37));
 
     this.mgr.fillRanks();
+    seedSimFromPitHistory(this.mgr);
     seedFactions(this.god, this.mgr, this.rng);
     stageTowerCommander(this.mgr, this.god, this.rng);
 
@@ -254,6 +268,8 @@ export class GodRun {
   private advancedQuiet = false;
   lastBlessedLosers: string[] = [];
   lastCycleBeats: Beat[] = [];
+  /** Per-cycle summaries from the most recent fastForward call. */
+  lastFastForwardSummaries: string[] = [];
 
   get spentThisCycle(): boolean {
     return this.pendingSpends.length > 0;
@@ -342,6 +358,7 @@ export class GodRun {
 
     this.setPhase('simulate');
     const result = simulateCycle(ctx);
+    tickBiomes(this.mgr, this.mgr.turn);
     this.god.decisions = result.decisions;
     this.lastBlessedLosers = result.blessedLosers;
     crisisTick(ctx);
@@ -364,7 +381,9 @@ export class GodRun {
     this.god.history.push(summarise(this.god, ctx, result.deaths.length));
     if (this.god.history.length > 60) this.god.history.shift();
 
-    this.mgr.data.worldTurn++;
+    this.mgr.advanceTurn();
+    reconcileWorld(this.mgr, ctx);
+    trimEventLog(this.mgr);
     this.flush(ctx);
 
     this.lastCycleBeats = ctx.beats.slice();
@@ -390,6 +409,10 @@ export class GodRun {
       next.emit('influence', 'background', `+${regen.gained} INFLUENCE.`, regen.reasons, []);
     }
     this.openCycle(next);
+
+    const motifs = detectMotifs(this.mgr, this.god);
+    const threads = trackThreads(this.mgr, this.god);
+    tickConversationLedger(this.mgr, this.god, this.god.situations, ctx.beats, threads, motifs);
 
     const intention = intentionFromLastMove(this.pendingSpends, this.advancedQuiet);
     const spendTargetIds = this.pendingSpends.flatMap((s) => s.targetIds);
@@ -419,10 +442,21 @@ export class GodRun {
   }
 
   /** Run cycles with no interference. Used by acceleration and by tests. */
-  fastForward(cycles: number): Beat[] {
-    const out: Beat[] = [];
-    for (let i = 0; i < cycles && !this.god.ended; i++) out.push(...this.advanceCycle());
-    return out;
+  fastForwardSummaries(cycles: number): { beats: Beat[]; summaries: string[] } {
+    const beats: Beat[] = [];
+    this.lastFastForwardSummaries = [];
+    for (let i = 0; i < cycles && !this.god.ended; i++) {
+      const finished = this.god.cycle;
+      beats.push(...this.advanceCycle());
+      if (this.lastCycleBeats.length) {
+        this.lastFastForwardSummaries.push(summariseCycle(finished, this.lastCycleBeats));
+      }
+    }
+    return { beats, summaries: this.lastFastForwardSummaries };
+  }
+
+  fastForward(cycles: number): { beats: Beat[]; summaries: string[] } {
+    return this.fastForwardSummaries(cycles);
   }
 
   /**
@@ -605,6 +639,8 @@ export class GodRun {
       essence: 0,
       unlocked: [],
     };
+
+    outcome.runStory = composeRunStory(this.mgr, god, outcome);
 
     const legends = harvestLegends(ctx, outcome, god.run);
     outcome.legendsMade = legends.map((l) => `${l.name} ${l.title}`.trim());

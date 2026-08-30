@@ -11,6 +11,7 @@ import type { SaveData, SaveSystem } from '../core/SaveSystem';
 import { defaultGodHistory, defaultPlayerMeta, defaultSettings, SAVE_VERSION } from '../core/SaveSystem';
 import type { Bus } from '../core/Events';
 import { AREAS } from '../data/areas';
+import { seedBiomes } from '../world/BiomeState';
 import { rollAge, type AgeModifier, type AgeState } from '../data/ages';
 import { chooseTitle } from '../data/names';
 import { isPlayerFacingEvent, makeEvent, type WorldEvent } from '../world/WorldEvent';
@@ -21,12 +22,14 @@ import { remember, recomputeRevenge } from './NemesisMemory';
 import { refreshSignature } from '../data/signatures';
 import { purgeReferences, makeRivals, setMaster } from './NemesisRelationships';
 import { simOf } from '../god/GodTypes';
-
-const MAX_LOG = 600;
+import { trimEventLog as trimLog, MAX_LOG } from '../sim/ChronicleArchive';
 
 export class NemesisManager {
   data!: SaveData;
   ageState!: AgeState;
+
+  /** Suppress overlord resurrections during succession scrambling (W-1). */
+  suppressOverlordReturnsUntilTurn = 0;
 
   private saveSys: SaveSystem;
   private bus: Bus;
@@ -69,6 +72,7 @@ export class NemesisManager {
       ageName: '',
       nemeses: [],
       eventLog: [],
+      chronicleArchives: [],
       territories,
       nextId: 1,
       nextEventId: 1,
@@ -84,6 +88,9 @@ export class NemesisManager {
       legends: this.data?.legends ?? [],
       godUnlocks: this.data?.godUnlocks ?? [],
       godHistory: this.data?.godHistory ?? defaultGodHistory(),
+      biomes: seedBiomes(seed),
+      npcQuests: [],
+      nextQuestId: 1,
     };
     this.ageState = rollAge(1, seed);
     this.data.ageName = this.ageState.name;
@@ -129,10 +136,13 @@ export class NemesisManager {
 
   persist(): void {
     if (!this.data) return;
-    if (this.data.eventLog.length > MAX_LOG) {
-      this.data.eventLog = this.data.eventLog.slice(-MAX_LOG);
-    }
+    this.trimEventLog();
     this.saveSys.save(this.data);
+  }
+
+  /** Centralized event log trim — archives before dropping. */
+  trimEventLog(max = MAX_LOG): void {
+    trimLog(this, max);
   }
 
   wipe(): void {
@@ -224,15 +234,23 @@ export class NemesisManager {
     const order: Rank[] = ['overlord', 'warlord', 'captain', 'elite'];
     for (const rank of order) {
       for (let i = 0; i < targets[rank]; i++) {
-        this.recruit(rank, false);
+        const n = this.recruit(rank, false);
+        simOf(n);
       }
     }
-    // Seed a couple of pre-existing grudges so the world feels lived-in.
+    // Seed rivalries with standing grudges so situations read intent from cycle 1.
     const alive = this.living();
     for (let i = 0; i < Math.min(3, Math.floor(alive.length / 3)); i++) {
       const a = this.rng.pick(alive);
       const b = this.rng.pick(alive);
-      if (a.id !== b.id) makeRivals(a, b);
+      if (a.id === b.id || !makeRivals(a, b)) continue;
+      const hunter = this.rng.chance(0.5) ? a : b;
+      const target = hunter.id === a.id ? b : a;
+      const s = simOf(hunter);
+      s.goal = 'revenge';
+      s.goalTargetId = target.id;
+      if (!s.revengeTargets.includes(target.id)) s.revengeTargets.push(target.id);
+      s.goalAge = 2 + this.rng.int(0, 4);
     }
     // Attach loyalists to superiors.
     for (const n of alive) {
@@ -257,6 +275,7 @@ export class NemesisManager {
       taken: this.takenNames(),
     });
     this.data.nemeses.push(n);
+    simOf(n);
     if (announce) {
       this.log(
         makeEvent(this.turn, this.age, 'birth', `${fullName(n)} joined the ${rankLabel(rank)}.`, [n.id], false)
@@ -282,7 +301,12 @@ export class NemesisManager {
       while (have.length > targets[rank] && rank !== 'elite') {
         have.sort((a, b) => a.power - b.power || a.returns - b.returns);
         const victim = have.shift()!;
-        events.push(this.demote(victim, 'the hierarchy closed around them'));
+        const ev = this.demote(victim, 'the hierarchy closed around them');
+        if (rankIndex(rank) >= 2) {
+          ev.important = true;
+          ev.text = `${fullName(victim)} WAS DISPLACED — the hierarchy closed around them.`.toUpperCase();
+        }
+        events.push(ev);
         have = this.ofRank(rank);
       }
 
@@ -323,8 +347,17 @@ export class NemesisManager {
   /**
    * The brief asks for 10–15 tracked characters. Resurrections and recruitment
    * can push past that, so the least interesting elites quietly drop back into
-   * the rabble — never anyone the player has history with.
+   * the rabble — never anyone the player has history with or the god run marked.
    */
+  private isGodMarked(n: Nemesis): boolean {
+    const god = this.data.god;
+    if (!god) return false;
+    if (god.championId === n.id) return true;
+    if (god.conditions.some((c: import('../god/GodTypes').Condition) => c.targetKind === 'nemesis' && c.targetId === n.id)) return true;
+    if (god.situations.some((s: import('../god/GodTypes').Situation) => s.actors.includes(n.id))) return true;
+    return n.memory.some((m) => m.type === 'GOD_BLESSED_ME' || m.type === 'GOD_CURSED_ME' || m.type === 'GOD_SAVED_ME');
+  }
+
   private trimRoster(events: WorldEvent[]): void {
     const targets = this.targetCounts();
     const cap = targets.overlord + targets.warlord + targets.captain + targets.elite + 2;
@@ -335,13 +368,27 @@ export class NemesisManager {
       .filter((n) => {
         if (n.rank !== 'elite') return false;
         if (n.killsAgainstPlayer > 0 || n.defeatsByPlayer > 0 || n.escapedPlayer > 0 || n.returns > 0) return false;
-        if (n.stolen.length > 0 || n.playerRelationship > 0) return false;
+        if (n.stolen.length > 0 || n.playerRelationship !== 0) return false;
+        if (this.isGodMarked(n)) return false;
         const s = simOf(n);
         if (s.deeds.length > 0 || s.revengeTargets.length > 0) return false;
-        if (god?.conditions.some((c) => c.targetKind === 'nemesis' && c.targetId === n.id)) return false;
+        if (god?.conditions.some((c: import('../god/GodTypes').Condition) => c.targetKind === 'nemesis' && c.targetId === n.id)) return false;
         return true;
       })
       .sort((a, b) => a.power - b.power);
+    if (living.length > cap && !expendable.length && god) {
+      events.push(
+        makeEvent(
+          this.turn,
+          this.age,
+          'succession',
+          'The board is crowded — your marked champions hold their ground.',
+          [],
+          true,
+          'neutral'
+        )
+      );
+    }
     while (living.length > cap && expendable.length) {
       const n = expendable.shift()!;
       n.alive = false;
@@ -369,7 +416,8 @@ export class NemesisManager {
     for (const a of AREAS) {
       if (a.id === 'fortress' && ov) continue;
       const holder = this.byId(this.data.territories[a.id]);
-      if (holder && holder.alive) continue;
+      if (holder && holder.alive && holder.rank !== 'overlord') continue;
+      if (holder?.rank === 'overlord') this.data.territories[a.id] = null;
       const locals = this.living()
         .filter((n) => n.territory === a.id && n.rank !== 'overlord')
         .sort((x, y) => y.power - x.power);
@@ -523,7 +571,6 @@ export class NemesisManager {
     if (ev.known === undefined) ev.known = ev.witnessed;
     if (ev.runId === undefined) ev.runId = this.data.playerMeta.runs;
     this.data.eventLog.push(ev);
-    if (this.data.eventLog.length > MAX_LOG) this.data.eventLog.shift();
     this.bus.emit('worldEvent', ev);
     return ev;
   }

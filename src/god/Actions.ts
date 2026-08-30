@@ -19,6 +19,18 @@ import { breakBond, makeAllies, makeRivals, setMaster } from '../nemesis/Nemesis
 import { addCondition } from './Conditions';
 import type { GodContext } from './Context';
 import { factionFor, sameFaction, shakeFaction } from './Factions';
+import { tryCompleteQuest } from './NpcQuests';
+import {
+  addMaterial,
+  applyBiomeAction,
+  aggregateStock,
+  getBiome,
+  getSiteDef,
+  getSiteState,
+  takeMaterial,
+  totalMaterials,
+} from '../world/BiomeState';
+import { biomeProfile } from '../data/areas';
 import { simOf, type ScoreParts } from './GodTypes';
 import {
   ambitionTerm,
@@ -38,6 +50,7 @@ export interface ActionTarget {
   name: string;
   nemesis?: Nemesis;
   areaId?: string;
+  siteId?: string;
 }
 
 export interface ActionOption {
@@ -309,13 +322,24 @@ export const ACTIONS: ActionDef[] = [
         // Being close is what makes betrayal possible, so proximity is a plus
         // here where it is a minus everywhere else.
         parts.relationship = (actor.master === n.id ? 4 : 2.5) - (s.loyalty / 100) * 9;
+        const whispered =
+          actor.master === n.id &&
+          (term.cond.between(actor.id, n.id, 'rumour') > 0 || term.cond.weight(n.id, 'opportunity') > 0);
         parts.memory =
           memoryHeat(actor, ['I_WAS_HUMILIATED_BY', 'I_WAS_ROBBED_BY'], n.id, term.turn) * 3 +
           memoryHeat(actor, ['I_WAS_DEMOTED'], null, term.turn) * 1.6;
         parts.need = -(s.injury / 100) * 4;
         parts.danger = dangerTerm(term, actor, n) * 0.8;
         // A rumour is exactly the excuse a traitor was waiting for.
-        parts.opportunity = opportunityTerm(term, actor, n) + term.cond.between(actor.id, n.id, 'rumour') * 5;
+        parts.opportunity = opportunityTerm(term, actor, n) + term.cond.between(actor.id, n.id, 'rumour') * (whispered ? 6.5 : 5);
+        if (s.loyalty < 35) {
+          parts.base += 0.9;
+          parts.opportunity += 1.4;
+        }
+        if (s.loyalty < 45) {
+          parts.base += whispered ? 1.1 : 0.4;
+          parts.opportunity += whispered ? 2.5 : 1.2;
+        }
         parts.ambition = ambitionTerm(term, actor) * 1.2;
         parts.noise = noiseTerm(term);
         out.push(opt(tgt(n), parts));
@@ -494,7 +518,8 @@ export const ACTIONS: ActionDef[] = [
       const p = getPersonality(actor.personality);
       const out: ActionOption[] = [];
       for (const n of others(ctx, actor)) {
-        if (!n.stolen.length) continue;
+        const hasLoot = n.stolen.length > 0 || totalMaterials(simOf(n).materials) > 0;
+        if (!hasLoot) continue;
         const parts = emptyParts();
         parts.base = 2.4 - travelPenalty(actor, n, term) * 0.5;
         parts.personality = p.steal * 5;
@@ -520,18 +545,37 @@ export const ACTIONS: ActionDef[] = [
         if (res.winner.alive) climbAfterWin(ctx, res.winner, res.loser, res.duel.margin);
         return;
       }
-      const item = n.stolen.pop();
-      if (!item) return;
-      actor.stolen.push(item);
-      recomputePower(actor);
-      recomputePower(n);
+      const ns = simOf(n);
+      ns.materials = ns.materials ?? {};
+      const actorM = simOf(actor);
+      actorM.materials = actorM.materials ?? {};
+      if (n.stolen.length && ctx.rng.chance(0.55)) {
+        const item = n.stolen.pop()!;
+        actor.stolen.push(item);
+        recomputePower(actor);
+        recomputePower(n);
+      } else {
+        const keys = Object.keys(ns.materials).filter((k) => (ns.materials![k] ?? 0) > 0);
+        if (!keys.length) return;
+        const mat = ctx.rng.pick(keys);
+        const qty = takeMaterial(ns.materials, mat, 1 + ctx.rng.int(0, 2));
+        if (qty > 0) addMaterial(actorM.materials, mat, qty);
+      }
       makeRivals(actor, n);
       remember(actor, 'I_ROBBED_THEM', ctx.mgr.turn, n.id);
       remember(n, 'I_WAS_ROBBED_BY', ctx.mgr.turn, actor.id);
       ctx.wantRevenge(n, actor);
-      ctx.deed(actor, `lifted ${item.name} from ${fullName(n)}`, 2);
-      ctx.emit('theft', 'notable', `${fullName(actor)} TOOK ${item.name.toUpperCase()} FROM ${fullName(n)}.`, [`${fullName(n)} knows exactly who has it.`], [actor.id, n.id], 'gold');
-      ctx.chronicle('weapon_theft', `${fullName(actor)} took ${item.name} from ${fullName(n)}.`, [actor.id, n.id], true, 'gold');
+      const stolenWeapon = actor.stolen[actor.stolen.length - 1];
+      if (stolenWeapon) {
+        ctx.deed(actor, `lifted ${stolenWeapon.name} from ${fullName(n)}`, 2);
+        ctx.emit('theft', 'notable', `${fullName(actor)} TOOK ${stolenWeapon.name.toUpperCase()} FROM ${fullName(n)}.`, [`${fullName(n)} knows exactly who has it.`], [actor.id, n.id], 'gold');
+        ctx.chronicle('weapon_theft', `${fullName(actor)} took ${stolenWeapon.name} from ${fullName(n)}.`, [actor.id, n.id], true, 'gold');
+        return;
+      }
+      const mat = Object.keys(actorM.materials).find((k) => (actorM.materials![k] ?? 0) > 0);
+      if (mat) {
+        ctx.emit('theft', 'notable', `${fullName(actor)} STOLE ${mat.toUpperCase()} FROM ${fullName(n)}.`, ['Material haul — not a weapon, but it stings.'], [actor.id, n.id], 'bad');
+      }
     },
   },
 
@@ -545,6 +589,8 @@ export const ACTIONS: ActionDef[] = [
       const p = getPersonality(actor.personality);
       const out: ActionOption[] = [];
       for (const area of AREAS) {
+        if (actor.rank === 'overlord' && area.id !== 'fortress') continue;
+        if (area.id === 'fortress' && rankIndex(actor.rank) < 3 && actor.rank !== 'overlord') continue;
         const holder = ctx.mgr.territoryHolder(area.id);
         if (holder && holder.id === actor.id) continue;
         if (area.id === 'fortress' && rankIndex(actor.rank) < 3) continue;
@@ -857,6 +903,284 @@ export const ACTIONS: ActionDef[] = [
         return;
       }
       ctx.emit('grudge', 'background', `${fullName(actor)} SAT WITH IT.`, [], [actor.id]);
+    },
+  },
+
+  /* ---------------------------------------------------------- GATHER */
+  {
+    id: 'gather',
+    name: 'GATHER',
+    blurb: 'Pull resources from the ground they stand on.',
+    enumerate(ctx, actor, term) {
+      const areaId = actor.territory;
+      if (areaId === 'pit') return [];
+      const biome = getBiome(ctx.mgr.data, areaId);
+      if (aggregateStock(biome) < 2) return [];
+      const p = getPersonality(actor.personality);
+      const s = simOf(actor);
+      const parts = emptyParts();
+      parts.base = 2.8;
+      parts.personality = p.steal * 1.2 + (s.goal === 'hoard' ? 4 : 0);
+      parts.need = -(totalMaterials(s.materials) / Math.max(1, s.carryWeight ?? 24)) * 6;
+      parts.opportunity = aggregateStock(biome) < 10 ? 5 : 2;
+      parts.noise = noiseTerm(term);
+      return [opt({ id: areaId, name: AREA_NAMES[areaId] ?? areaId, areaId }, parts)];
+    },
+    perform(ctx, actor, target) {
+      const areaId = target.areaId!;
+      const profile = biomeProfile(areaId);
+      const mat = ctx.rng.pick(profile.resources);
+      applyBiomeAction(ctx.mgr.data, areaId, { takeMaterial: mat }, ctx.mgr.turn);
+      const s = simOf(actor);
+      s.materials = s.materials ?? {};
+      addMaterial(s.materials, mat, 1 + ctx.rng.int(0, 2));
+      ctx.deed(actor, `gathered ${mat} in ${AREA_NAMES[areaId] ?? areaId}`, 1);
+      ctx.emit('gather', 'background', `${fullName(actor)} GATHERED ${mat.toUpperCase()}.`, [], [actor.id]);
+      ctx.chronicle('biome_gather', `${fullName(actor)} gathered ${mat}.`, [actor.id], false, 'neutral');
+      tryCompleteQuest(ctx, actor, 'gather', areaId, undefined, mat);
+    },
+  },
+
+  /* ---------------------------------------------------------- HUNT FERAL */
+  {
+    id: 'hunt_feral',
+    name: 'HUNT',
+    blurb: 'Cull feral beasts pressuring the groves.',
+    enumerate(ctx, actor, term) {
+      const out: ActionOption[] = [];
+      for (const area of AREAS) {
+        if (!area.id || area.id === 'pit') continue;
+        const biome = getBiome(ctx.mgr.data, area.id);
+        if (biome.faunaPressure < 0.35) continue;
+        const parts = emptyParts();
+        parts.base = 2.2 - (area.id === actor.territory ? 0 : 1.1);
+        parts.personality = getPersonality(actor.personality).hunt * 3.2;
+        parts.opportunity = biome.faunaPressure * 6;
+        parts.danger = area.danger * 0.8;
+        parts.noise = noiseTerm(term);
+        out.push(opt({ id: area.id, name: AREA_NAMES[area.id] ?? area.name, areaId: area.id }, parts));
+      }
+      return out;
+    },
+    perform(ctx, actor, target) {
+      const areaId = target.areaId!;
+      const biome = getBiome(ctx.mgr.data, areaId);
+      biome.faunaPressure = Math.max(0, biome.faunaPressure - 0.18 - ctx.rng.range(0, 0.08));
+      const mat = ctx.rng.pick(biomeProfile(areaId).resources);
+      const s = simOf(actor);
+      s.materials = s.materials ?? {};
+      addMaterial(s.materials, mat, 1);
+      if (ctx.rng.chance(0.25)) s.injury = Math.min(100, s.injury + ctx.rng.int(4, 14));
+      ctx.emit('hunt', 'notable', `${fullName(actor)} HUNTED FERALS IN ${AREA_NAMES[areaId] ?? areaId}.`, [], [actor.id], 'good');
+      ctx.chronicle('feral_incident', `${fullName(actor)} culled ferals in ${getArea(areaId).name}.`, [actor.id], false, 'neutral');
+      tryCompleteQuest(ctx, actor, 'hunt_feral', areaId);
+    },
+  },
+
+  /* ---------------------------------------------------------- DELVE */
+  {
+    id: 'delve',
+    name: 'DELVE',
+    blurb: 'Enter an abstract dungeon offscreen.',
+    enumerate(ctx, actor, term) {
+      const out: ActionOption[] = [];
+      const s = simOf(actor);
+      for (const area of AREAS) {
+        const biome = getBiome(ctx.mgr.data, area.id);
+        for (const site of biomeProfile(area.id).dungeonSites) {
+          const st = getSiteState(biome, site.id);
+          if (!st || (st.status !== 'open' && st.status !== 'repopulating')) continue;
+          const parts = emptyParts();
+          parts.base = 2.5 - (area.id === actor.territory ? 0 : 1);
+          parts.personality = getPersonality(actor.personality).ambition * 2.4;
+          parts.danger = site.danger * 1.2;
+          parts.opportunity = s.dungeonTarget === site.id ? 5 : 2;
+          parts.noise = noiseTerm(term);
+          out.push(opt({ id: site.id, name: site.name, areaId: area.id }, parts));
+        }
+      }
+      return out;
+    },
+    perform(ctx, actor, target) {
+      const areaId = target.areaId!;
+      const siteId = target.id!;
+      const def = getSiteDef(areaId, siteId);
+      if (!def) return;
+      const biome = getBiome(ctx.mgr.data, areaId);
+      const site = getSiteState(biome, siteId);
+      if (!site) return;
+      const s = simOf(actor);
+      s.materials = s.materials ?? {};
+      const hurt = ctx.rng.chance(def.danger * 0.12);
+      if (hurt) s.injury = Math.min(100, s.injury + ctx.rng.int(8, 22));
+      const cleared = ctx.rng.chance(0.55 - def.danger * 0.06 + s.confidence / 200);
+      if (cleared) {
+        applyBiomeAction(
+          ctx.mgr.data,
+          areaId,
+          { siteId, siteStatus: 'repopulating', repopulateTurns: def.repopulateTurns },
+          ctx.mgr.turn
+        );
+        const loot = ctx.rng.pick(def.lootTable);
+        addMaterial(s.materials, loot, 1 + ctx.rng.int(0, 2));
+        ctx.emit('dungeon', 'major', `${fullName(actor)} CLEARED ${def.name}.`, [], [actor.id], 'gold');
+        ctx.chronicle('dungeon_cleared', `${fullName(actor)} cleared ${def.name}.`, [actor.id], true, 'gold');
+      } else {
+        ctx.emit('dungeon', 'notable', `${fullName(actor)} DELVED ${def.name} AND CAME BACK EMPTY.`, [], [actor.id]);
+        ctx.chronicle('dungeon_delved', `${fullName(actor)} delved ${def.name}.`, [actor.id], false, 'neutral');
+      }
+      tryCompleteQuest(ctx, actor, 'delve', areaId, siteId);
+    },
+  },
+
+  /* ---------------------------------------------------------- PLUNDER */
+  {
+    id: 'plunder',
+    name: 'PLUNDER',
+    blurb: 'Strip loot from a cleared dungeon.',
+    enumerate(ctx, actor, term) {
+      const out: ActionOption[] = [];
+      for (const area of AREAS) {
+        const biome = getBiome(ctx.mgr.data, area.id);
+        for (const site of biome.activeSites) {
+          if (site.status !== 'cleared' && site.status !== 'repopulating') continue;
+          const def = getSiteDef(area.id, site.siteId);
+          if (!def) continue;
+          const parts = emptyParts();
+          parts.base = 2;
+          parts.personality = getPersonality(actor.personality).steal * 2.5;
+          parts.opportunity = 4;
+          parts.noise = noiseTerm(term);
+          out.push(opt({ id: site.siteId, name: def.name, areaId: area.id }, parts));
+        }
+      }
+      return out;
+    },
+    perform(ctx, actor, target) {
+      const areaId = target.areaId!;
+      const siteId = target.id!;
+      const def = getSiteDef(areaId, siteId)!;
+      const s = simOf(actor);
+      s.materials = s.materials ?? {};
+      for (const loot of def.lootTable) addMaterial(s.materials, loot, ctx.rng.int(1, 2));
+      ctx.emit('plunder', 'notable', `${fullName(actor)} PLUNDERED ${def.name}.`, [], [actor.id], 'gold');
+      tryCompleteQuest(ctx, actor, 'delve', areaId, siteId);
+    },
+  },
+
+  /* ---------------------------------------------------------- GUARD SITE */
+  {
+    id: 'guard_site',
+    name: 'GUARD',
+    blurb: 'Hold a dungeon mouth while it repopulates.',
+    enumerate(ctx, actor, term) {
+      const out: ActionOption[] = [];
+      for (const area of AREAS) {
+        const biome = getBiome(ctx.mgr.data, area.id);
+        const holder = ctx.mgr.territoryHolder(area.id);
+        for (const site of biome.activeSites) {
+          if (site.status !== 'repopulating' && site.status !== 'open') continue;
+          const def = getSiteDef(area.id, site.siteId);
+          if (!def) continue;
+          const parts = emptyParts();
+          parts.base = 1.8;
+          parts.personality = getPersonality(actor.personality).protect * 2.8;
+          parts.opportunity = holder?.id === actor.id ? 5 : 1;
+          parts.noise = noiseTerm(term);
+          out.push(opt({ id: site.siteId, name: def.name, areaId: area.id }, parts));
+        }
+      }
+      return out;
+    },
+    perform(ctx, actor, target) {
+      const areaId = target.areaId!;
+      shakeFaction(ctx.god, simOf(actor).factionId, 4);
+      ctx.emit('guard', 'background', `${fullName(actor)} GUARDED ${target.name}.`, [], [actor.id], 'good');
+      tryCompleteQuest(ctx, actor, 'guard_site', areaId, target.id ?? undefined);
+    },
+  },
+
+  /* ---------------------------------------------------------- DELIVER */
+  {
+    id: 'deliver',
+    name: 'DELIVER',
+    blurb: 'Bring materials to the house treasury.',
+    enumerate(ctx, actor, term) {
+      const s = simOf(actor);
+      if (totalMaterials(s.materials) < 2) return [];
+      const f = factionFor(ctx.god, actor);
+      if (!f) return [];
+      const leader = ctx.mgr.byId(f.leaderId);
+      if (!leader?.alive || leader.id === actor.id) return [];
+      const parts = emptyParts();
+      parts.base = 3;
+      parts.personality = getPersonality(actor.personality).ally * 2 + simOf(actor).loyalty / 25;
+      parts.need = totalMaterials(s.materials) / Math.max(1, s.carryWeight ?? 24) * 8;
+      parts.noise = noiseTerm(term);
+      return [opt(tgt(leader), parts)];
+    },
+    perform(ctx, actor, _target) {
+      const f = factionFor(ctx.god, actor);
+      if (!f) return;
+      const s = simOf(actor);
+      s.materials = s.materials ?? {};
+      f.treasury = f.treasury ?? {};
+      let delivered = 0;
+      for (const [mat, qty] of Object.entries(s.materials)) {
+        if (qty <= 0) continue;
+        const give = Math.min(qty, 1 + ctx.rng.int(0, 2));
+        takeMaterial(s.materials, mat, give);
+        f.treasury[mat] = (f.treasury[mat] ?? 0) + give;
+        delivered += give;
+      }
+      f.stability = Math.min(100, f.stability + 5);
+      const priority = delivered >= 4 ? 'major' : 'notable';
+      ctx.emit('deliver', priority, `${fullName(actor)} DELIVERED TO ${f.name}.`, [`${delivered} units to treasury.`], [actor.id], 'good');
+      tryCompleteQuest(ctx, actor, 'deliver');
+    },
+  },
+
+  /* ---------------------------------------------------------- TRIBUTE */
+  {
+    id: 'tribute',
+    name: 'TRIBUTE',
+    blurb: 'Pay another house for access or peace.',
+    enumerate(ctx, actor, term) {
+      const s = simOf(actor);
+      const fa = factionFor(ctx.god, actor);
+      if (!fa || totalMaterials(s.materials) < 3) return [];
+      const out: ActionOption[] = [];
+      for (const fb of ctx.god.factions) {
+        if (fb.destroyedCycle || fb.id === fa.id) continue;
+        const leader = ctx.mgr.byId(fb.leaderId);
+        if (!leader?.alive) continue;
+        const parts = emptyParts();
+        parts.base = 1.5;
+        parts.personality = getPersonality(actor.personality).ally * 2;
+        parts.opportunity = fa.warWith.includes(fb.id) ? 6 : 2;
+        parts.noise = noiseTerm(term);
+        out.push(opt(tgt(leader), parts));
+      }
+      return out;
+    },
+    perform(ctx, actor, target) {
+      const n = target.nemesis!;
+      const fa = factionFor(ctx.god, actor);
+      const fb = factionFor(ctx.god, n);
+      if (!fa || !fb) return;
+      const s = simOf(actor);
+      s.materials = s.materials ?? {};
+      fb.treasury = fb.treasury ?? {};
+      const mat = Object.keys(s.materials).find((k) => (s.materials![k] ?? 0) > 0);
+      if (!mat) return;
+      const qty = takeMaterial(s.materials, mat, 2);
+      fb.treasury[mat] = (fb.treasury[mat] ?? 0) + qty;
+      fa.stability = Math.min(100, fa.stability + 3);
+      fb.stability = Math.min(100, fb.stability + 4);
+      fa.warWith = fa.warWith.filter((id) => id !== fb.id);
+      fb.warWith = fb.warWith.filter((id) => id !== fa.id);
+      ctx.emit('tribute', 'major', `${fullName(actor)} PAID TRIBUTE TO ${fb.name}.`, [], [actor.id, n.id], 'gold');
+      ctx.chronicle('alliance', `${fa.name} paid tribute to ${fb.name}.`, [actor.id, n.id], false, 'gold');
     },
   },
 

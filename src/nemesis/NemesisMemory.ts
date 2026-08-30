@@ -88,7 +88,15 @@ export function remember(n: Nemesis, type: MemoryType, turn: number, subject?: s
   if (w) n.playerRelationship = clamp(n.playerRelationship + w, -100, 200);
 
   recomputeRevenge(n);
+  rememberHook?.(n, type);
   return ev;
+}
+
+/** Optional listener for narrative AI — never writes sim state. */
+let rememberHook: ((n: Nemesis, type: MemoryType) => void) | null = null;
+
+export function setRememberHook(fn: ((n: Nemesis, type: MemoryType) => void) | null): void {
+  rememberHook = fn;
 }
 
 /**

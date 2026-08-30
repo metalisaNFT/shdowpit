@@ -102,6 +102,12 @@ export interface SimState {
   hiddenUntil: number;
   /** area they are moving toward, resolved next cycle */
   travelTo: string | null;
+  /** abstract dungeon site target for delve/guard beats */
+  dungeonTarget?: string | null;
+  /** carried materials (separate from stolen weapons) */
+  materials?: Record<string, number>;
+  /** soft carry cap for utility scoring */
+  carryWeight?: number;
 
   /** short rendered lines for the chronicle and the Book of Legends */
   deeds: Deed[];
@@ -137,6 +143,9 @@ export function emptySimState(): SimState {
     revengeTargets: [],
     hiddenUntil: 0,
     travelTo: null,
+    dungeonTarget: null,
+    materials: {},
+    carryWeight: 24,
     deeds: [],
     lastCycle: 0,
     lastActionId: '',
@@ -173,11 +182,30 @@ export interface Faction {
   strength: number;
   /** 0..100 — below 25 it fractures, at 0 it collapses */
   stability: number;
+  /** house material stores */
+  treasury?: Record<string, number>;
   /** 0..100 — how readily it starts things */
   aggression: number;
   warWith: string[];
   bornCycle: number;
   destroyedCycle: number | null;
+}
+
+export type NpcQuestKind = 'gather' | 'delve' | 'hunt_feral' | 'deliver' | 'guard_site' | 'reclaim_cache';
+
+export type NpcQuestStatus = 'active' | 'done' | 'failed';
+
+export interface NpcQuest {
+  id: string;
+  assignerId: string | null;
+  assigneeId: string;
+  kind: NpcQuestKind;
+  targetAreaId: string;
+  targetSiteId?: string;
+  materialId?: string;
+  deadlineTurn?: number;
+  status: NpcQuestStatus;
+  assignedTurn?: number;
 }
 
 /* ============================================================
@@ -349,7 +377,13 @@ export type SituationKind =
   | 'territory'
   | 'heresy'
   | 'crisis'
-  | 'condition';
+  | 'condition'
+  | 'feral_surge'
+  | 'resource_scarce'
+  | 'abundant_growth'
+  | 'quest_urgent'
+  | 'house_need'
+  | 'dungeon_ready';
 
 export interface Situation {
   id: string;
@@ -408,6 +442,8 @@ export interface RunOutcome {
   highlights: string[];
   /** "crisis was X because you did Y" chain shown before the next run */
   recapChain: string[];
+  /** multi-act run narrative derived from simulation facts */
+  runStory?: import('../story/RunStory/RunStoryTypes').RunStorySummary;
   legendsMade: string[];
   essence: number;
   unlocked: string[];
@@ -580,6 +616,10 @@ export interface GodState {
 
   /** Who inherited each recent legend — used when descending into the pit. */
   legacyEchoes: LegacyEcho[];
+
+  /** Scheduled god-run conversations (presentation only). */
+  conversations: import('../story/RunStory/RunStoryTypes').ConversationRecord[];
+  nextConversationId: number;
 
   ended: boolean;
   outcome: RunOutcome | null;

@@ -9,6 +9,7 @@ import { WORLD } from '../data/palette';
 import type { NemesisManager } from '../nemesis/NemesisManager';
 import { presentTerritory, type TerritoryRuleId } from './TerritoryRules';
 import type { RunState } from '../run/RunState';
+import { getBiome, aggregateStock } from './BiomeState';
 
 export interface AreaOccupancy {
   area: AreaDef;
@@ -17,6 +18,9 @@ export interface AreaOccupancy {
   accent: number;
   liberated: boolean;
   ruleIds: TerritoryRuleId[];
+  /** 0..1 biome feral pressure echo for pit presentation */
+  faunaPressure: number;
+  resourceLow: boolean;
 }
 
 export type OccupancyMap = Record<string, AreaOccupancy>;
@@ -28,6 +32,7 @@ export function snapshotOccupancy(mgr: NemesisManager, run: RunState | null): Oc
     const holder = mgr.territoryHolder(area.id);
     const live = holder && holder.alive ? holder : null;
     const pres = presentTerritory(area, live, mods, mgr.turn);
+    const biome = getBiome(mgr.data, area.id);
     out[area.id] = {
       area,
       holderId: pres.holderId,
@@ -35,6 +40,8 @@ export function snapshotOccupancy(mgr: NemesisManager, run: RunState | null): Oc
       accent: live ? paletteFor(live.appearanceSeed).accent : WORLD.metal,
       liberated: !!pres.liberation,
       ruleIds: pres.rules.map((r) => r.id),
+      faunaPressure: biome.faunaPressure,
+      resourceLow: aggregateStock(biome) < 10,
     };
   }
   return out;

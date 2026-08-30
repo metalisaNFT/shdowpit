@@ -82,6 +82,8 @@ export interface EncounterDirectorDeps {
   tauntFor(n: Nemesis, salt: number): string;
   observeEncounter?(n: Nemesis, kind: EncounterKind, headline: string, chip: string): void;
   headlineFor?(n: Nemesis, kind: EncounterKind, fallback: string): string;
+  contextualLineFor?(n: Nemesis, kind: EncounterKind, salt: number, fallback: string): string;
+  lastWordsFor?(n: Nemesis, salt: number): string;
 }
 
 interface ActiveSeq {
@@ -252,8 +254,13 @@ export class NemesisEncounterDirector {
     }
     const n = e.nemesis;
     const overlay = d.tauntFor(n, salt);
-    let line = encounterLine(n, kind, salt, overlay);
-    if (overlay && !factAllowsLine(n, overlay)) line = encounterLine(n, kind, salt);
+    const rawFallback = encounterLine(n, kind, salt, overlay);
+    let line = d.contextualLineFor?.(n, kind, salt, rawFallback) ?? rawFallback;
+    if (overlay && !factAllowsLine(n, overlay) && line === rawFallback) {
+      line = encounterLine(n, kind, salt);
+    } else if (line !== rawFallback && !factAllowsLine(n, line)) {
+      line = encounterLine(n, kind, salt);
+    }
     const title = d.titleFor(n);
     const rawHeadline = encounterHeadline(kind, n);
     const chip = lastEventChip(n);
@@ -375,7 +382,7 @@ export class NemesisEncounterDirector {
         d.playPose(e, celebrateClip(n));
         break;
       case 'last_words': {
-        const words = lastWords(n, seq.salt);
+        const words = d.lastWordsFor?.(n, seq.salt) ?? lastWords(n, seq.salt);
         if (words) {
           seq.line = words;
           d.callout(`"${words}"`, 'neutral');

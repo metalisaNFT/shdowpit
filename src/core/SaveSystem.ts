@@ -9,15 +9,19 @@ import { coerceArchetype } from '../nemesis/Nemesis';
 import { ensureSignature } from '../data/signatures';
 import { isPlayerFacingEvent, type WorldEvent } from '../world/WorldEvent';
 import { defaultAISettings, emptyAIContent, type AISettings } from '../ai/AITypes';
+import { migrateCheckpoint, type RunCheckpoint } from '../run/RunCheckpoint';
 import { migrateRunState, type RunState } from '../run/RunState';
 import type { TerritoryMod } from '../world/TerritoryRules';
 import { migrateProgress } from '../progress/Progression';
 import { emptyProgress, type PlayerProgress } from '../progress/Types';
 import { defaultTutorial, migrateTutorial, type TutorialState } from './Tutorial';
 import { defaultGodClockSettings, type GodClockSettings } from '../god/Clock';
-import type { GodState, LegendRecord } from '../god/GodTypes';
+import { trimForQuota } from '../sim/ChronicleArchive';
+import { ensureBiomes } from '../world/BiomeState';
+import type { BiomeMap } from '../world/BiomeState';
+import type { GodState, LegendRecord, NpcQuest } from '../god/GodTypes';
 
-export const SAVE_VERSION = 7;
+export const SAVE_VERSION = 9;
 const KEY = 'shdowpit.world.v1';
 
 /** Counters used by the enemy adaptation system. */
@@ -71,6 +75,16 @@ export interface PlayerMeta {
 
 export type Quality = 'high' | 'medium' | 'low';
 
+export interface ChronicleArchive {
+  age: number;
+  fromTurn: number;
+  toTurn: number;
+  summary: string;
+  keyEventIds: string[];
+  deaths: string[];
+  promotions: string[];
+}
+
 export interface Settings {
   quality: Quality;
   /** step quality down automatically when the frame rate cannot keep up */
@@ -83,12 +97,18 @@ export interface Settings {
   softLockOn: boolean;
   reducedMotion: boolean;
   reducedFlash: boolean;
+  /** UI motion intensity: full animations, reduced, or off */
+  uiMotion: 'full' | 'reduced' | 'off';
   /** HUD layout scale (0.85–1.15) */
   hudScale: number;
+  /** Remap danger/good/surge signals for protanopia-friendly hues */
+  colorblindMode: boolean;
   showPurpose: boolean;
   tutorial: TutorialState;
   /** THE LONG GAME hybrid clock */
   god: GodClockSettings;
+  /** Real minutes between background world ticks during pit play; 0 = off */
+  backgroundTickMinutes: number;
 
   /**
    * AI preferences ONLY. There is deliberately no API key field here, and
@@ -110,10 +130,13 @@ export function defaultSettings(): Settings {
     softLockOn: true,
     reducedMotion: false,
     reducedFlash: false,
+    uiMotion: 'full',
     hudScale: 1,
+    colorblindMode: false,
     showPurpose: true,
     tutorial: defaultTutorial(),
     god: defaultGodClockSettings(),
+    backgroundTickMinutes: 4,
     ai: defaultAISettings(),
   };
 }
@@ -132,6 +155,8 @@ export interface SaveData {
 
   nemeses: Nemesis[];
   eventLog: WorldEvent[];
+  /** compact summaries of trimmed chronicle slices */
+  chronicleArchives?: ChronicleArchive[];
   /** territory id -> nemesis id who holds it */
   territories: Record<string, string | null>;
 
@@ -147,8 +172,14 @@ export interface SaveData {
   playerMeta: PlayerMeta;
   settings: Settings;
   /** mid-run snapshot; null between runs */
-  run: RunState | null;
+  run: RunState | RunCheckpoint | null;
   territoryMods: Record<string, TerritoryMod>;
+
+  /** per-area biome ecology, resources, dungeon sites (save version 9) */
+  biomes?: BiomeMap;
+  /** NPC-only quest ledger */
+  npcQuests?: NpcQuest[];
+  nextQuestId?: number;
 
   /* ---- THE LONG GAME (god layer, save version 7) ---- */
   /** mid-run god-layer snapshot; null between runs */
@@ -247,9 +278,9 @@ export class SaveSystem {
       return true;
     } catch (err) {
       console.error('[Save] write failed', err);
-      // Most likely quota: trim history and retry once.
-      if (data.eventLog.length > 300) {
-        data.eventLog = data.eventLog.slice(-300);
+      trimForQuota(data);
+      if (data.eventLog.length > 400) {
+        trimForQuota(data);
         try {
           localStorage.setItem(this.key, JSON.stringify(data));
           return true;
@@ -287,7 +318,9 @@ export class SaveSystem {
     data.ageModifiers ??= [];
     data.ageName ??= 'THE WASTES';
     data.nemeses ??= [];
+    data.chronicleArchives = Array.isArray(data.chronicleArchives) ? data.chronicleArchives : [];
     data.eventLog ??= [];
+    data.chronicleArchives = Array.isArray(data.chronicleArchives) ? data.chronicleArchives : [];
     data.territories ??= {};
     data.nextId ??= 1;
     data.usedNames ??= [];
@@ -311,11 +344,17 @@ export class SaveSystem {
     data.settings.showPurpose = data.settings.showPurpose ?? true;
     data.settings.tutorial = migrateTutorial(data.settings.tutorial);
     data.settings.god = { ...defaultGodClockSettings(), ...(data.settings.god ?? {}) };
+    data.settings.backgroundTickMinutes = data.settings.backgroundTickMinutes ?? 4;
     data.playerMeta.progress = migrateProgress(data.playerMeta.progress);
     data.territoryMods = data.territoryMods ?? {};
-    data.run = data.run ? migrateRunState(data.run, data.worldSeed) : null;
+    data.biomes = ensureBiomes(data);
+    data.npcQuests = Array.isArray(data.npcQuests) ? data.npcQuests : [];
+    data.nextQuestId = data.nextQuestId ?? 1;
+    data.run = data.run ? migrateCheckpoint(data.run, data.worldSeed) ?? migrateRunState(data.run, data.worldSeed) : null;
     data.settings.reducedMotion = data.settings.reducedMotion ?? false;
+    data.settings.uiMotion = data.settings.uiMotion ?? (data.settings.reducedMotion ? 'reduced' : 'full');
     data.settings.hudScale = data.settings.hudScale ?? 1;
+    data.settings.colorblindMode = data.settings.colorblindMode ?? false;
     data.settings.reducedFlash = data.settings.reducedFlash ?? false;
     data.storyView = data.storyView ?? { panX: 0, panY: 0, zoom: 1 };
     // Save 7 — the god layer. Older worlds simply have no history in the Book
@@ -327,6 +366,10 @@ export class SaveSystem {
     data.godHistory.crisisKinds = Array.isArray(data.godHistory.crisisKinds) ? data.godHistory.crisisKinds : [];
     if (data.god) data.god.decisions = [];
     migrateEventLog(data);
+
+    data.biomes = ensureBiomes(data);
+    data.npcQuests = Array.isArray(data.npcQuests) ? data.npcQuests : [];
+    data.nextQuestId = data.nextQuestId ?? 1;
 
     // Defence in depth. A key should never be able to reach this object, but if
     // a future edit ever puts one here, strip it on the way in and out rather

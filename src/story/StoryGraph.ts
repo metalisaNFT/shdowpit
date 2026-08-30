@@ -39,6 +39,25 @@ export function buildStoryGraph(data: SaveData, opts?: { revealUnknown?: boolean
   const nodes: StoryNode[] = [];
   const nodeScores: GraphBuild['nodeScores'] = {};
 
+  for (const arch of data.chronicleArchives ?? []) {
+    nodes.push({
+      id: `arch-${arch.age}-${arch.fromTurn}`,
+      kind: 'nemesis',
+      name: `AGE ${arch.age}`,
+      title: 'ARCHIVED HISTORY',
+      rank: 'captain',
+      alive: false,
+      territory: 'pit',
+      weapon: '',
+      unresolved: arch.deaths.length > 0,
+      importance: 40 + arch.keyEventIds.length,
+      playerRel: 0,
+      killsYou: 0,
+      youKilled: 0,
+      knowledge: 'known',
+    });
+  }
+
   const pScore = scorePlayerNode(data.playerMeta);
   nodeScores[PLAYER_ID] = pScore;
   nodes.push({
@@ -93,6 +112,25 @@ export function buildStoryGraph(data: SaveData, opts?: { revealUnknown?: boolean
     seen.add(key);
     edges.push(e);
   };
+
+  for (const arch of data.chronicleArchives ?? []) {
+    for (const id of arch.deaths) {
+      if (!roster.has(id)) continue;
+      push({
+        id: `arch-death-${arch.age}-${id}`,
+        from: id,
+        to: PLAYER_ID,
+        kind: 'revenge',
+        directed: true,
+        importance: 24,
+        spectral: true,
+        label: 'ARCHIVED DEATH',
+        why: arch.summary,
+        eventId: arch.keyEventIds[0],
+        eventText: arch.summary,
+      });
+    }
+  }
 
   const livingIds = new Set(data.nemeses.filter((n) => n.alive).map((n) => n.id));
 
@@ -249,6 +287,24 @@ export function buildStoryGraph(data: SaveData, opts?: { revealUnknown?: boolean
         importance: scoreEdge('territory_war', a ?? null, b ?? null, false),
         spectral: false,
         label: ev.payload?.areaId ? AREA_NAMES[ev.payload.areaId] ?? ev.payload.areaId : 'GROUND',
+        why: ev.text,
+        eventId: ev.id,
+        eventText: ev.text,
+      });
+    }
+    if (
+      (ev.type === 'dungeon_cleared' || ev.type === 'dungeon_delved' || ev.type === 'dungeon_reopened') &&
+      ev.actors[0]
+    ) {
+      push({
+        id: `dungeon-${ev.id ?? ev.turn}`,
+        from: ev.actors[0],
+        to: PLAYER_ID,
+        kind: 'territory_war',
+        directed: true,
+        importance: ev.type === 'dungeon_cleared' ? 30 : 20,
+        spectral: !livingIds.has(ev.actors[0]),
+        label: ev.type === 'dungeon_cleared' ? 'DUNGEON CLEARED' : ev.type === 'dungeon_reopened' ? 'DUNGEON REOPENED' : 'DUNGEON DELVED',
         why: ev.text,
         eventId: ev.id,
         eventText: ev.text,
