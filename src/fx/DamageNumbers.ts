@@ -101,8 +101,9 @@ export class DamageNumbers {
       const sy = (-this.tmp.y * 0.5 + 0.5) * h;
       const fade = t < 0.12 ? t / 0.12 : 1 - Math.pow(Math.max(0, (t - 0.45) / 0.55), 1.4);
       const pop = kindScale(s.kind, t);
+      const drift = t * 18;
       s.el.style.opacity = String(Math.max(0, fade));
-      s.el.style.transform = `translate3d(${sx}px, ${sy}px, 0) translate(-50%, -100%) scale(${pop})`;
+      s.el.style.transform = `translate3d(${sx}px, ${sy - drift}px, 0) translate(-50%, -100%) scale(${pop})`;
     }
   }
 

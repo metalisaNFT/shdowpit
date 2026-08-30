@@ -12,6 +12,7 @@ import { button, clear, div, show } from './Dom';
 import { explainBeat, partsLine } from '../god/Explain';
 import { primer, type GuideStep, type Lesson, type PrimerSection } from '../god/Teaching';
 import type { Beat, GodState } from '../god/GodTypes';
+import { BeatReveal, ScreenChrome } from './primitives';
 
 export interface RailHandlers {
   /** stop all teaching, permanently */
@@ -31,6 +32,7 @@ export class GodTeachRail {
   private handlers: RailHandlers | null = null;
   private content: RailContent = null;
   private bodyOpen = false;
+  private pillCollapsed = false;
 
   constructor() {
     this.root.id = 'god-teach';
@@ -44,6 +46,9 @@ export class GodTeachRail {
     const prev = this.content?.kind === 'guide' ? this.content.step.id : null;
     const next = content?.kind === 'guide' ? content.step.id : null;
     if (prev !== next) this.bodyOpen = false;
+    if (content?.kind === 'guide' && content.index >= 2) {
+      this.pillCollapsed = true;
+    }
     this.content = content;
     this.render();
   }
@@ -62,6 +67,22 @@ export class GodTeachRail {
     }
     show(this.root, true);
     this.root.classList.toggle('is-lesson', c.kind === 'lesson');
+    this.root.classList.toggle('is-pill', this.pillCollapsed && c.kind === 'guide');
+
+    if (this.pillCollapsed && c.kind === 'guide') {
+      const pill = div('god-teach-pill');
+      const track = div('god-teach-pill-track');
+      const fill = div('god-teach-pill-fill');
+      fill.style.width = `${(c.index / c.total) * 100}%`;
+      track.append(fill);
+      pill.append(track, div('god-teach-pill-label', `LEARNING · ${c.index}/${c.total}`));
+      pill.addEventListener('click', () => {
+        this.pillCollapsed = false;
+        this.render();
+      });
+      this.root.append(pill);
+      return;
+    }
 
     const left = div('god-teach-body');
     if (c.kind === 'guide') {
@@ -141,18 +162,18 @@ export function buildWhyPanel(beat: Beat, onClose: () => void): HTMLElement {
 
 export class PrimerScreen {
   readonly root = div('screen hidden');
-  private bodyEl = div('body');
+  private headerEl = div('primer-head');
+  private railEl = div('primer-rail');
+  private bodyEl = div('body primer-body');
   private actionsEl = div('actions');
+  private sections: PrimerSection[] = [];
+  private page = 0;
   private onClose: () => void = () => void 0;
+  private onReplay: (() => void) | null = null;
 
   constructor() {
     this.root.id = 'primer-screen';
-    const h1 = document.createElement('h1');
-    h1.textContent = 'THE PRIMER';
-    h1.style.fontSize = '34px';
-    const h2 = document.createElement('h2');
-    h2.textContent = 'HOW THE LONG GAME WORKS';
-    this.root.append(h1, h2, this.bodyEl, this.actionsEl);
+    this.root.append(this.headerEl, this.railEl, this.bodyEl, this.actionsEl);
   }
 
   get visible(): boolean {
@@ -161,22 +182,65 @@ export class PrimerScreen {
 
   present(god: GodState | null, onClose: () => void, onReplay?: () => void): void {
     this.onClose = onClose;
-    clear(this.bodyEl);
-    clear(this.actionsEl);
-    for (const s of primer(god)) this.bodyEl.append(sectionEl(s));
-    this.actionsEl.append(button('BACK', () => this.onClose()));
-    if (onReplay) this.actionsEl.append(button('WALK ME THROUGH IT AGAIN', onReplay, 'brut tiny'));
+    this.onReplay = onReplay ?? null;
+    this.sections = primer(god);
+    this.page = 0;
+    clear(this.headerEl);
+    this.headerEl.append(
+      ScreenChrome({
+        kicker: 'REFERENCE',
+        title: 'THE PRIMER',
+        subtitle: 'HOW THE LONG GAME WORKS',
+      })
+    );
+    this.renderPage();
     show(this.root, true);
   }
 
   hide(): void {
     show(this.root, false);
   }
-}
 
-function sectionEl(s: PrimerSection): HTMLElement {
-  const el = div('primer-section');
-  el.append(div('primer-title', s.title));
-  for (const l of s.lines) el.append(div('primer-line', l));
-  return el;
+  private renderPage(): void {
+    clear(this.bodyEl);
+    clear(this.actionsEl);
+    clear(this.railEl);
+
+    const total = this.sections.length;
+    const section = this.sections[this.page];
+    if (!section) return;
+
+    for (let i = 0; i < total; i++) {
+      const seg = div(`primer-rail-seg${i === this.page ? ' is-active' : i < this.page ? ' is-done' : ''}`);
+      seg.title = this.sections[i]?.title ?? '';
+      this.railEl.append(seg);
+    }
+
+    this.bodyEl.append(div('primer-page-kicker', `${this.page + 1} / ${total}`));
+    this.bodyEl.append(div('primer-title', section.title));
+    section.lines.forEach((line, i) => {
+      this.bodyEl.append(BeatReveal({ text: line, className: 'primer-line', delayMs: i * 280, variant: 'beat' }));
+    });
+
+    this.actionsEl.append(button('BACK', () => this.onClose()));
+    if (this.page > 0) {
+      this.actionsEl.append(
+        button('PREVIOUS', () => {
+          this.page -= 1;
+          this.renderPage();
+        }, 'brut tiny')
+      );
+    }
+    if (this.page < total - 1) {
+      this.actionsEl.append(
+        button('NEXT', () => {
+          this.page += 1;
+          this.renderPage();
+        }, 'brut tiny')
+      );
+    }
+    if (this.onReplay) {
+      this.actionsEl.append(button('WALK ME THROUGH IT AGAIN', () => this.onReplay!(), 'brut tiny'));
+    }
+  }
 }

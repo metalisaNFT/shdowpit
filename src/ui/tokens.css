@@ -1,0 +1,80 @@
+/* ============================================================
+   SHDOWPIT — design tokens
+   Palette neon/signal values are synced at runtime via paletteSync.ts
+   ============================================================ */
+
+:root {
+  /* legacy aliases — kept for existing rules */
+  --bg: var(--surface-0, #07070a);
+  --ink: #e8e6e0;
+  --dim: #6d6a63;
+  --dimmer: #3a3833;
+  --line: #23211d;
+  --hot: #ff3b21;
+  --gold: #ffb020;
+  --cold: #4fd0ff;
+  --good: #7dff9b;
+  --panel: rgba(7, 7, 10, 0.92);
+  --ui-font: "Courier New", "DejaVu Sans Mono", ui-monospace, monospace;
+
+  /* surfaces */
+  --surface-0: #07070a;
+  --surface-1: rgba(7, 7, 10, 0.92);
+  --surface-2: rgba(12, 12, 16, 0.96);
+
+  /* semantic accents */
+  --accent-danger: var(--hot);
+  --accent-story: var(--gold);
+  --accent-player: var(--neon-lime, #c4ff2e);
+  --accent-info: var(--neon-cyan, #2ff2ff);
+
+  /* type scale */
+  --text-display: 64px;
+  --text-title: 44px;
+  --text-headline: 34px;
+  --text-label: 11px;
+  --text-body: 13px;
+  --text-whisper: 9px;
+
+  /* spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 14px;
+  --space-4: 22px;
+  --space-5: 32px;
+  --space-6: 48px;
+
+  /* motion durations */
+  --dur-fast: 90ms;
+  --dur-beat: 340ms;
+  --dur-enter: 500ms;
+
+  /* layout */
+  --hud-scale: 1;
+
+  /* signal colours — defaults; paletteSync.ts sets from palette.ts */
+  --signal-player: var(--neon-lime, #c4ff2e);
+  --signal-surge: var(--neon-toxic, #e4ff2b);
+  --signal-enemy: var(--neon-amber, #ff9a1f);
+  --signal-ally: var(--neon-lime, #c4ff2e);
+  --signal-parry: var(--neon-cyan, #2ff2ff);
+  --signal-danger: var(--neon-red, #ff2a3c);
+  --signal-poison: var(--neon-acid, #76ff35);
+  --signal-execute: var(--neon-magenta, #ff2f9c);
+  --signal-world: var(--neon-violet, #a14cff);
+}
+
+.screen-headline {
+  font-size: var(--text-headline);
+  letter-spacing: 0.36em;
+  text-transform: uppercase;
+}
+
+/* colorblind-safe remaps — toggle via html[data-colorblind="1"] */
+html[data-colorblind='1'] {
+  --signal-enemy: #ff6b35;
+  --signal-ally: #4fc3f7;
+  --signal-parry: #ffe066;
+  --signal-danger: #ff1744;
+  --signal-poison: #b2ff59;
+}

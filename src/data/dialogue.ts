@@ -285,14 +285,59 @@ const R: Rule[] = [
  * Pick a line. `salt` should vary per encounter so the same enemy does not
  * repeat itself, but the choice remains reproducible within one encounter.
  */
-export function pickLine(n: Nemesis, ctx: LineContext, salt = 0): string {
+export function pickLine(n: Nemesis, ctx: LineContext, salt = 0, priorityBoost = 0): string {
   let best: Rule | null = null;
+  let bestScore = -1;
   for (const r of R) {
     if (r.ctx !== ctx) continue;
     if (!r.test(n)) continue;
-    if (!best || r.priority > best.priority) best = r;
+    const score = r.priority + priorityBoost;
+    if (!best || score > bestScore) {
+      best = r;
+      bestScore = score;
+    }
   }
   if (!best) return '';
   const rng = new RNG((n.appearanceSeed ^ (salt * 2654435761)) >>> 0);
   return rng.pick(best.lines);
+}
+
+/** Fixed multi-turn exchanges — not free chat. AI may polish individual turns. */
+export interface ExchangeTurn {
+  speaker: 'nemesis' | 'player';
+  fallback: string;
+}
+
+const EXCHANGES: Partial<Record<LineContext, ExchangeTurn[]>> = {
+  execute: [
+    { speaker: 'nemesis', fallback: 'Do it.' },
+    { speaker: 'player', fallback: 'I will.' },
+    { speaker: 'nemesis', fallback: 'Remember this.' },
+  ],
+  spared: [
+    { speaker: 'player', fallback: 'Go.' },
+    { speaker: 'nemesis', fallback: 'You will regret that.' },
+    { speaker: 'player', fallback: 'We will see.' },
+  ],
+  taunt: [
+    { speaker: 'nemesis', fallback: 'You came back.' },
+    { speaker: 'player', fallback: 'So did you.' },
+    { speaker: 'nemesis', fallback: 'Not the same.' },
+  ],
+};
+
+export function exchangeFor(_n: Nemesis, ctx: LineContext, salt = 0): ExchangeTurn[] | null {
+  const script = EXCHANGES[ctx];
+  if (!script?.length) return null;
+  void salt;
+  return script.map((t) => ({
+    speaker: t.speaker,
+    fallback: t.fallback,
+  }));
+}
+
+export function exchangeContextForEncounter(kind: string): LineContext | null {
+  if (kind === 'NEMESIS_DEFEATED') return 'execute';
+  if (kind === 'FIRST_MEETING' || kind === 'RETURNING_RIVAL') return 'taunt';
+  return null;
 }

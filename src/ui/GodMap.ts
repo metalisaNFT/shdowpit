@@ -25,8 +25,9 @@ import {
 } from '../world/MapDraw';
 import type { GodRun } from '../god/GodRun';
 import type { Nemesis } from '../nemesis/Nemesis';
-import type { Condition } from '../god/GodTypes';
-import { simOf } from '../god/GodTypes';
+import { simOf, type Condition } from '../god/GodTypes';
+import { aggregateStock, biomeSentence, getBiome } from '../world/BiomeState';
+import { houseNeedAreas } from '../god/NpcQuests';
 import { startingConditions } from '../god/Unlocks';
 
 const CONDITION_SHORT: Partial<Record<Condition['kind'], string>> = {
@@ -53,8 +54,11 @@ const SHORT: Record<string, string> = {
 
 interface ChipEl {
   root: HTMLElement;
+  label: HTMLElement;
+  initial: HTMLElement;
   count: HTMLElement;
   marks: HTMLElement;
+  biome: HTMLElement;
 }
 
 export class GodMap {
@@ -87,12 +91,14 @@ export class GodMap {
       const root = div('god-map-chip');
       root.dataset.areaId = a.id;
       const label = div('god-map-chip-label', SHORT[a.id] ?? a.id.toUpperCase());
+      const initial = div('god-map-chip-initial', '·');
       const count = div('god-map-chip-count', '0');
       const marks = div('god-map-chip-marks', '');
-      root.append(label, count, marks);
+      const biome = div('god-map-chip-biome', '');
+      root.append(label, initial, count, marks, biome);
       root.addEventListener('click', () => this.onAreaClick?.(a.id));
       this.stripEl.append(root);
-      this.chips.set(a.id, { root, count, marks });
+      this.chips.set(a.id, { root, label, initial, count, marks, biome });
     }
 
     document.addEventListener('pointerdown', (e) => {
@@ -115,6 +121,7 @@ export class GodMap {
   setExpanded(on: boolean): void {
     this.expanded = on;
     this.root.classList.toggle('expanded', on);
+    this.root.classList.toggle('map-focused', on && !!this.focusAreaId);
     this.toggleBtn.textContent = on ? 'HIDE' : 'MAP';
     if (on) this.drawCanvas();
   }
@@ -186,25 +193,26 @@ export class GodMap {
     }
 
     const threads: MapThreadLine[] = [];
-    if (startingConditions(run.mgr.data.godUnlocks ?? []).showThreads) {
-      const seen = new Set<string>();
-      for (const n of run.mgr.namedLiving()) {
-        const s = simOf(n);
-        if (s.goal === 'revenge' && s.goalTargetId) {
-          const target = run.mgr.byId(s.goalTargetId);
-          if (!target?.alive) continue;
-          const key = [n.id, target.id].sort().join('→');
-          if (seen.has(key)) continue;
-          seen.add(key);
-          const fromArea = getArea(mapTerritoryFor(n, run));
-          const toArea = getArea(mapTerritoryFor(target, run));
-          const from = actorMapPosition(fromArea, { id: n.id, areaId: fromArea.id, accent: 0, rank: rankIndex(n.rank) });
-          const to = actorMapPosition(toArea, { id: target.id, areaId: toArea.id, accent: 0, rank: rankIndex(target.rank) });
-          const p1 = mapToWorld(from.x, from.y);
-          const p2 = mapToWorld(to.x, to.y);
-          threads.push({ x1: p1.x, z1: p1.z, x2: p2.x, z2: p2.z });
-        }
-      }
+    const insightLines = startingConditions(run.mgr.data.godUnlocks ?? []).showThreads;
+    const seen = new Set<string>();
+    for (const n of run.mgr.namedLiving()) {
+      const s = simOf(n);
+      if (s.goal !== 'revenge' || !s.goalTargetId) continue;
+      if (!insightLines && s.goalAge < 4) continue;
+      const target = run.mgr.byId(s.goalTargetId);
+      if (!target?.alive) continue;
+      const key = [n.id, target.id].sort().join('→');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const fromArea = getArea(mapTerritoryFor(n, run));
+      const toArea = getArea(mapTerritoryFor(target, run));
+      const from = actorMapPosition(fromArea, { id: n.id, areaId: fromArea.id, accent: 0, rank: rankIndex(n.rank) });
+      const to = actorMapPosition(toArea, { id: target.id, areaId: toArea.id, accent: 0, rank: rankIndex(target.rank) });
+      const p1 = mapToWorld(from.x, from.y);
+      const p2 = mapToWorld(to.x, to.y);
+      threads.push({ x1: p1.x, z1: p1.z, x2: p2.x, z2: p2.z });
+    }
+    if (insightLines) {
       for (const c of run.god.conditions) {
         if (c.kind !== 'bounty' || c.targetKind !== 'nemesis') continue;
         const target = run.mgr.byId(c.targetId);
@@ -240,6 +248,8 @@ export class GodMap {
       counts.set(id, (counts.get(id) ?? 0) + 1);
     }
 
+    const urgent = new Set(topUrgentAreas(run));
+    const needAreas = new Set(houseNeedAreas(run));
     const occ = snapshotOccupancy(run.mgr, null);
     for (const a of AREAS) {
       const chip = this.chips.get(a.id);
@@ -250,16 +260,34 @@ export class GodMap {
       const g = ((accent >> 8) & 255).toString(16).padStart(2, '0');
       const b = (accent & 255).toString(16).padStart(2, '0');
       chip.root.style.setProperty('--chip-accent', `#${r}${g}${b}`);
-      chip.count.textContent = String(counts.get(a.id) ?? 0);
+      const pop = counts.get(a.id) ?? 0;
+      chip.count.textContent = String(pop);
+      const holder = run.mgr.territoryHolder(a.id);
+      chip.initial.textContent = holder ? holder.name.charAt(0).toUpperCase() : '·';
+      chip.root.classList.toggle('has-holder', !!holder);
       const marks = godMarksForArea(run, a.id);
       chip.marks.textContent = marks.length ? marks.join(' · ') : '';
+      const biomeState = getBiome(run.mgr.data, a.id);
+      const meters: string[] = [];
+      if (biomeState.faunaPressure > 0.5) meters.push('F' + Math.round(biomeState.faunaPressure * 9));
+      if (aggregateStock(biomeState) < 10) meters.push('S↓');
+      else if (aggregateStock(biomeState) > 24) meters.push('S↑');
+      if (biomeState.activeSites.some((s) => s.status === 'open' || s.status === 'repopulating')) meters.push('D');
+      chip.biome.textContent = meters.join(' ');
+      chip.biome.title = biomeSentence(a.id, biomeState);
+      chip.root.classList.toggle('house-need', needAreas.has(a.id));
       chip.root.classList.toggle('marked', marks.length > 0);
       chip.root.classList.toggle('selected', this.focusAreaId === a.id);
-      chip.root.classList.toggle('occupied', (counts.get(a.id) ?? 0) > 0);
+      chip.root.classList.toggle('occupied', pop > 0);
       const crisisBody = run.god.crisis?.bodyId ? run.mgr.byId(run.god.crisis.bodyId) : null;
       const crisis = run.god.crisis?.resolved === 'none' && crisisBody?.territory === a.id;
       chip.root.classList.toggle('crisis', !!crisis && Math.sin(this.pulse * 4) > 0);
+      const heat = pop + (urgent.has(a.id) ? 2 : 0) + (crisis ? 3 : 0);
+      chip.root.dataset.heat = heat >= 4 ? 'high' : heat >= 2 ? 'mid' : 'low';
+      chip.root.classList.toggle('heat-high', heat >= 4);
+      chip.root.classList.toggle('heat-mid', heat >= 2 && heat < 4);
     }
+    this.root.classList.toggle('map-focused', this.expanded && !!this.focusAreaId);
   }
 
   private handleCanvasClick(e: MouseEvent): void {

@@ -15,13 +15,25 @@
 import { button, clear, div, el, show } from './Dom';
 import type { AIMode, AIProviderMode, AISettings, LocalAIStatus } from '../ai/AITypes';
 
+type CloudProvider = 'openai' | 'groq';
+
 export interface AISettingsHooks {
   getSettings(): AISettings;
   setSettings(s: AISettings): void;
-  status(): { connected: boolean; verified: boolean; error: string; backendReachable: boolean };
-  connect(key: string): Promise<{ ok: boolean; error: string }>;
-  disconnect(): Promise<void>;
-  test(): Promise<{ ok: boolean; error: string; latencyMs: number }>;
+  status(): {
+    connected: boolean;
+    verified: boolean;
+    error: string;
+    backendReachable: boolean;
+    cloud: { openai: { connected: boolean; verified: boolean }; groq: { connected: boolean; verified: boolean } };
+    openaiConnected: boolean;
+    openaiVerified: boolean;
+    groqConnected: boolean;
+    groqVerified: boolean;
+  };
+  connect(key: string, provider?: CloudProvider): Promise<{ ok: boolean; error: string }>;
+  disconnect(provider?: CloudProvider): Promise<void>;
+  test(provider?: CloudProvider): Promise<{ ok: boolean; error: string; latencyMs: number }>;
   /** live one-line summary: "Idle", "Generating portrait", ... */
   activity(): string;
   /** can generation succeed under the current provider mode? */
@@ -43,12 +55,29 @@ const MODE_LABEL: Record<AIMode, string> = {
   full: 'FULL',
 };
 
-const PROVIDERS: AIProviderMode[] = ['openai', 'local', 'auto'];
+const PROVIDERS: AIProviderMode[] = ['openai', 'groq', 'local', 'auto'];
 const PROVIDER_LABEL: Record<AIProviderMode, string> = {
   openai: 'OPENAI',
+  groq: 'GROQ',
   local: 'LOCAL',
   auto: 'AUTO',
 };
+
+function hintLink(href: string, text: string): HTMLAnchorElement {
+  const a = el('a');
+  a.href = href;
+  a.target = '_blank';
+  a.rel = 'noopener noreferrer';
+  a.textContent = text;
+  return a;
+}
+
+function appendHint(container: HTMLElement, parts: Array<string | Node>): void {
+  for (const p of parts) {
+    if (typeof p === 'string') container.append(p);
+    else container.append(p);
+  }
+}
 
 export class AISettingsPanel {
   readonly root = div('detail ai-settings');
@@ -60,6 +89,7 @@ export class AISettingsPanel {
   private msgLine = div('ai-msg ai-msg-main');
   private activityLine = div('ai-activity');
   private setupNotice = div('ai-setup hidden');
+  private keySection = div('ai-key-section');
   private revealTimer = 0;
   private busy = false;
 
@@ -77,7 +107,6 @@ export class AISettingsPanel {
     this.keyInput.spellcheck = false;
     this.keyInput.className = 'ai-key';
     this.keyInput.style.pointerEvents = 'auto';
-    // Belt and braces: a stray form submit must not put a key in a URL.
     this.keyInput.setAttribute('name', 'shdowpit-ephemeral');
   }
 
@@ -86,7 +115,6 @@ export class AISettingsPanel {
     this.render();
   }
 
-  /** Called on a timer while the settings screen is open. */
   refresh(): void {
     if (!this.hooks) return;
     this.renderConnection();
@@ -95,7 +123,6 @@ export class AISettingsPanel {
       this.revealTimer -= 0.25;
       if (this.revealTimer <= 0) this.setRevealed(false);
     }
-    // Local engine status: poll ~1s (faster while installing, for the bars).
     this.localPollAccum += 0.25;
     const interval = this.lastLocal?.progress?.state === 'installing' ? 0.5 : 1.25;
     if (this.localPollAccum >= interval && !this.localPolling) {
@@ -116,21 +143,67 @@ export class AISettingsPanel {
     }
   }
 
+  private cloudProviderFor(settings: AISettings, key = ''): CloudProvider {
+    if (settings.provider === 'groq') return 'groq';
+    if (settings.provider === 'openai') return 'openai';
+    return /^gsk_/.test(key.trim()) ? 'groq' : 'openai';
+  }
+
+  private cloudLabel(provider: CloudProvider): string {
+    return provider === 'groq' ? 'GROQ' : 'OPENAI';
+  }
+
+  private renderProviderHint(provider: AIProviderMode): void {
+    const hint = div('ai-hint');
+    if (provider === 'openai') {
+      appendHint(hint, [
+        'All text and images use OpenAI. ',
+        hintLink('https://platform.openai.com/api-keys', 'Get API key'),
+        ' · ',
+        hintLink('https://platform.openai.com/docs', 'Docs'),
+      ]);
+    } else if (provider === 'groq') {
+      appendHint(hint, [
+        'Text via Groq; portraits use Local AI Engine when running, otherwise procedural. ',
+        hintLink('https://console.groq.com/keys', 'Get API key'),
+        ' · ',
+        hintLink('https://console.groq.com/docs/quickstart', 'Docs'),
+      ]);
+    } else if (provider === 'local') {
+      hint.textContent = 'Fully offline. No key. See local engine section.';
+    } else {
+      hint.textContent = 'Text: Local → Groq → OpenAI. Images: Local → OpenAI.';
+    }
+    this.root.append(hint);
+  }
+
+  private renderSetupExplainer(cloud: CloudProvider): void {
+    const box = div('ai-hint');
+    if (cloud === 'groq') {
+      box.textContent =
+        '1. Sign in at console.groq.com\n2. Create an API key (starts with gsk_)\n3. Paste it here and click CONNECT\nKeys are held in memory by the local server only.';
+    } else {
+      box.textContent =
+        '1. Sign in at platform.openai.com\n2. Create an API key (starts with sk-)\n3. Paste it here and click CONNECT\nKeys are held in memory by the local server only.';
+    }
+    box.style.whiteSpace = 'pre-line';
+    this.keySection.append(box);
+  }
+
   private render(): void {
     const h = this.hooks;
     if (!h) return;
     clear(this.root);
     const s = h.getSettings();
+    const prov = s.provider ?? 'auto';
 
-    /* ---- mode ---- */
     this.root.append(div('ai-h', 'AI CONTENT'));
     const modeRow = div('ai-row');
     for (const m of MODES) {
       const b = button(
         MODE_LABEL[m],
         () => {
-          const next = { ...h.getSettings(), mode: m };
-          h.setSettings(next);
+          h.setSettings({ ...h.getSettings(), mode: m });
           this.render();
         },
         `ai-chip${s.mode === m ? ' on' : ''}`
@@ -149,77 +222,68 @@ export class AISettingsPanel {
       )
     );
 
-    /* ---- provider routing ---- */
     this.root.append(div('ai-h', 'PROVIDER'));
     const provRow = div('ai-row');
     for (const p of PROVIDERS) {
-      // `ai-prov`, not `ai-chip`: the mode chips are a stable, tested trio and
-      // selectors that count `.ai-chip` must keep meaning exactly that.
       const b = button(
         PROVIDER_LABEL[p],
         () => {
           h.setSettings({ ...h.getSettings(), provider: p });
           this.render();
         },
-        `ai-prov${(s.provider ?? 'auto') === p ? ' on' : ''}`
+        `ai-prov${prov === p ? ' on' : ''}`
       );
       provRow.append(b);
     }
     this.root.append(provRow);
-    this.root.append(
-      div(
-        'ai-hint',
-        (s.provider ?? 'auto') === 'openai'
-          ? 'All generation uses the OpenAI API.'
-          : (s.provider ?? 'auto') === 'local'
-            ? 'All generation uses the Local AI Engine on this machine. No key, no cloud, works offline.'
-            : 'Local AI Engine first when it is running; falls back to OpenAI. Takes effect immediately.'
-      )
-    );
+    this.renderProviderHint(prov);
 
-    /* ---- LOCAL AI ENGINE ---- */
     this.root.append(div('ai-h', 'LOCAL AI'));
     this.root.append(this.localBox);
     this.renderLocal();
 
-    /* ---- first-time setup notice ---- */
     this.root.append(this.setupNotice);
 
-    /* ---- connection ---- */
-    this.root.append(div('ai-h', 'OPENAI'));
-    this.root.append(this.connLine);
+    if (prov !== 'local') {
+      const cloud = this.cloudProviderFor(s);
+      this.keyInput.placeholder = cloud === 'groq' ? 'gsk_...' : 'sk-...';
+      clear(this.keySection);
+      this.root.append(this.keySection);
+      this.keySection.append(div('ai-h', this.cloudLabel(cloud)));
+      this.keySection.append(this.connLine);
 
-    const keyRow = div('ai-row');
-    this.revealBtn.className = 'ai-eye';
-    this.revealBtn.type = 'button';
-    this.revealBtn.textContent = '👁';
-    this.revealBtn.title = 'Reveal while typing';
-    this.revealBtn.style.pointerEvents = 'auto';
-    this.revealBtn.onclick = (e) => {
-      e.stopPropagation();
-      this.setRevealed(this.keyInput.type === 'password');
-    };
-    keyRow.append(this.keyInput, this.revealBtn);
-    this.root.append(div('ai-sub', 'API KEY'), keyRow);
-    this.root.append(
-      div('ai-hint', 'Held in memory by the local server only. Never saved, never logged, never in your save file.')
-    );
+      const keyRow = div('ai-row');
+      this.revealBtn.className = 'ai-eye';
+      this.revealBtn.type = 'button';
+      this.revealBtn.textContent = '👁';
+      this.revealBtn.title = 'Reveal while typing';
+      this.revealBtn.style.pointerEvents = 'auto';
+      this.revealBtn.onclick = (e) => {
+        e.stopPropagation();
+        this.setRevealed(this.keyInput.type === 'password');
+      };
+      keyRow.append(this.keyInput, this.revealBtn);
+      this.keySection.append(div('ai-sub', 'API KEY'), keyRow);
+      this.keySection.append(
+        div('ai-hint', 'Held in memory by the local server only. Never saved, never logged, never in your save file.')
+      );
+      this.renderSetupExplainer(cloud);
 
-    const btnRow = div('ai-row');
-    btnRow.append(
-      button('CONNECT', () => void this.doConnect(), 'ai-btn'),
-      button('TEST CONNECTION', () => void this.doTest(), 'ai-btn'),
-      button('DISCONNECT', () => void this.doDisconnect(), 'ai-btn danger')
-    );
-    this.root.append(btnRow);
-    this.root.append(this.msgLine);
+      const btnRow = div('ai-row');
+      btnRow.append(
+        button('CONNECT', () => void this.doConnect(), 'ai-btn'),
+        button('TEST CONNECTION', () => void this.doTest(), 'ai-btn'),
+        button('DISCONNECT', () => void this.doDisconnect(), 'ai-btn danger')
+      );
+      this.keySection.append(btnRow);
+      this.keySection.append(this.msgLine);
+    }
 
-    /* ---- categories ---- */
     this.root.append(div('ai-h', 'GENERATED CONTENT'));
     const cats: Array<[keyof AISettings, string]> = [
       ['names', 'NAMES & TITLES'],
       ['dialogue', 'DIALOGUE'],
-  ['chronicles', 'STORY & CHRONICLES'],
+      ['chronicles', 'STORY & CHRONICLES'],
       ['portraits', 'PORTRAITS'],
     ];
     for (const [k, label] of cats) {
@@ -228,8 +292,7 @@ export class AISettingsPanel {
       const b = button(
         `${label}: ${on ? 'ON' : 'OFF'}`,
         () => {
-          const next = { ...h.getSettings(), [k]: !on } as AISettings;
-          h.setSettings(next);
+          h.setSettings({ ...h.getSettings(), [k]: !on } as AISettings);
           this.render();
         },
         `ai-toggle${disabled ? ' off' : ''}`
@@ -237,7 +300,6 @@ export class AISettingsPanel {
       this.root.append(b);
     }
 
-    /* ---- status ---- */
     this.root.append(div('ai-h', 'AI STATUS'));
     this.root.append(this.activityLine);
 
@@ -250,10 +312,6 @@ export class AISettingsPanel {
     this.revealBtn.classList.toggle('on', on);
     this.revealTimer = on ? 8 : 0;
   }
-
-  /* ============================================================
-     LOCAL AI ENGINE section — the one-button states
-     ============================================================ */
 
   private renderLocal(): void {
     const h = this.hooks;
@@ -269,13 +327,12 @@ export class AISettingsPanel {
           this.localBusy = true;
           void fn().finally(() => {
             this.localBusy = false;
-            this.localPollAccum = 99; // refresh status right away
+            this.localPollAccum = 99;
           });
         },
         cls
       );
 
-    // Backend not reachable at all (e.g. plain static hosting).
     if (s === null && !h.status().backendReachable) {
       this.localBox.append(div('ai-hint', 'Local AI needs the game server (npm run dev / preview / serve).'));
       return;
@@ -308,8 +365,7 @@ export class AISettingsPanel {
       this.localBox.append(
         div(
           'ai-hint',
-          'Runs a small text model and a fast image model on this machine. ' +
-            'No account, no key, works offline. Downloads ~3 GB once.'
+          'Runs a small text model and a fast image model on this machine. No account, no key, works offline. Downloads ~3 GB once.'
         )
       );
       if (s?.progress?.state === 'failed') {
@@ -319,7 +375,6 @@ export class AISettingsPanel {
       return;
     }
 
-    /* installed */
     const dot = div('ai-dot');
     let label: string;
     if (s.running && s.textReady && s.imageReady) {
@@ -370,40 +425,63 @@ export class AISettingsPanel {
     const h = this.hooks;
     if (!h) return;
     const st = h.status();
+    const s = h.getSettings();
+    const prov = s.provider ?? 'auto';
+    if (prov === 'local') {
+      show(this.setupNotice, s.mode !== 'off' && !h.textAvailable());
+      if (s.mode !== 'off' && !h.textAvailable()) {
+        clear(this.setupNotice);
+        this.setupNotice.append(div('ai-msg warn', 'AI content requires the Local AI Engine to be installed and running.'));
+        const row = div('ai-row');
+        row.append(
+          button(
+            'USE LOCAL GENERATION',
+            () => {
+              h.setSettings({ ...h.getSettings(), mode: 'off' });
+              this.render();
+            },
+            'ai-btn'
+          )
+        );
+        this.setupNotice.append(row);
+      }
+      return;
+    }
+
     clear(this.connLine);
+    const cloud = this.cloudProviderFor(s);
+    const cloudSt = st.cloud[cloud];
 
     const dot = div('ai-dot');
     let text: string;
     if (!st.backendReachable) {
       dot.classList.add('ai-error');
       text = 'LOCAL AI SERVER NOT RUNNING';
-    } else if (st.connected && st.verified) {
+    } else if (cloudSt.connected && cloudSt.verified) {
       dot.classList.add('ai-idle');
-      text = 'API KEY: CONNECTED';
-    } else if (st.connected) {
+      text = `API KEY: CONNECTED (${this.cloudLabel(cloud)})`;
+    } else if (cloudSt.connected) {
       dot.classList.add('ai-busy');
-      text = 'API KEY: CONNECTED (UNTESTED)';
+      text = `API KEY: CONNECTED (${this.cloudLabel(cloud)}, UNTESTED)`;
     } else {
       dot.classList.add('ai-off');
       text = 'DISCONNECTED';
     }
     this.connLine.append(dot, div('ai-conn-text', text));
 
-    const s = h.getSettings();
-    // "Needs setup" now means NO route can generate: neither an OpenAI key
-    // nor a ready Local AI Engine (given the provider mode).
     const needsSetup = s.mode !== 'off' && !h.textAvailable();
     show(this.setupNotice, needsSetup);
     if (needsSetup) {
       clear(this.setupNotice);
-      this.setupNotice.append(
-        div(
-          'ai-msg warn',
-          (s.provider ?? 'auto') === 'local'
-            ? 'AI content requires the Local AI Engine to be installed and running.'
-            : 'AI content requires an OpenAI API connection or the Local AI Engine.'
-        )
-      );
+      let msg: string;
+      if (prov === 'groq') {
+        msg = 'AI content requires a Groq API connection or the Local AI Engine.';
+      } else if (prov === 'openai') {
+        msg = 'AI content requires an OpenAI API connection or the Local AI Engine.';
+      } else {
+        msg = 'AI content requires an OpenAI or Groq API connection, or the Local AI Engine.';
+      }
+      this.setupNotice.append(div('ai-msg warn', msg));
       const row = div('ai-row');
       row.append(
         button(
@@ -419,10 +497,6 @@ export class AISettingsPanel {
     }
   }
 
-  /**
-   * `ai-msg-main` distinguishes this line from the setup notice's own message,
-   * which is also an `.ai-msg` and sits earlier in the DOM.
-   */
   private say(text: string, tone: 'ok' | 'bad' | 'warn' | '' = ''): void {
     this.msgLine.className = `ai-msg ai-msg-main ${tone}`.trim();
     this.msgLine.textContent = text;
@@ -431,19 +505,20 @@ export class AISettingsPanel {
   private async doConnect(): Promise<void> {
     const h = this.hooks;
     if (!h || this.busy) return;
+    const s = h.getSettings();
     const raw = this.keyInput.value.trim();
+    const cloud = this.cloudProviderFor(s, raw);
+    const label = this.cloudLabel(cloud);
     if (!raw) {
-      this.say('Paste an OpenAI key first.', 'warn');
+      this.say(`Paste a ${label} key first.`, 'warn');
       return;
     }
     this.busy = true;
     this.say('Sending key to the local server...');
     let res: { ok: boolean; error: string };
     try {
-      res = await h.connect(raw);
+      res = await h.connect(raw, cloud);
     } finally {
-      // Clear the field on every path, success or failure, so a key is never
-      // left sitting in the DOM.
       this.keyInput.value = '';
       this.setRevealed(false);
       this.busy = false;
@@ -460,9 +535,11 @@ export class AISettingsPanel {
   private async doTest(): Promise<void> {
     const h = this.hooks;
     if (!h) return;
-    this.say('Testing OpenAI connection...');
-    const res = await h.test();
-    if (res.ok) this.say(`OpenAI connected. (${res.latencyMs} ms)`, 'ok');
+    const cloud = this.cloudProviderFor(h.getSettings());
+    const label = this.cloudLabel(cloud);
+    this.say(`Testing ${label} connection...`);
+    const res = await h.test(cloud);
+    if (res.ok) this.say(`${label} connected. (${res.latencyMs} ms)`, 'ok');
     else this.say(`Connection failed. ${res.error}`, 'bad');
     this.renderConnection();
   }
@@ -470,7 +547,8 @@ export class AISettingsPanel {
   private async doDisconnect(): Promise<void> {
     const h = this.hooks;
     if (!h) return;
-    await h.disconnect();
+    const cloud = this.cloudProviderFor(h.getSettings());
+    await h.disconnect(cloud);
     this.keyInput.value = '';
     this.setRevealed(false);
     this.say('Disconnected. Local generation in use.', '');

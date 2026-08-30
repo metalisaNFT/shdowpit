@@ -11,6 +11,7 @@ import { button, clear, div, show } from './Dom';
 import { describeLegend, legendHome } from '../god/Legends';
 import { UNLOCK_MAP, unlockName, type UnlockKind } from '../god/Unlocks';
 import type { LegendRecord, RunOutcome } from '../god/GodTypes';
+import { enter } from './motion';
 
 const LEGACY_LINE: Record<string, string> = {
   relic: 'THEIR STEEL IS STILL OUT THERE',
@@ -29,19 +30,22 @@ export class LegendsScreen {
   readonly root = div('screen hidden');
   private bodyEl = div('body');
   private actionsEl = div('actions');
+  private toastEl = div('legend-unlock-toast hidden');
   private selected: string | null = null;
   private legends: LegendRecord[] = [];
   private onClose: () => void = () => void 0;
   private view: LegendViewHooks = {};
+  private seenLegendIds = new Set<string>();
+  private toastTimer = 0;
 
   constructor() {
     this.root.id = 'legends-screen';
     const h1 = document.createElement('h1');
+    h1.className = 'screen-headline';
     h1.textContent = 'THE BOOK';
-    h1.style.fontSize = '34px';
     const h2 = document.createElement('h2');
     h2.textContent = 'WHAT SURVIVED THE RESET';
-    this.root.append(h1, h2, this.bodyEl, this.actionsEl);
+    this.root.append(h1, h2, this.toastEl, this.bodyEl, this.actionsEl);
   }
 
   get visible(): boolean {
@@ -49,12 +53,17 @@ export class LegendsScreen {
   }
 
   present(legends: readonly LegendRecord[], onClose: () => void, view: LegendViewHooks = {}): void {
-    this.legends = legends.slice().reverse();
+    const incoming = legends.slice().reverse();
+    const newOnes = incoming.filter((l) => !this.seenLegendIds.has(l.id));
+    for (const l of incoming) this.seenLegendIds.add(l.id);
+
+    this.legends = incoming;
     this.onClose = onClose;
     this.view = view;
     this.selected = this.legends[0]?.id ?? null;
     show(this.root, true);
     this.render();
+    if (newOnes.length) this.showUnlockToast(newOnes);
   }
 
   refresh(): void {
@@ -62,7 +71,20 @@ export class LegendsScreen {
   }
 
   hide(): void {
+    window.clearTimeout(this.toastTimer);
     show(this.root, false);
+    this.toastEl.classList.add('hidden');
+  }
+
+  private showUnlockToast(newOnes: LegendRecord[]): void {
+    window.clearTimeout(this.toastTimer);
+    const names = newOnes.map((l) => l.name.toUpperCase()).join(' · ');
+    this.toastEl.textContent = newOnes.length === 1 ? `NEW CHAPTER — ${names}` : `${newOnes.length} NEW CHAPTERS — ${names}`;
+    this.toastEl.classList.remove('hidden');
+    enter(this.toastEl, 'slide-up');
+    this.toastTimer = window.setTimeout(() => {
+      this.toastEl.classList.add('hidden');
+    }, 4200);
   }
 
   private render(): void {
@@ -76,8 +98,11 @@ export class LegendsScreen {
     } else {
       const wrap = div('legend-wrap');
       const list = div('legend-list');
-      for (const l of this.legends) {
+      const chapterTotal = this.legends.length;
+      this.legends.forEach((l, i) => {
+        const chapter = chapterTotal - i;
         const row = div('legend-row' + (l.id === this.selected ? ' sel' : ''));
+        row.append(div('legend-chapter', String(chapter).padStart(2, '0')));
         row.append(div('legend-name', `${l.name}${l.title ? ' ' + l.title : ''}`));
         row.append(div('legend-meta', `RUN ${l.run} · ${l.finalRank} · ${l.faction}`));
         row.addEventListener('click', () => {
@@ -85,10 +110,12 @@ export class LegendsScreen {
           this.render();
         });
         list.append(row);
-      }
+      });
       const detail = div('legend-detail');
       const l = this.legends.find((x) => x.id === this.selected) ?? this.legends[0];
       if (l) {
+        const chapter = chapterTotal - this.legends.findIndex((x) => x.id === l.id);
+        detail.append(div('legend-chapter-head', `CHAPTER ${String(chapter).padStart(2, '0')}`));
         const portrait = this.view.portraitFor?.(l);
         if (portrait) {
           const img = document.createElement('img');
@@ -144,10 +171,11 @@ export class RunEndScreen {
   private outcome: RunOutcome | null = null;
   private handlers: RunEndHandlers | null = null;
   private voice = '';
+  private thesisVoice = '';
 
   constructor() {
     this.root.id = 'god-end-screen';
-    this.h1.style.fontSize = '34px';
+    this.h1.className = 'screen-headline';
     this.root.append(this.h1, this.h2, this.bodyEl, this.actionsEl);
   }
 
@@ -155,17 +183,19 @@ export class RunEndScreen {
     return !this.root.classList.contains('hidden');
   }
 
-  present(outcome: RunOutcome, handlers: RunEndHandlers, voice = ''): void {
+  present(outcome: RunOutcome, handlers: RunEndHandlers, voice = '', thesisVoice = ''): void {
     this.outcome = outcome;
     this.handlers = handlers;
     this.voice = voice;
+    this.thesisVoice = thesisVoice;
     this.render();
     show(this.root, true);
   }
 
-  refreshVoice(voice: string): void {
+  refreshVoice(voice: string, thesisVoice?: string): void {
     if (!this.visible || !this.outcome || !this.handlers) return;
     this.voice = voice;
+    if (thesisVoice !== undefined) this.thesisVoice = thesisVoice;
     this.render();
   }
 
@@ -184,6 +214,20 @@ export class RunEndScreen {
     if (recap.length) {
       this.bodyEl.append(div('god-end-sub', 'WHY IT ENDED THIS WAY'));
       for (const line of recap) this.bodyEl.append(div('god-end-recap', line));
+    }
+
+    const story = outcome.runStory;
+    if (story?.acts.length) {
+      this.bodyEl.append(div('god-end-sub', 'THE RUN STORY'));
+      this.bodyEl.append(div('god-end-line god-end-thesis', this.thesisVoice || story.thesis));
+      for (const act of story.acts) {
+        const block = div('god-end-act');
+        block.append(div('god-end-act-name', act.name));
+        for (const beat of act.beats) {
+          block.append(div('god-end-beat', `${beat.headline}. ${beat.line}`));
+        }
+        this.bodyEl.append(block);
+      }
     }
 
     this.bodyEl.append(div('god-end-sub', 'THE RUN'));

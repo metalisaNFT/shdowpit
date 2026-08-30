@@ -32,6 +32,9 @@ const GENERATING_LINES: Record<AIRequestKind, string[]> = {
   journey: ['POLISHING A LIFE...', 'THE JOURNEY IS BEING READ...'],
   arc: ['THREADING THE STORY...', 'AN OPEN THREAD IS BEING WORDED...'],
   encounter: ['SETTING THE SCENE...', 'THE MEETING IS BEING WORDED...'],
+  relationship_chronicle: ['WEAVING THE THREADS...', 'THE HISTORY DEEPENS...'],
+  contextual_line: ['FINDING THEIR WORDS...', 'THE ENEMY SPEAKS...'],
+  exchange: ['VOICING THE EXCHANGE...', 'THE WORDS ARE SET...'],
 };
 
 const KIND_LABEL: Record<AIRequestKind, string> = {
@@ -51,6 +54,9 @@ const KIND_LABEL: Record<AIRequestKind, string> = {
   journey: 'JOURNEY',
   arc: 'THREAD',
   encounter: 'MEETING',
+  relationship_chronicle: 'HISTORY',
+  contextual_line: 'LINE',
+  exchange: 'EXCHANGE',
 };
 
 const SUBTITLE: Record<AIRequestKind, string> = {
@@ -70,6 +76,9 @@ const SUBTITLE: Record<AIRequestKind, string> = {
   journey: 'Polishing a journey beat',
   arc: 'Voicing an open thread',
   encounter: 'Polishing the encounter',
+  relationship_chronicle: 'Weaving relationship history',
+  contextual_line: 'Finding their words',
+  exchange: 'Voicing the exchange',
 };
 
 export type IndicatorState = 'off' | 'idle' | 'busy' | 'error';
@@ -101,6 +110,7 @@ export class AIStatus {
 
     this.indicator.append(div('ai-label', 'AI'), this.dot);
     this.indicator.title = 'AI content — click for settings';
+    this.indicator.setAttribute('aria-label', 'AI status — open settings');
     this.indicator.style.pointerEvents = 'auto';
     this.indicator.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -120,6 +130,7 @@ export class AIStatus {
     if (state === this.lastState) return;
     this.lastState = state;
     this.dot.className = `ai-dot ai-${state}`;
+    this.indicator.dataset.state = state;
     this.indicator.classList.toggle('dimmed', state === 'off');
   }
 

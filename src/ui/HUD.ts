@@ -10,8 +10,11 @@ import type { Player } from '../player/Player';
 import { rankName } from '../nemesis/NemesisManager';
 import { accentColorFor } from '../nemesis/NemesisAppearance';
 import { relationshipLabel } from '../nemesis/EncounterCopy';
+import { pickLine } from '../data/dialogue';
 import { css, SIGNAL } from '../data/palette';
 import type { SkillHudState } from '../abilities/AbilityRuntime';
+import { ResourceMeter, setMeterRatio } from './primitives/ResourceMeter';
+import type { LaneTiming, OverlayLane } from './OverlayGate';
 
 export interface HudWorldInfo {
   areaName: string;
@@ -19,6 +22,7 @@ export interface HudWorldInfo {
   age: number;
   turn: number;
   overlordName: string;
+  worldPulse?: string;
   heat?: number;
   heatLabel?: string;
   remnants?: number;
@@ -34,11 +38,19 @@ export interface HudWorldInfo {
   areaColors?: Record<string, string>;
 }
 
+const SURGE_SEGMENTS = 4;
+const ARCH_GLYPH: Record<string, string> = {
+  fighter: '⚔',
+  heavy: '▣',
+  archer: '◁',
+  duelist: '◇',
+  commander: '★',
+};
+
 export class HUD {
   readonly root = div('layer');
 
-  private hpFill = div('fill');
-  private hpGhost = div('ghost');
+  private vitalityMeter: HTMLElement;
   private hpText = el('span');
   private powerList = div();
 
@@ -47,17 +59,19 @@ export class HUD {
   private purpose = el('div', 'hud-purpose');
   private tutorialBox = el('div', 'hud-tutorial hidden');
 
-  private plate = div('panel hidden');
+  private plate = div('panel hidden plate-frame');
+  private plateGlyph = div('tglyph');
   private plateName = div('tname');
   private plateTitle = div('ttitle');
+  private plateKickers = div('tkickers');
+  private plateQuote = div('tquote');
   private plateBarFill = div('fill');
-  /** posture, drawn under health — the second thing you are attacking */
   private platePostureFill = div('fill');
   private platePosture = div('tbar posture');
-  private plateMeta = div('tmeta');
+  private plateMeta = div('tmeta hidden');
   private plateBroken = div('tbroken hidden', 'POSTURE BROKEN  ·  E TO EXECUTE');
 
-  private surgeFill = div('fill');
+  private surgePips: HTMLElement[] = [];
   private surgeWrap = div('surge');
   private skillRow = div('skill-row');
   private skillSlots: HTMLElement[] = [];
@@ -77,38 +91,61 @@ export class HUD {
   private nextEl = div('overlay-next hidden');
 
   private minimap = el('canvas');
+  private minimapLegend = div('minimap-legend');
   private mmCtx: CanvasRenderingContext2D | null;
 
   private ghostTimer = 0;
+  private ghostRatio = 1;
   private lastHp = 1;
+  private combatFocusOn = false;
+  private plateTargetUid = -1;
+  private plateQuoteFull = '';
+  private plateQuoteIdx = 0;
+  private plateQuoteTimer = 0;
+  private tauntLineFor: ((n: import('../nemesis/Nemesis').Nemesis, salt: number) => string) | null = null;
+
+  /** Optional AI-backed taunt line; falls back to template dialogue. */
+  bindTauntLine(fn: (n: import('../nemesis/Nemesis').Nemesis, salt: number) => string): void {
+    this.tauntLineFor = fn;
+  }
+  private wasPostureBroken = false;
+  private pulseT = 0;
 
   constructor() {
     this.root.id = 'hud';
 
-    /* health */
+    /* health — ResourceMeter primitive with ghost on damage */
     const bl = div('hud-bl');
-    const label = div('hud-label');
-    const l1 = el('span', undefined, 'VITALITY');
-    label.append(l1, this.hpText);
-    const bar = div('bar');
-    bar.id = 'hp-bar';
-    this.hpFill.id = 'hp-fill';
-    bar.append(this.hpGhost, this.hpFill);
+    this.vitalityMeter = ResourceMeter({
+      label: 'VITALITY',
+      value: '',
+      ratio: 1,
+      ghostRatio: 1,
+      tone: 'hot',
+      id: 'hp-bar',
+      fillId: 'hp-fill',
+    });
+    const valEl = this.vitalityMeter.querySelector('.resource-meter-value');
+    if (valEl) valEl.replaceWith(this.hpText);
+    else this.vitalityMeter.querySelector('.hud-label')?.append(this.hpText);
+    bl.append(this.vitalityMeter);
 
-    // SURGE sits directly under health because it is spent under the same
-    // pressure. It only appears once you have earned some.
+    /* SURGE — segmented pips earned under pressure */
     const surgeLabel = div('hud-label');
     surgeLabel.append(el('span', undefined, 'SURGE'));
-    const surgeBar = div('bar small');
-    this.surgeFill.style.background = css(SIGNAL.surge);
-    surgeBar.append(this.surgeFill);
-    this.surgeWrap.append(surgeLabel, surgeBar);
+    const surgeRow = div('surge-pips');
+    for (let i = 0; i < SURGE_SEGMENTS; i++) {
+      const pip = div('surge-pip');
+      surgeRow.append(pip);
+      this.surgePips.push(pip);
+    }
+    this.surgeWrap.append(surgeLabel, surgeRow);
+    bl.append(this.surgeWrap);
 
     const needleLabel = div('hud-label');
     needleLabel.append(el('span', undefined, 'VOID NEEDLE'));
     this.needleWrap.append(needleLabel);
-
-    bl.append(label, bar, this.surgeWrap, this.needleWrap, this.skillRow);
+    bl.append(this.needleWrap, this.skillRow);
     this.root.append(bl);
 
     /* powers */
@@ -119,13 +156,15 @@ export class HUD {
     /* corners */
     this.root.append(this.areaLabel, this.worldLabel, this.purpose, this.tutorialBox, this.nextEl);
 
-    /* target plate */
+    /* target plate — framed nemesis drama */
     this.plate.id = 'target-plate';
-    const tbar = div('tbar');
+    const body = div('plate-body');
+    const tbar = div('tbar health');
     tbar.append(this.plateBarFill);
     this.platePosture.append(this.platePostureFill);
     this.platePostureFill.style.background = css(SIGNAL.posture);
-    this.plate.append(this.plateName, this.plateTitle, tbar, this.platePosture, this.plateMeta, this.plateBroken);
+    body.append(this.plateName, this.plateTitle, this.plateKickers, this.plateQuote, tbar, this.platePosture, this.plateMeta, this.plateBroken);
+    this.plate.append(this.plateGlyph, body);
     this.root.append(this.plate);
 
     /* toasts + prompt */
@@ -142,16 +181,14 @@ export class HUD {
     this.banner.id = 'area-banner';
     this.root.append(this.banner);
 
-    /* minimap */
+    /* minimap + legend */
     this.minimap.id = 'minimap';
     this.minimap.width = 150;
     this.minimap.height = 150;
     this.mmCtx = this.minimap.getContext('2d');
-    this.root.append(this.minimap);
-
-    const reticle = div();
-    reticle.id = 'reticle';
-    this.root.append(reticle);
+    this.minimapLegend.innerHTML =
+      '<span class="mm-key you">YOU</span><span class="mm-key foe">FOE</span><span class="mm-key named">NAMED</span><span class="mm-key land">LAND</span>';
+    this.root.append(this.minimap, this.minimapLegend);
   }
 
   setVisible(v: boolean): void {
@@ -160,10 +197,21 @@ export class HUD {
 
   setMinimapVisible(v: boolean): void {
     show(this.minimap, v);
+    show(this.minimapLegend, v);
   }
 
   setScale(scale: number): void {
     this.root.style.setProperty('--hud-local-scale', String(scale));
+  }
+
+  /** Overlay lane choreography — enter/exit timing for intro → plate → execute. */
+  setOverlayLane(lane: OverlayLane, timing: LaneTiming, emphasizePlate: boolean, hidePlate: boolean): void {
+    this.root.dataset.overlayLane = lane;
+    this.root.style.setProperty('--overlay-enter-ms', `${timing.enterMs}ms`);
+    this.root.style.setProperty('--overlay-exit-ms', `${timing.exitMs}ms`);
+    this.root.style.setProperty('--plate-delay-ms', `${timing.plateDelayMs}ms`);
+    this.plate.classList.toggle('plate-emphasis', emphasizePlate);
+    this.plate.classList.toggle('plate-lane-hidden', hidePlate);
   }
 
   /* ============================================================
@@ -178,23 +226,32 @@ export class HUD {
     enemies: Enemy[],
     shrines: Array<{ position: { x: number; z: number }; used: boolean }>
   ): void {
+    this.pulseT += dt;
     const frac = Math.max(0, player.stats.hp / player.stats.maxHp);
-    this.hpFill.style.transform = `scaleX(${frac})`;
+    setMeterRatio(this.vitalityMeter, frac, this.ghostTimer > 0 ? this.ghostRatio : frac);
     this.hpText.textContent = `${Math.ceil(player.stats.hp)} / ${player.stats.maxHp}`;
     if (frac < this.lastHp) {
+      this.ghostRatio = this.lastHp;
       this.ghostTimer = 0.55;
-    } else {
-      this.hpGhost.style.transform = `scaleX(${frac})`;
+      this.vitalityMeter.classList.add('meter-hit');
+      window.setTimeout(() => this.vitalityMeter.classList.remove('meter-hit'), 220);
     }
     if (this.ghostTimer > 0) {
       this.ghostTimer -= dt;
-      if (this.ghostTimer <= 0) this.hpGhost.style.transform = `scaleX(${frac})`;
+      if (this.ghostTimer <= 0) this.ghostRatio = frac;
     }
     this.lastHp = frac;
 
     const sf = player.stats.surgeFrac;
     show(this.surgeWrap, sf > 0.001 || player.stats.surgeMax <= 0);
-    this.surgeFill.style.transform = `scaleX(${sf})`;
+    const filled = sf * SURGE_SEGMENTS;
+    for (let i = 0; i < this.surgePips.length; i++) {
+      const pip = this.surgePips[i];
+      const seg = Math.max(0, Math.min(1, filled - i));
+      pip.classList.toggle('ready', seg >= 0.995);
+      pip.classList.toggle('partial', seg > 0.05 && seg < 0.995);
+      pip.style.setProperty('--fill', String(seg));
+    }
     this.surgeWrap.classList.toggle('full', sf >= 0.995);
     if (sf >= 0.995 && !this.lastSurgeFull) this.surgeWrap.classList.add('ready-flash');
     else if (sf < 0.995) this.surgeWrap.classList.remove('ready-flash');
@@ -216,10 +273,15 @@ export class HUD {
     }
 
     this.areaLabel.innerHTML = `${world.areaName}<br><span style="opacity:.6">${world.ageName}</span>`;
+    const turnLine = world.worldPulse
+      ? `<span class="hud-world-pulse">${world.worldPulse}</span><br>`
+      : `<span style="opacity:.45">TURN ${world.turn}</span><br>`;
     if (world.inCombat) {
-      this.worldLabel.innerHTML = world.heat !== undefined ? `HEAT <b>${Math.round(world.heat)}</b> ${world.heatLabel ?? ''}` : '';
+      this.worldLabel.innerHTML =
+        turnLine + (world.heat !== undefined ? `HEAT <b>${Math.round(world.heat)}</b> ${world.heatLabel ?? ''}` : '');
     } else {
       this.worldLabel.innerHTML =
+        turnLine +
         (world.heat !== undefined ? `HEAT <b>${Math.round(world.heat)}</b> ${world.heatLabel ?? ''}<br>` : '') +
         (world.remnants !== undefined ? `REMNANTS <b>${world.remnants}</b> <span style="opacity:.55">run</span><br>` : '') +
         (world.essence !== undefined ? `ESSENCE <b>${world.essence}</b> <span style="opacity:.55">keep</span>` : '');
@@ -241,6 +303,7 @@ export class HUD {
       this.tutorialBox.classList.add('hidden');
     }
 
+    this.tickPlateQuote(dt);
     this.updateTargetPlate(target);
 
     if (this.bannerTimer > 0) {
@@ -251,40 +314,75 @@ export class HUD {
     this.drawMinimap(player, enemies, shrines, world);
   }
 
+  private tickPlateQuote(dt: number): void {
+    if (this.plateQuoteTimer <= 0 || this.plateQuoteIdx >= this.plateQuoteFull.length) return;
+    this.plateQuoteTimer -= dt;
+    while (this.plateQuoteTimer <= 0 && this.plateQuoteIdx < this.plateQuoteFull.length) {
+      this.plateQuoteIdx++;
+      this.plateQuote.textContent = this.plateQuoteFull.slice(0, this.plateQuoteIdx);
+      this.plateQuoteTimer += 0.032;
+    }
+    if (this.plateQuoteIdx >= this.plateQuoteFull.length) this.plateQuote.classList.remove('typing');
+  }
+
   private updateTargetPlate(t: Enemy | null): void {
-    if (!t || !t.alive) {
+    if (!t || !t.alive || this.plate.classList.contains('plate-lane-hidden')) {
       show(this.plate, false);
+      this.plateTargetUid = -1;
       return;
     }
     show(this.plate, true);
     const pf = t.combat.postureFrac;
     this.platePostureFill.style.transform = `scaleX(${pf})`;
-    // The bar warms toward white as it fills, so you can see a break coming.
     this.platePostureFill.style.background = pf > 0.8 ? '#ffffff' : css(SIGNAL.posture);
-    show(this.plateBroken, t.combat.broken);
-    show(this.platePosture, !t.combat.broken);
+    const broken = t.combat.broken;
+    show(this.plateBroken, broken);
+    show(this.platePosture, !broken);
+    if (broken && !this.wasPostureBroken) {
+      this.platePosture.classList.add('posture-break');
+      window.setTimeout(() => this.platePosture.classList.remove('posture-break'), 680);
+    }
+    this.wasPostureBroken = broken;
+
     const n = t.nemesis;
     this.plateBarFill.style.transform = `scaleX(${Math.max(0, t.hp / t.maxHp)})`;
+    this.plateGlyph.textContent = ARCH_GLYPH[n.archetype] ?? '▽';
+    this.plateGlyph.style.color = t.named ? accentColorFor(n) : '#6d6a63';
+
+    if (t.uid !== this.plateTargetUid) {
+      this.plateTargetUid = t.uid;
+      this.plate.classList.remove('plate-enter');
+      void this.plate.offsetWidth;
+      this.plate.classList.add('plate-enter');
+      const raw = t.named ? (this.tauntLineFor?.(n, n.appearanceSeed) ?? pickLine(n, 'taunt', n.appearanceSeed)) : '';
+      this.plateQuoteFull = raw ? `"${raw.toUpperCase()}"` : '';
+      this.plateQuoteIdx = 0;
+      this.plateQuote.textContent = '';
+      this.plateQuoteTimer = raw ? 0.18 : 0;
+      this.plateQuote.classList.toggle('typing', !!raw);
+      show(this.plateQuote, !!raw);
+    }
+
     if (t.named) {
       this.plateName.textContent = n.name.toUpperCase();
       this.plateTitle.textContent = n.title;
       const rel = relationshipLabel(n);
-      const bits: string[] = [rankName(n.rank), `LVL ${n.level}`];
+      const kickers: string[] = [rankName(n.rank), `LVL ${n.level}`];
       const steel = n.stolen.find((s) => s.kind === 'weapon');
-      if (steel) bits.push(`HAS YOUR ${steel.name}`);
-      else if (rel) bits.push(rel);
-      else if (n.killsAgainstPlayer > 0) bits.push(`KILLED YOU ${n.killsAgainstPlayer}`);
+      if (steel) kickers.push(`HAS YOUR ${steel.name}`);
+      else if (rel) kickers.push(rel);
+      else if (n.killsAgainstPlayer > 0) kickers.push(`KILLED YOU ${n.killsAgainstPlayer}`);
       if (n.signatureKnown && n.signatureId && n.signatureId !== 'none') {
-        bits.push(n.signatureId.replace(/_/g, ' ').toUpperCase());
+        kickers.push(n.signatureId.replace(/_/g, ' ').toUpperCase());
       }
-      this.plateMeta.textContent = bits.join('  ·  ');
+      this.plateKickers.textContent = kickers.join('  ·  ');
+      this.plateMeta.textContent = '';
       this.plateName.style.color = accentColorFor(n);
     } else {
-      // Grunts get a plate too — posture is a second health bar and it has to
-      // be visible to be a target.
       this.plateName.textContent = n.archetype.toUpperCase();
       this.plateTitle.textContent = '';
-      this.plateMeta.textContent = t.poisoned ? 'POISONED' : t.slowTimer > 0 ? 'CRIPPLED' : '';
+      this.plateKickers.textContent = t.poisoned ? 'POISONED' : t.slowTimer > 0 ? 'CRIPPLED' : '';
+      this.plateMeta.textContent = '';
       this.plateName.style.color = '#9aa1ad';
     }
   }
@@ -296,7 +394,7 @@ export class HUD {
   setSkills(slots: SkillHudState[], surgeFrac: number): void {
     while (this.skillSlots.length < slots.length) {
       const slot = div('skill-slot');
-      slot.append(div('skill-icon'), div('skill-cd'), div('skill-bind'), div('skill-name'));
+      slot.append(div('skill-icon'), div('skill-cd'), div('skill-ready-ring'), div('skill-bind'), div('skill-name'));
       this.skillRow.append(slot);
       this.skillSlots.push(slot);
     }
@@ -355,7 +453,6 @@ export class HUD {
     if (!this.toastsEnabled) return;
     const key = text.toUpperCase().trim();
     const now = performance.now();
-    // Dedupe identical / near-identical lines firing in the same beat.
     if (key === this.lastToastKey && now - this.lastToastAt < 1000) return;
     const prefix = key.slice(0, 28);
     if (prefix.length >= 12 && prefix === this.lastToastKey.slice(0, 28) && now - this.lastToastAt < 700) return;
@@ -363,40 +460,39 @@ export class HUD {
     this.lastToastAt = now;
 
     const t = div(`toast ${tone === 'neutral' ? '' : tone}`.trim(), key);
-    this.toasts.append(t);
+    this.toasts.prepend(t);
     window.setTimeout(() => {
       t.classList.add('fade-out');
       window.setTimeout(() => t.remove(), 520);
     }, ttl * 1000);
-    while (this.toasts.childElementCount > 4) this.toasts.firstElementChild?.remove();
+    while (this.toasts.childElementCount > 3) this.toasts.lastElementChild?.remove();
   }
 
-  /**
-   * A named arrival owns the bottom-centre column. Toasts and the interact
-   * prompt live there too, so while a card is up they lift clear of it
-   * instead of printing through the nemesis's name. Nothing is dropped — the
-   * kill feed keeps running, just higher.
-   */
   setStoryMode(on: boolean): void {
     this.root.classList.toggle('story-centre', on);
   }
 
   setCombatFocus(on: boolean): void {
+    this.combatFocusOn = on;
     this.root.classList.toggle('combat-focus', on);
+    this.vignette.classList.toggle('combat-vignette', on);
   }
 
-  /** Dim "NEXT · …" while another overlay owns the frame. */
   setNextOverlay(label: string | null): void {
     if (!label) {
       this.nextEl.textContent = '';
       this.nextEl.classList.add('hidden');
+      this.nextEl.classList.remove('next-cinematic');
       return;
     }
     this.nextEl.textContent = `NEXT · ${label}`;
     this.nextEl.classList.remove('hidden');
+    this.nextEl.classList.add('next-cinematic');
+    void this.nextEl.offsetWidth;
+    this.nextEl.classList.add('next-enter');
+    window.setTimeout(() => this.nextEl.classList.remove('next-enter'), 640);
   }
 
-  /** True while the area banner owns the centre of the screen. */
   get bannerActive(): boolean {
     return this.bannerTimer > 0;
   }
@@ -416,15 +512,12 @@ export class HUD {
     this.banner.append(n);
     if (sub) this.banner.append(div('amod', sub));
     show(this.banner, true);
+    this.banner.classList.remove('banner-enter');
+    void this.banner.offsetWidth;
+    this.banner.classList.add('banner-enter');
     this.bannerTimer = 2.6;
   }
 
-  /**
-   * A nemesis arrival owns the centre of the screen. The area banner is the
-   * lower-priority message, so it gets out of the way rather than drawing
-   * through the arrival card.
-   */
-  /** Hide without discarding content — restored when the lane frees up. */
   setAreaBannerVisible(visible: boolean): void {
     show(this.banner, visible);
   }
@@ -435,17 +528,25 @@ export class HUD {
   }
 
   damageVignette(strength: number): void {
-    this.vignette.style.boxShadow = `inset 0 0 200px 40px rgba(255,40,20,${Math.min(0.65, strength)})`;
+    const boost = this.combatFocusOn ? 1.25 : 1;
+    this.vignette.style.boxShadow = `inset 0 0 200px 40px rgba(255,40,20,${Math.min(0.65, strength * boost)})`;
     window.setTimeout(() => {
-      this.vignette.style.boxShadow = 'inset 0 0 200px 40px rgba(255,40,20,0)';
+      if (!this.combatFocusOn) {
+        this.vignette.style.boxShadow = 'inset 0 0 200px 40px rgba(255,40,20,0)';
+      }
     }, 90);
   }
 
-  /** Low-health pulse, called every frame. */
   setLowHealth(frac: number): void {
     if (frac < 0.28) {
-      const pulse = 0.16 + Math.sin(performance.now() * 0.006) * 0.1;
-      this.vignette.style.boxShadow = `inset 0 0 220px 60px rgba(255,30,10,${pulse})`;
+      const base = this.combatFocusOn ? 0.22 : 0.16;
+      const pulse = base + Math.sin(performance.now() * 0.006) * 0.1;
+      const spread = this.combatFocusOn ? 280 : 220;
+      this.vignette.style.boxShadow = `inset 0 0 ${spread}px 60px rgba(255,30,10,${pulse})`;
+    } else if (this.combatFocusOn) {
+      this.vignette.style.boxShadow = 'inset 0 0 260px 80px rgba(255,30,10,0.08)';
+    } else {
+      this.vignette.style.boxShadow = 'inset 0 0 200px 40px rgba(255,40,20,0)';
     }
   }
 
@@ -479,16 +580,16 @@ export class HUD {
     const cx = S / 2;
     const cy = S / 2;
     ctx.clearRect(0, 0, S, S);
-    ctx.fillStyle = 'rgba(7,7,10,0.65)';
+    ctx.fillStyle = 'rgba(7,7,10,0.72)';
     ctx.fillRect(0, 0, S, S);
 
     for (const a of AREAS) {
       ctx.beginPath();
       ctx.arc(cx + a.cx * scale, cy + a.cz * scale, a.radius * scale, 0, Math.PI * 2);
       const hex = world.areaColors?.[a.id];
-      ctx.fillStyle = hex ? hex + '22' : 'rgba(255,255,255,0.045)';
+      ctx.fillStyle = hex ? hex + '33' : 'rgba(255,255,255,0.045)';
       ctx.fill();
-      ctx.strokeStyle = hex ? hex + '99' : 'rgba(255,255,255,0.10)';
+      ctx.strokeStyle = hex ? hex + 'aa' : 'rgba(255,255,255,0.12)';
       ctx.lineWidth = 1;
       ctx.stroke();
     }
@@ -510,16 +611,21 @@ export class HUD {
       const y = cy + e.position.z * scale;
       if (e.named) {
         ctx.fillStyle = accentColorFor(e.nemesis);
-        ctx.fillRect(x - 2, y - 2, 4, 4);
+        ctx.fillRect(x - 2.5, y - 2.5, 5, 5);
       } else {
-        ctx.fillStyle = 'rgba(200,90,70,0.75)';
-        ctx.fillRect(x - 1, y - 1, 2, 2);
+        ctx.fillStyle = 'rgba(200,90,70,0.8)';
+        ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
       }
     }
 
-    // player
     const px = cx + player.position.x * scale;
     const py = cy + player.position.z * scale;
+    const pulse = 0.55 + Math.sin(this.pulseT * 4.2) * 0.35;
+    ctx.beginPath();
+    ctx.arc(px, py, 5 + pulse * 2, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(196,255,46,${0.25 + pulse * 0.35})`;
+    ctx.lineWidth = 1;
+    ctx.stroke();
     ctx.save();
     ctx.translate(px, py);
     ctx.rotate(-player.facing);

@@ -25,8 +25,8 @@ function check(list: WiringTestResult[], name: string, ok: boolean, detail: stri
   list.push({ name, ok, detail, category });
 }
 
-/** UI roots that Game.ts mounts on boot. */
-const UI_ROOT_IDS = [
+/** UI roots mounted on boot (Wave E: god/comic/debug/ai load on first use). */
+const BOOT_UI_ROOT_IDS = [
   'hud',
   'title-screen',
   'hierarchy-screen',
@@ -35,15 +35,10 @@ const UI_ROOT_IDS = [
   'power-screen',
   'choice-screen',
   'pause-screen',
-  'debug',
-  'ai-layer',
   'build-screen',
-  'god-screen',
-  'primer-screen',
-  'legends-screen',
-  'god-end-screen',
-  'comic-viewer',
 ] as const;
+
+const LAZY_UI_ROOT_IDS = ['debug', 'ai-layer', 'god-screen', 'primer-screen', 'legends-screen', 'god-end-screen', 'comic-viewer'] as const;
 
 export interface WiringRuntimeContext {
   comicServiceReady: boolean;
@@ -86,12 +81,17 @@ export function probeWiringRuntime(input: {
 export function runWiringSelfTest(ctx: WiringRuntimeContext): WiringSelfTestReport {
   const results: WiringTestResult[] = [];
 
-  for (const id of UI_ROOT_IDS) {
+  for (const id of BOOT_UI_ROOT_IDS) {
     const el = document.getElementById(id);
     check(results, `UI root #${id} mounted`, !!el, el ? 'present' : 'missing from #ui', 'wired');
   }
 
-  check(results, 'ComicService constructed on boot', ctx.comicServiceReady, ctx.comicServiceReady ? 'ready' : 'not initialised', 'wired');
+  for (const id of LAZY_UI_ROOT_IDS) {
+    const el = document.getElementById(id);
+    check(results, `Lazy UI root #${id}`, !!el, el ? 'loaded' : 'deferred until first use', 'gap');
+  }
+
+  check(results, 'ComicService constructed on boot', ctx.comicServiceReady, ctx.comicServiceReady ? 'ready' : 'lazy — loads on first encounter', 'gap');
 
   check(
     results,

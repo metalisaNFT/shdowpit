@@ -4,8 +4,10 @@
 
 import './style.css';
 import { Game } from './core/Game';
+import { syncPaletteToCss } from './ui/paletteSync';
 
 function boot(): void {
+  syncPaletteToCss();
   const canvas = document.getElementById('viewport') as HTMLCanvasElement | null;
   const ui = document.getElementById('ui');
   if (!canvas || !ui) {

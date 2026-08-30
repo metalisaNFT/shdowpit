@@ -7,6 +7,7 @@
  */
 
 import { button, clear, div, esc, show } from './Dom';
+import { trapFocus, type FocusTrap } from './focusTrap';
 
 export interface TitleInfo {
   hasSave: boolean;
@@ -37,6 +38,8 @@ export interface TitleHandlers {
   onSettings?: () => void;
   /** true when a god-layer run is suspended in the save */
   hasGodRun?: boolean;
+  /** true when a mid-descent pit checkpoint exists */
+  hasPitRun?: boolean;
 }
 
 export class TitleScreen {
@@ -45,9 +48,12 @@ export class TitleScreen {
   private actionsEl = div('actions');
   private confirmingReset = false;
   private confirmingNewWorld = false;
+  private focusTrap: FocusTrap | null = null;
 
   constructor() {
     this.root.id = 'title-screen';
+    this.root.setAttribute('role', 'dialog');
+    this.root.setAttribute('aria-modal', 'true');
     const h1 = document.createElement('h1');
     h1.textContent = 'SHDOWPIT';
     const sub = div('title-sub', 'YOU ARRANGE THE WORLD');
@@ -104,7 +110,7 @@ export class TitleScreen {
 
     const secondaryBlock = div('title-mode title-mode-secondary');
     secondaryBlock.append(div('title-kicker', 'ONE RUN'));
-    const descend = button('DESCEND ALONE', alone);
+    const descend = button(handlers.hasPitRun ? 'CONTINUE DESCENT' : 'DESCEND ALONE', alone);
     descend.id = 'title-descend';
     descend.classList.add('secondary');
     descend.setAttribute('aria-pressed', 'false');
@@ -169,9 +175,13 @@ export class TitleScreen {
     }
 
     show(this.root, true);
+    this.focusTrap?.release();
+    this.focusTrap = trapFocus(this.root);
   }
 
   hide(): void {
+    this.focusTrap?.release();
+    this.focusTrap = null;
     show(this.root, false);
   }
 

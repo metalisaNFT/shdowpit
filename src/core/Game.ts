@@ -5,6 +5,9 @@
 
 import * as THREE from 'three';
 import { GameLoop } from './GameLoop';
+import { RenderHost, readBootQuality } from './RenderHost';
+import { UIOrchestrator } from './UIOrchestrator';
+import { PitSession } from './PitSession';
 import { Input } from './Input';
 import { SaveSystem, type Quality, type Settings } from './SaveSystem';
 import { createBus, type Bus } from './Events';
@@ -17,9 +20,10 @@ import { makeEvent } from '../world/WorldEvent';
 import type { WorldEvent } from '../world/WorldEvent';
 import { composeRunRecap, composeWorldTurnRecap } from '../story/StoryRecap';
 import {
+  contextualLineFor,
   encounterHeadlineFor,
-  observeEncounter,
-  observeRecapBeats,
+  exchangeScriptFor,
+  lastWordsFor,
   arcVoiceFor,
   journeyLineFor,
   observeArcs,
@@ -27,15 +31,35 @@ import {
   observeTimeline,
   recapBeatKey,
   recapBeatLineFor,
+  tauntLineFor,
   timelineDetailFor,
   type EncounterOverlayContext,
 } from '../story/StoryAI';
+import { factsForNemesis } from '../story/NemesisFactsProjection';
+import { exchangeContextForEncounter } from '../data/dialogue';
+import { NarrativeObserver } from '../narrative/NarrativeObserver';
 import { buildTimeline } from '../story/StoryTimeline';
 import { runStorySelfTest, formatStorySelfTest } from '../story/StorySelfTest';
+import { runRunStorySelfTest, formatRunStorySelfTest } from '../story/RunStory/RunStorySelfTest';
 import { runWiringSelfTest, formatWiringSelfTest, probeWiringRuntime } from './WiringSelfTest';
+import {
+  ensureGodLayer,
+  ensureDebugOverlay,
+  ensureComicPipeline,
+  mountGodUi,
+} from './LazyBundles';
 import { inspectArc, inspectEdge, inspectNode, inspectRecap } from '../story/StoryInspector';
 import { buildStoryModel } from '../story/StoryModel';
-import { simulateTurn, simulateSuccession } from '../world/WorldSimulation';
+import { simulateTurn, simulateSuccession } from '../sim/OffscreenBeat';
+import { tickBackgroundWorld, emptyBackgroundTickState } from '../sim/BackgroundTick';
+import {
+  onPitEnemyEscape,
+  onPitEnemyKilled,
+  onPitHumiliation,
+  onPitPlayerKilled,
+  onPitScarApplied,
+  onVendettaProgress,
+} from '../sim/PitSimBridge';
 import { heatLabel, addHeat, syncHeatGates, crossedThreshold, spendSpawn } from '../world/Heat';
 import { applyVerticalSlice } from '../world/VerticalSlice';
 import { TutorialController, markTutorial, tutorialDone, type TutorialId } from './Tutorial';
@@ -43,11 +67,11 @@ import { TutorialController, markTutorial, tutorialDone, type TutorialId } from 
 import { NemesisManager } from '../nemesis/NemesisManager';
 import { fullName, rankIndex, type Archetype, type Nemesis, type Rank, type WeaponType } from '../nemesis/Nemesis';
 import { recomputePower } from '../nemesis/NemesisGenerator';
-import { applyScar, remember, SCAR_NAMES } from '../nemesis/NemesisMemory';
+import { applyScar, remember, setRememberHook, SCAR_NAMES } from '../nemesis/NemesisMemory';
 import { breakBond, makeRivals } from '../nemesis/NemesisRelationships';
 import { NemesisEncounterDirector, aidCallout, betrayalCallout, duelCallout } from '../nemesis/NemesisEncounterDirector';
 import { classifyEncounter, type EncounterKind } from '../nemesis/EncounterKind';
-import { encounterLine, relationshipLabel } from '../nemesis/EncounterCopy';
+import { encounterLine, encounterLineContext, relationshipLabel } from '../nemesis/EncounterCopy';
 import { rankName } from '../nemesis/NemesisManager';
 import { accentColorFor } from '../nemesis/NemesisAppearance';
 import { signatureDef, signatureEventMatches } from '../data/signatures';
@@ -61,11 +85,11 @@ import { ThirdPersonCamera } from '../camera/ThirdPersonCamera';
 import { Particles } from '../fx/Particles';
 import { VFX } from '../fx/VFX';
 import { DamageNumbers } from '../fx/DamageNumbers';
-import { PostFX } from '../fx/PostFX';
 import { crossedFootstep, buildAttackTimeline } from '../anim/AnimEvents';
 import { AudioManager } from '../audio/AudioManager';
 
 import { HUD } from '../ui/HUD';
+import { isNativeKeyTarget } from '../ui/Dom';
 import { decideOverlays } from '../ui/OverlayGate';
 import { TitleScreen } from '../ui/TitleScreen';
 import { HierarchyScreen } from '../ui/HierarchyScreen';
@@ -74,14 +98,16 @@ import { NemesisIntro } from '../ui/NemesisIntro';
 import { ChoiceOverlay } from '../ui/ChoiceOverlay';
 import { PowerSelect } from '../ui/PowerSelect';
 import { PauseScreen } from '../ui/PauseScreen';
-import { DebugOverlay, type DebugHooks, type GodDebugState } from '../ui/DebugOverlay';
-import { AIStatus } from '../ui/AIStatus';
+import { lazyUiStub } from '../ui/lazyUiStub';
+import type { DebugOverlay, DebugHooks, GodDebugState } from '../ui/DebugOverlay';
+import type { AIStatus } from '../ui/AIStatus';
 import { BuildScreen } from '../ui/BuildScreen';
-import { ComicViewer } from '../ui/ComicViewer';
-import { ComicService } from '../comic/ComicService';
+import type { ComicViewer } from '../ui/ComicViewer';
+import type { ComicService } from '../comic/ComicService';
 import type { ComicQualityProfileId } from '../comic/Types';
 
-import { GodRun } from '../god/GodRun';
+import type { GodRun } from '../god/GodRun';
+import { applyGoalAfterAction } from '../god/Autonomy';
 import { addChaos, chaosTier } from '../god/Influence';
 import { livingFactions } from '../god/Factions';
 import {
@@ -94,7 +120,6 @@ import {
   legendVoiceFor,
   mechanicalSnapshot,
   observeEnding,
-  observeGodBeats,
   observeInspect,
   observeAftermath,
   observeSituations,
@@ -103,11 +128,12 @@ import {
   situationKey,
   recapKey,
   recapLineFor,
+  endScreenVoicesFor,
 } from '../god/GodAI';
-import { GodScreen } from '../ui/GodScreen';
-import { PrimerScreen } from '../ui/GodTutorial';
+import type { GodScreen } from '../ui/GodScreen';
+import type { PrimerScreen } from '../ui/GodTutorial';
+import type { LegendsScreen, RunEndScreen } from '../ui/LegendsScreen';
 import { Guide, STEP_COUNT, STEP_ORDER, pickLesson, type GuideEvent, type Lesson } from '../god/Teaching';
-import { LegendsScreen, RunEndScreen } from '../ui/LegendsScreen';
 import { BEAT_RANK, simOf, type Beat, type RunOutcome } from '../god/GodTypes';
 import { GodClock, pickPauseBeat, pickSpectacleBeat, type GodClockState } from '../god/Clock';
 import { GodSpectator } from '../ui/GodSpectator';
@@ -192,7 +218,9 @@ const COMIC_EXPIRE = 14;
 const RELIC_ORDER = ['sunblade', 'ashfang', 'longtooth'];
 
 export class Game {
-  private renderer: THREE.WebGLRenderer;
+  private renderHost!: RenderHost;
+  private uiOrchestrator!: UIOrchestrator;
+  private pitSession = new PitSession();
   private input: Input;
   private bus: Bus = createBus();
   private saveSys = new SaveSystem();
@@ -202,8 +230,12 @@ export class Game {
   private damageNumbers = new DamageNumbers();
   private prevLocoPhase = 0;
   private arena = new Arena();
-  private post!: PostFX;
-  private camera: ThirdPersonCamera;
+  private get renderer(): THREE.WebGLRenderer {
+    return this.renderHost.renderer;
+  }
+  private get camera(): ThirdPersonCamera {
+    return this.renderHost.camera;
+  }
   private mgr: NemesisManager;
   private world: World;
   private player = new Player();
@@ -217,6 +249,7 @@ export class Game {
    */
   private ai = new AIContentService();
   private encounter = new NemesisEncounterDirector();
+  private narrative = new NarrativeObserver();
   /** QA + death analysis. Off by default; see core/Telemetry.ts. */
   readonly telemetry = new Telemetry();
 
@@ -272,6 +305,8 @@ export class Game {
   private pendingSpectacleBeat: Beat | null = null;
   /** the roster screen is shared; this says where CLOSE should return to */
   private hierarchyFromGod = false;
+  /** hierarchy opened from death report — CLOSE / Esc should restore the report */
+  private hierarchyFromReport = false;
   private lockGrace = 0;
   private deathTimer = 0;
   private pendingKiller: Enemy | null = null;
@@ -305,6 +340,13 @@ export class Game {
   private calmTime = 0;
   /** Seconds before another optional offer may open after one closed. */
   private offerQuiet = 0;
+  /** Pit absence accumulator for silent background world beats. */
+  private backgroundTick = emptyBackgroundTickState();
+  /** Tracks area transitions for background tick acceleration. */
+  private pitAreaId: string | null = null;
+  /** Brief HUD headline after a world turn advances in-session. */
+  private worldPulseTimer = 0;
+  private worldPulseText = '';
   /** Fullscreen offers waiting for intro / lull to finish (FIFO). */
   private pendingModals: { label: string; open: () => void }[] = [];
   /** Real-time seconds of idle with no intro, before a queued modal may open. */
@@ -316,7 +358,6 @@ export class Game {
   private successionCommitted = false;
   private successionEvents: WorldEvent[] | null = null;
   private quality: Quality;
-  private lowFpsTime = 0;
   private markedUid = -1;
   private uiRoot: HTMLElement;
   private comic!: ComicService;
@@ -335,25 +376,11 @@ export class Game {
 
   constructor(canvas: HTMLCanvasElement, uiRoot: HTMLElement) {
     this.uiRoot = uiRoot;
+    this.uiOrchestrator = new UIOrchestrator(uiRoot);
 
-    // Antialiasing is fixed at context creation, so the stored/URL quality has
-    // to be read before the renderer exists.
     const boot = readBootQuality();
     this.quality = boot;
-    this.renderer = new THREE.WebGLRenderer({
-      canvas,
-      antialias: boot === 'high',
-      powerPreference: 'high-performance',
-    });
-    this.renderer.setPixelRatio(pixelRatioFor(boot));
-    this.renderer.setSize(window.innerWidth, window.innerHeight, false);
-    this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-
-    this.camera = new ThirdPersonCamera(window.innerWidth / window.innerHeight);
-    this.camera.setArena(this.arena);
-    this.post = new PostFX(this.renderer, this.arena.scene, this.camera.camera);
-    this.post.configure(boot, window.innerWidth, window.innerHeight);
+    this.renderHost = new RenderHost(canvas, this.arena, boot);
 
     this.input = new Input(canvas);
     this.mgr = new NemesisManager(this.saveSys, this.bus);
@@ -367,23 +394,23 @@ export class Game {
       power: new PowerSelect(),
       choice: new ChoiceOverlay(),
       pause: new PauseScreen(),
-      debug: new DebugOverlay(),
-      aiStatus: new AIStatus(),
       build: new BuildScreen(),
-      god: new GodScreen(),
-      primer: new PrimerScreen(),
-      legends: new LegendsScreen(),
-      godEnd: new RunEndScreen(),
-      comic: new ComicViewer(),
+      debug: lazyUiStub<DebugOverlay>(),
+      aiStatus: lazyUiStub<AIStatus>(),
+      god: lazyUiStub<GodScreen>(),
+      primer: lazyUiStub<PrimerScreen>(),
+      legends: lazyUiStub<LegendsScreen>(),
+      godEnd: lazyUiStub<RunEndScreen>(),
+      comic: lazyUiStub<ComicViewer>(),
     };
-    for (const k of Object.keys(this.ui) as Array<keyof typeof this.ui>) {
-      if (k === 'aiStatus') continue;
+    for (const k of ['hud', 'title', 'hierarchy', 'report', 'intro', 'power', 'choice', 'pause', 'build'] as const) {
       uiRoot.append(this.ui[k].root);
     }
-    uiRoot.append(this.ui.aiStatus.root);
+    this.uiRoot = uiRoot;
     this.ui.hud.root.append(this.damageNumbers.root);
     this.setupAI();
     this.bindEncounter();
+    this.ui.hud.bindTauntLine((n, salt) => tauntLineFor(this.ai, n, salt));
 
     this.world = new World(this.mgr, this.arena, this.arena.scene, this.bus, {
       onNamedArrival: (e, salt, ctx) => this.onNamedArrival(e, salt, ctx),
@@ -475,7 +502,6 @@ export class Game {
     this.combat.telemetry = this.telemetry;
     this.combat.abilities = this.abilities;
     this.combat.setDirector(this.world.director);
-    this.setupComic();
 
     this.bus.on('worldEvent', (ev) => {
       if (ev.important && this.mode === 'playing') this.ui.hud.toast(ev.text, ev.tone === 'bad' ? 'hot' : 'gold');
@@ -502,7 +528,7 @@ export class Game {
     this.bus.on('nemesisReturned', ({ nemesis }) => {
       if (this.mode === 'playing') this.ui.hud.toast(`${fullName(nemesis)} RETURNED`, 'hot', 4.5);
       this.aiDirty = true;
-      if (this.mode === 'playing') this.comic?.onNamedIntro(nemesis.id, 'FROM THE DEAD');
+      if (this.mode === 'playing') void this.ensureComicReady().then(() => this.comic?.onNamedIntro(nemesis.id, 'FROM THE DEAD'));
     });
     this.bus.on('namedStrike', ({ nemesisId, fromPlayer, amount, critical, attackLabel }) => {
       if (fromPlayer) {
@@ -555,9 +581,11 @@ export class Game {
      Comic combat (presentation — simulation facts only)
      ============================================================ */
 
-  private setupComic(): void {
+  private async ensureComicReady(): Promise<void> {
+    const pipe = await ensureComicPipeline(this.uiRoot, this.ui);
+    if (this.comic) return;
     const g = this;
-    this.comic = new ComicService({
+    this.comic = new pipe.ComicService({
       renderer: this.renderer,
       scene: this.arena.scene,
       backend: this.ai.backend,
@@ -633,6 +661,10 @@ export class Game {
   }
 
   private tryPresentComic(): void {
+    void this.ensureComicReady().then(() => this.tryPresentComicNow());
+  }
+
+  private tryPresentComicNow(): void {
     if (!this.pendingComic || this.comicOpen) return;
     if (this.mode !== 'playing') return;
     if (this.pendingModals.length) return;
@@ -708,6 +740,10 @@ export class Game {
    * path. AI content arrives by callback and is picked up on the next render.
    */
   private setupAI(): void {
+    void import('./LazyBundles').then(({ ensureAiUi }) => ensureAiUi(this.uiRoot, this.ui)).then(() => this.wireAI());
+  }
+
+  private wireAI(): void {
     this.ai.bind({
       onStatusChange: () => {
         this.ui.aiStatus.setIndicator(this.ai.indicator());
@@ -728,7 +764,8 @@ export class Game {
         if (this.mode === 'god' && this.ui.god.visible) this.ui.god.refresh();
         if (this.mode === 'legends' && this.ui.legends.visible) this.ui.legends.refresh();
         if (this.mode === 'godend' && this.ui.godEnd.visible && this.godRun?.outcome) {
-          this.ui.godEnd.refreshVoice(recapLineFor(this.ai, this.godRun.outcome, this.godRun.god.run));
+          const v = endScreenVoicesFor(this.ai, this.godRun.outcome, this.godRun.god.run);
+          this.ui.godEnd.refreshVoice(v.subtitle, v.thesis);
         }
         // If the enemy on screen just earned a title, say so — quietly.
         if (kind === 'identity' && this.mode === 'playing') {
@@ -754,6 +791,13 @@ export class Game {
       if (document.visibilityState === 'hidden') this.flushAI();
     });
     this.ai.init();
+    this.narrative.bind({
+      ai: this.ai,
+      mgr: this.mgr,
+      syncWorld: () => this.syncAIWorld(),
+      god: () => this.godRun?.god ?? null,
+    });
+    setRememberHook((n, type) => this.narrative.onRemember(n, type));
     window.setInterval(() => {
       if (this.ai.backend.localRunning) void this.ai.backend.localHeartbeat();
     }, 20_000);
@@ -802,16 +846,20 @@ export class Game {
       portraitFor: (n) => g.ai.portraitFor(n),
       titleFor: (n) => g.ai.titleFor(n),
       tauntFor: (n, salt) => g.ai.tauntFor(n, salt),
-      observeEncounter: (n, kind, headline, chip) => {
-        g.syncAIWorld();
-        observeEncounter(g.ai, n, kind, headline, chip, {
+      observeEncounter: (n, kind, _headline, chip) => {
+        void chip;
+        const overlay = {
           ...g.encounterAiContext,
           recentProc: g.world.run.lastProcNote || g.encounterAiContext.recentProc,
           combatNote: g.combatOverlayNote || g.encounterAiContext.combatNote,
-        });
+        };
+        g.narrative.onEncounterStart(n, kind, g.mgr.turn, overlay);
         g.encounterAiContext = {};
       },
       headlineFor: (n, kind, fallback) => encounterHeadlineFor(g.ai, n, kind, fallback),
+      contextualLineFor: (n, kind, salt, fallback) =>
+        contextualLineFor(g.ai, n, kind, encounterLineContext(kind, n), salt, fallback),
+      lastWordsFor: (n, salt) => lastWordsFor(g.ai, n, salt),
     });
   }
 
@@ -830,6 +878,16 @@ export class Game {
         const n = this.mgr.byId(id);
         return n ? n.name.toUpperCase() : '';
       },
+      richFactsFor: (n) => factsForNemesis(this.mgr, n),
+      simFor: (n) => {
+        try {
+          const s = simOf(n);
+          if (s.goal === 'survive' && !s.deeds.length && !s.kills.length) return undefined;
+          return { goal: s.goal, deeds: s.deeds.slice(-4).map((d) => d.text), kills: s.kills.length };
+        } catch {
+          return undefined;
+        }
+      },
     });
   }
 
@@ -843,8 +901,7 @@ export class Game {
    */
   private myth(n: Nemesis | null | undefined, kind: MythEventKind): void {
     if (!n) return;
-    this.syncAIWorld();
-    this.ai.onMythEvent(n, kind);
+    this.narrative.onMyth(n, kind);
     this.aiDirty = false;
     this.mgr.persist();
   }
@@ -855,40 +912,41 @@ export class Game {
    * simulation rather than tangled into it.
    */
   private mythFromEvents(events: WorldEvent[]): void {
-    for (const ev of events) {
-      const actors = ev.actors ?? [];
-      const primary = this.mgr.byId(actors[0] ?? null);
-      if (!primary) continue;
-      switch (ev.type) {
-        case 'promotion':
-          this.myth(
-            primary,
-            primary.rank === 'overlord'
-              ? 'became_overlord'
-              : primary.rank === 'warlord'
-                ? 'promoted_warlord'
-                : 'promoted_captain'
-          );
-          break;
-        case 'resurrection':
-          this.myth(primary, 'returned_from_death');
-          break;
-        case 'injury':
-        case 'mutation':
-          this.myth(primary, 'major_scar');
-          break;
-        case 'weapon_theft':
-          this.myth(primary, 'stole_weapon');
-          break;
-        case 'betrayal':
-        case 'assassination':
-        case 'duel':
-          this.myth(primary, 'killed_rival');
-          break;
-        default:
-          break;
-      }
-    }
+    this.narrative.onWorldEvents(events);
+  }
+
+  /** Toast + HUD pulse when the shared world turn advances during a pit session. */
+  private announceWorldBeat(headline?: string, message = 'THE WORLD TURNED', tone: 'gold' | 'neutral' | 'hot' = 'gold'): void {
+    const trimmed = headline?.trim();
+    this.worldPulseTimer = 4.2;
+    this.worldPulseText = trimmed ? `TURN ${this.mgr.turn} — ${trimmed.slice(0, 56)}` : `TURN ${this.mgr.turn}`;
+    const toast = trimmed ? `${message} — ${trimmed}` : message;
+    this.ui.hud.toast(toast, tone, 4.8);
+  }
+
+  private tickBackgroundWorldPlaying(dt: number): void {
+    const areaId = this.world.currentArea.id;
+    const areaJustChanged = this.pitAreaId !== null && areaId !== this.pitAreaId;
+    this.pitAreaId = areaId;
+
+    const res = tickBackgroundWorld(this.mgr, this.mgr.data.settings, this.backgroundTick, dt, {
+      inTutorial: !tutorialDone(this.mgr.data.settings.tutorial, 'basics'),
+      vendettaClimax: !!(this.world.run.vendetta?.committed && this.world.run.heat >= 80),
+      extractionActive: this.world.run.extraction.active,
+      encounterIntro: this.ui.intro.active || this.encounter.busy,
+      areaJustChanged,
+    });
+    if (!res.fired) return;
+
+    const events = res.events?.length ? res.events : this.mgr.recentEvents(1);
+    this.mythFromEvents(events);
+    this.syncAIWorld();
+    this.announceWorldBeat(
+      res.headline,
+      res.message ?? 'THE WORLD TURNED WITHOUT YOU',
+      res.important || res.eventType === 'betrayal' || res.eventType === 'death' ? 'hot' : 'gold'
+    );
+    this.mgr.persist();
   }
 
   private openAISettings(): void {
@@ -999,16 +1057,22 @@ export class Game {
       },
       status: () => {
         const st = g.ai.status();
+        const cloud = g.ai.backend.cloudStatus;
         return {
           connected: st.connected,
           verified: st.verified,
           error: st.error,
           backendReachable: st.backendReachable,
+          cloud,
+          openaiConnected: cloud.openai.connected,
+          openaiVerified: cloud.openai.verified,
+          groqConnected: cloud.groq.connected,
+          groqVerified: cloud.groq.verified,
         };
       },
-      connect: (key: string) => g.ai.backend.connect(key),
-      disconnect: () => g.ai.backend.disconnect(),
-      test: () => g.ai.backend.test(),
+      connect: (key: string, provider?: 'openai' | 'groq') => g.ai.backend.connect(key, provider ?? 'openai'),
+      disconnect: (provider?: 'openai' | 'groq') => g.ai.backend.disconnect(provider ?? 'openai'),
+      test: (provider?: 'openai' | 'groq') => g.ai.backend.test(provider ?? 'openai'),
       textAvailable: () => g.ai.backend.textAvailable,
       /* ---- LOCAL AI ENGINE (side-by-side provider) ---- */
       localStatus: () => g.ai.backend.localStatus(),
@@ -1033,7 +1097,7 @@ export class Game {
       activity: () => {
         const st = g.ai.status();
         if (st.mode === 'off') return 'Off — local generation';
-        if (!st.connected) return 'Not connected — local generation';
+        if (!g.ai.backend.textAvailable) return 'Not connected — local generation';
         if (st.active > 0) return `Generating (${st.active} active, ${st.queued} queued)`;
         if (st.queued > 0) return `${st.queued} queued`;
         const last = st.last;
@@ -1219,6 +1283,10 @@ export class Game {
     this.successionCommitted = false;
     this.successionEvents = null;
     this.dismissComic(true);
+    this.backgroundTick = emptyBackgroundTickState();
+    this.pitAreaId = null;
+    this.worldPulseTimer = 0;
+    this.worldPulseText = '';
 
     this.camera.snapBehind(this.player.position, this.player.facing);
     this.lockTargetUid = null;
@@ -1287,7 +1355,16 @@ export class Game {
    * the third-person game uses; the long game simply stops moving a hero
    * through it and starts moving the conditions around it.
    */
+  async __ensureGodLayer(): Promise<void> {
+    await ensureGodLayer();
+    await mountGodUi(this.uiRoot, this.ui);
+  }
+
   private openLongGame(): void {
+    void this.openLongGameAsync();
+  }
+
+  private async openLongGameAsync(): Promise<void> {
     this.audio.unlock();
     this.ui.title.hide();
     this.ui.pause.close();
@@ -1295,19 +1372,23 @@ export class Game {
     this.ui.hud.setVisible(false);
     this.world.endRun();
 
+    const L = await ensureGodLayer();
+    await mountGodUi(this.uiRoot, this.ui);
+    this.godGuide = new L.Guide();
+
     if (!this.godRun) {
-      this.godRun = new GodRun(this.mgr, {
-        onBeats: (beats) => this.onGodBeats(beats),
-        onEnd: (o) => this.onGodEnd(o),
+      this.godRun = new L.GodRun(this.mgr, {
+        onBeats: (beats: Beat[]) => this.onGodBeats(beats),
+        onEnd: (o: RunOutcome) => this.onGodEnd(o),
       });
     }
     const saved = this.mgr.data.god;
     if (saved && !saved.ended) {
-      this.godRun.resume(saved);
+      this.godRun!.resume(saved);
     } else {
       this.ai.invalidateGodWork();
       this.mgr.data.playerMeta.runs++;
-      this.godRun.begin(randomSeed());
+      this.godRun!.begin(randomSeed());
       this.godIdleCycles = 0;
       this.godLesson = null;
     }
@@ -1335,7 +1416,7 @@ export class Game {
     this.setupGodOracle();
     this.ui.god.present({
       run: () => this.godRun!,
-      advance: (n) => this.godAdvance(n),
+      advance: (n) => (n === 1 ? this.requestGodAdvance(1) : this.godAdvance(n)),
       intervene: (id, a, b, area) => this.godIntervene(id, a, b, area),
       openRoster: () => this.openRosterFromGod(),
       openLegends: () => this.openLegends('god'),
@@ -1410,7 +1491,7 @@ export class Game {
     if (!this.godClock) {
       this.godClock = new GodClock(this.mgr.data.settings.god);
       this.godClock.bind({
-        onAdvance: () => this.godAdvance(1),
+        onAdvance: () => this.requestGodAdvance(1),
         onStateChange: () => this.syncGodClockPhase(),
       });
     } else {
@@ -1455,23 +1536,33 @@ export class Game {
   private onGodClockDismiss(): void {
     const run = this.godRun;
     if (!run) return;
-    if (this.godClock?.waitingBeat || this.ui.god.visible) {
-      if (this.godClock?.waitingBeat) {
-        this.godClock.dismissBeat();
-        this.ui.god.dismissPauseBeat();
-      } else if (run.god.lastAftermath) {
-        if (!this.ui.god.advanceAftermathStep()) this.syncGodClockPhase();
-        return;
-      }
+
+    if (this.godClock?.waitingBeat) {
+      this.godClock.dismissBeat();
+      this.ui.god.dismissPauseBeat();
       this.syncGodClockPhase();
       return;
     }
-    if (!run.spentThisCycle) {
-      run.noteQuietAdvance();
-      this.godAdvance(1);
-    } else {
-      this.godAdvance(1);
+
+    if (this.ui.god.needsAftermathStep()) {
+      if (!this.ui.god.advanceAftermathStep()) this.syncGodClockPhase();
+      return;
     }
+
+    if (run.god.lastDescentReport) {
+      this.syncGodClockPhase();
+      return;
+    }
+
+    this.requestGodAdvance(1);
+  }
+
+  /** Advance one god cycle — marks quiet autonomy when Influence was not spent. */
+  private requestGodAdvance(cycles: number): void {
+    const run = this.godRun;
+    if (!run) return;
+    if (!run.spentThisCycle) run.noteQuietAdvance();
+    this.godAdvance(cycles);
   }
 
   private onGodSpectacleDone(): void {
@@ -1558,13 +1649,13 @@ export class Game {
       tut.godGuide = 'done';
       this.mgr.persist();
     }
-    if (this.godGuide.active) {
-      const step = this.godGuide.current!;
+    if (this.godGuide!.active) {
+      const step = this.godGuide!.current!;
       const index = STEP_ORDER.indexOf(step.id) + 1;
       this.ui.god.teach.set({ kind: 'guide', step, index, total: STEP_COUNT });
       return;
     }
-    if (this.godGuide.boardReady && this.godRun && !this.godRun.god.boardUnlocked) {
+    if (this.godGuide!.boardReady && this.godRun && !this.godRun.god.boardUnlocked) {
       this.godRun.unlockBoard();
     }
     if (this.godLesson) {
@@ -1621,7 +1712,13 @@ export class Game {
     this.hierarchyFromGod = true;
     this.mode = 'hierarchy';
     this.ui.god.hide();
-    this.ui.hierarchy.open(this.mgr, () => this.closeHierarchy(), this.ai);
+    this.ui.hierarchy.open(
+      this.mgr,
+      () => this.closeHierarchy(),
+      this.ai,
+      undefined,
+      (n) => this.narrative.onInspectNemesis(n)
+    );
   }
 
   /** The developer readout. Everything here is derived; nothing is stored for it. */
@@ -1841,7 +1938,7 @@ export class Game {
 
   private maybeGodLesson(): void {
     if (!this.godRun) return;
-    if (this.godGuide.active || this.mgr.data.settings.tutorial.skipped) {
+    if (this.godGuide!.active || this.mgr.data.settings.tutorial.skipped) {
       this.refreshGodTeach();
       return;
     }
@@ -1904,8 +2001,7 @@ export class Game {
 
   private onGodBeats(beats: Beat[]): void {
     if (this.godRun) {
-      this.syncAIWorld();
-      observeGodBeats(this.ai, this.mgr, this.godRun.god, beats);
+      this.narrative.onGodBeats(beats);
     }
     // Only the loudest beat is allowed to interrupt; everything else waits in
     // the feed, which is the difference between a story and a notification
@@ -1932,6 +2028,7 @@ export class Game {
     if (this.godRun) {
       this.syncAIWorld();
       observeEnding(this.ai, this.mgr, this.godRun.god, outcome, legends);
+      if (outcome.runStory) this.narrative.onRunStory(outcome, outcome.runStory);
     }
     this.ui.godEnd.present(
       outcome,
@@ -1956,7 +2053,11 @@ export class Game {
           this.showTitle(true);
         },
       },
-      recapLineFor(this.ai, outcome, this.godRun?.god.run ?? 0)
+      ...(() => {
+        const run = this.godRun?.god.run ?? 0;
+        const v = endScreenVoicesFor(this.ai, outcome, run);
+        return [v.subtitle, v.thesis] as const;
+      })()
     );
   }
 
@@ -2304,6 +2405,7 @@ export class Game {
     if (!this.pendingSuccession || this.successionCommitted) return this.successionEvents;
     const successionEvents = simulateSuccession(this.mgr);
     this.mythFromEvents(successionEvents);
+    this.announceWorldBeat(successionEvents.find((e) => e.important)?.text, 'THE AGE TURNS', 'gold');
     const ageEvent = this.mgr.advanceAge();
     this.rebuildArena();
     this.mgr.fillRanks();
@@ -2328,7 +2430,7 @@ export class Game {
     this.ui.hud.setVisible(false);
     const recap = composeWorldTurnRecap(this.mgr.data, events);
     this.syncAIWorld();
-    observeRecapBeats(this.ai, this.mgr, recap);
+    this.narrative.onDeathReport(recap);
     this.presentReport({
       title: 'THE SEAT IS EMPTY',
       subtitle: `${name} IS DEAD — ${this.mgr.ageState.name} BEGINS`,
@@ -2372,14 +2474,17 @@ export class Game {
     // The stylesheet keys gameplay-layer visibility off the current mode, so
     // fullscreen screens never have toasts / damage numbers / tutorial text
     // bleeding through them.
+    this.uiOrchestrator.setMode(this.mode);
+    this.uiOrchestrator.syncDataset();
     if (this.uiRoot.dataset.mode !== this.mode) this.uiRoot.dataset.mode = this.mode;
 
     switch (this.mode) {
       case 'playing':
-        this.tickPlaying(dt, rdt);
-        break;
       case 'dying':
-        this.tickDying(dt, rdt);
+        this.pitSession.tick(this.mode, {
+          tickPlaying: (d, r) => this.tickPlaying(d, r),
+          tickDying: (d, r) => this.tickDying(d, r),
+        }, dt, rdt);
         break;
       case 'god':
         this.tickGod(dt, rdt);
@@ -2397,7 +2502,7 @@ export class Game {
     this.vfx.update(dt > 0 ? dt : rdt * 0.02, rdt);
     this.damageNumbers.update(dt > 0 ? dt : rdt * 0.02, this.camera.camera);
     this.arena.update(rdt, this.loop.elapsed, this.player.position.x, this.player.position.z);
-    this.post.render();
+    this.renderHost.render();
 
     if (this.ui.debug.visible) {
       const info = this.renderer.info.render;
@@ -2643,6 +2748,8 @@ export class Game {
     this.flushSignatureCues();
     if (this.world.tickExtraction(dt, this.player)) this.finishExtraction(true);
     this.tickVendetta();
+    this.tickBackgroundWorldPlaying(dt);
+    if (this.worldPulseTimer > 0) this.worldPulseTimer -= dt;
     this.runClock += dt;
     if (this.offerQuiet > 0) this.offerQuiet -= dt;
     this.maybeOpenPendingVendetta(dt);
@@ -2706,6 +2813,7 @@ export class Game {
         age: this.mgr.age,
         turn: this.mgr.turn,
         overlordName: ov ? ov.name.toUpperCase() : '',
+        worldPulse: this.worldPulseTimer > 0 ? this.worldPulseText : undefined,
         heat: this.world.run.heat,
         heatLabel: heatLabel(this.world.run.heat),
         remnants: this.world.run.remnants,
@@ -3005,17 +3113,17 @@ export class Game {
   private onRawKey(e: KeyboardEvent): void {
     if (e.code === 'F1') {
       e.preventDefault();
-      // The overlay is DOM, so pointer lock has to go while it is open or the
-      // buttons never receive the click.
-      this.debugOpen = this.ui.debug.toggle(this.debugHooks());
-      if (this.debugOpen) {
-        this.input.setEnabled(false);
-        this.input.exitPointerLock();
-      } else if (this.mode === 'playing') {
-        this.input.setEnabled(true);
-        this.lockGrace = 0.8;
-        this.input.requestPointerLock();
-      }
+      void ensureDebugOverlay(this.uiRoot, this.ui).then(() => {
+        this.debugOpen = this.ui.debug.toggle(this.debugHooks());
+        if (this.debugOpen) {
+          this.input.setEnabled(false);
+          this.input.exitPointerLock();
+        } else if (this.mode === 'playing') {
+          this.input.setEnabled(true);
+          this.lockGrace = 0.8;
+          this.input.requestPointerLock();
+        }
+      });
       return;
     }
     if (this.comicOpen) {
@@ -3091,6 +3199,7 @@ export class Game {
       return;
     }
     if (e.code === 'Tab' && this.mode === 'hierarchy') {
+      if (isNativeKeyTarget(document.activeElement)) return;
       e.preventDefault();
       this.closeHierarchy();
     }
@@ -3246,6 +3355,7 @@ export class Game {
     };
 
     this.encounter.begin(e, salt, ctx);
+    this.scheduleExchangeToasts(n, salt);
     this.vendettaOfferPending = true;
     this.maybeTeach('named');
 
@@ -3312,9 +3422,25 @@ export class Game {
     this.combatOverlayNote = '';
   }
 
+  private scheduleExchangeToasts(n: Nemesis, salt: number): void {
+    const kind = this.encounter.last?.kind;
+    if (!kind) return;
+    const ctx = exchangeContextForEncounter(kind);
+    if (!ctx) return;
+    const script = exchangeScriptFor(this.ai, n, ctx, salt);
+    if (!script?.length) return;
+    script.forEach((turn, i) => {
+      window.setTimeout(() => {
+        if (this.mode !== 'playing') return;
+        const who = turn.speaker === 'player' ? 'YOU' : n.name.toUpperCase();
+        this.ui.hud.toast(`${who}: "${turn.fallback}"`, turn.speaker === 'nemesis' ? 'hot' : 'neutral', 2.8);
+      }, 2200 + i * 1800);
+    });
+  }
+
   private onNamedExecution(e: Enemy): void {
     if (!e.named) return;
-    const words = encounterLine(e.nemesis, 'NEMESIS_DEFEATED', this.mgr.turn);
+    const words = lastWordsFor(this.ai, e.nemesis, this.mgr.turn);
     if (words) this.ui.hud.toast(`"${words}"`, 'neutral');
     this.camera.pulseFov(4);
     this.vfx.story('death', e.position.x, e.position.z, e.rig.accent);
@@ -3378,6 +3504,10 @@ export class Game {
     const weaponAtKill = this.player.stats.weaponId;
     const recoveredWeaponId = e.nemesis.stolen.find((s) => s.weaponId)?.weaponId ?? null;
     this.world.onEnemyKilled(e, executed, definite);
+    if (e.named) {
+      if (!e.nemesis.alive) onPitEnemyKilled(this.mgr, e, false, true);
+      else if (e.nemesis.scars.length) onPitScarApplied(e.nemesis, e.nemesis.scars.length);
+    }
     this.finishVendettaAgainst(e, executed, false, recoveredWeaponId, weaponAtKill);
     this.applyPlayerBuild();
     if (!wasOverlord && e.named) {
@@ -3404,6 +3534,9 @@ export class Game {
       }
       this.particles.burst(e.position.x, 1.2, e.position.z, 20, 0xffffff, 9, { size: 0.14 });
       this.myth(e.nemesis, 'survived_death');
+      onPitEnemyKilled(this.mgr, e, true);
+      onPitEnemyEscape(this.mgr, e.nemesis);
+      if (e.nemesis.scars.length) onPitScarApplied(e.nemesis, e.nemesis.scars.length);
       this.comic?.onNamedOutcome(e.nemesis.id, 'enemy_escaped');
     } else if (e.named) {
       this.encounter.begin(e, this.mgr.turn, { outcome: 'nemesis_dead' });
@@ -3465,6 +3598,7 @@ export class Game {
       this.mgr.data.playerMeta.equipped,
       this.player.stats.habits as unknown as Record<string, number>
     );
+    if (killerNemesis) onPitPlayerKilled(this.mgr, killerNemesis);
     this.endRunAndBank();
 
     // Whoever just killed you is the single most story-worthy enemy in the
@@ -3475,6 +3609,11 @@ export class Game {
     const result = simulateTurn(this.mgr);
     void beforeTurn;
     this.mythFromEvents(result.events);
+    this.announceWorldBeat(
+      result.events.find((e) => e.important)?.text ?? result.events[result.events.length - 1]?.text,
+      'WHILE YOU WERE DEAD',
+      'hot'
+    );
 
     const events: WorldEvent[] = this.mgr.data.eventLog.filter(
       (ev) => ev.turn >= result.turn - 1 && ev.type !== 'player_death'
@@ -3489,7 +3628,7 @@ export class Game {
 
     const recap = composeWorldTurnRecap(this.mgr.data, events, killerNemesis?.id);
     this.syncAIWorld();
-    observeRecapBeats(this.ai, this.mgr, recap);
+    this.narrative.onDeathReport(recap);
     this.maybeTeach('death');
     this.presentReport({
       title: 'YOU DIED',
@@ -3839,6 +3978,7 @@ export class Game {
       remember(n, 'PLAYER_HUMILIATED_ME', turn);
       n.humiliations = (n.humiliations ?? 0) + 1;
       n.branded = true;
+      onPitHumiliation(this.mgr, n);
       addHeat(this.world.run, HEAT.humiliate);
       if (rankIndex(n.rank) >= 2) this.mgr.demote(n, 'humiliation');
       this.mgr.log(makeEvent(turn, this.mgr.age, 'humiliation', `You humiliated ${fullName(n)}.`, [n.id], true, 'bad'));
@@ -3848,7 +3988,10 @@ export class Game {
       remember(n, 'PLAYER_HUMILIATED_ME', turn);
       n.branded = true;
       const scar = applyScar(n, 'burn', turn, 'you');
-      if (scar) n.title = chooseTitle(n, this.mgr.titlesInUse(n));
+      if (scar) {
+        n.title = chooseTitle(n, this.mgr.titlesInUse(n));
+        onPitScarApplied(n, n.scars.length);
+      }
       n.revengeChance = Math.min(1, n.revengeChance + 0.12);
       this.mgr.log(makeEvent(turn, this.mgr.age, 'injury', `You branded ${fullName(n)}.`, [n.id], true, 'bad'));
       e.escaping = true;
@@ -4112,6 +4255,7 @@ export class Game {
     });
     this.world.run.vendetta = next;
     if (next.complete) {
+      onVendettaProgress(this.mgr, next);
       this.applyVendettaCompletion(next, e.nemesis, recoveredWeaponId);
       this.ui.hud.toast('VENDETTA COMPLETE', 'gold');
       this.mgr.log(makeEvent(this.mgr.turn, this.mgr.age, 'vendetta', `Vendetta against ${fullName(e.nemesis)} complete.`, [e.nemesis.id], true, 'gold'));
@@ -4266,7 +4410,13 @@ export class Game {
     this.loop.paused = true;
     this.input.setEnabled(false);
     this.input.exitPointerLock();
-    this.ui.hierarchy.open(this.mgr, () => this.closeHierarchy(), this.ai);
+    this.ui.hierarchy.open(
+      this.mgr,
+      () => this.closeHierarchy(),
+      this.ai,
+      undefined,
+      (n) => this.narrative.onInspectNemesis(n)
+    );
   }
 
   /** Stored so the report can be restored after a detour into the hierarchy. */
@@ -4296,25 +4446,35 @@ export class Game {
 
   private openHierarchyFromReport(): void {
     this.ui.report.hide();
+    this.hierarchyFromReport = true;
+    this.mode = 'hierarchy';
     this.ui.hierarchy.open(
       this.mgr,
-      () => {
-        this.ui.hierarchy.close();
-        if (this.lastReport) this.presentReport(this.lastReport);
-        else this.startRun();
-      },
-      this.ai
+      () => this.closeHierarchy(),
+      this.ai,
+      undefined,
+      (n) => this.narrative.onInspectNemesis(n)
     );
   }
 
   private closeHierarchy(): void {
     this.ui.hierarchy.close();
-    if (this.mode !== 'hierarchy') return;
     if (this.hierarchyFromGod) {
       this.hierarchyFromGod = false;
-      this.showGodScreen();
+      if (this.mode === 'hierarchy') this.showGodScreen();
       return;
     }
+    if (this.hierarchyFromReport) {
+      this.hierarchyFromReport = false;
+      if (this.lastReport) {
+        this.mode = 'report';
+        this.presentReport(this.lastReport);
+      } else {
+        this.startRun();
+      }
+      return;
+    }
+    if (this.mode !== 'hierarchy') return;
     this.resumeToPlaying();
   }
 
@@ -4468,13 +4628,7 @@ export class Game {
    */
   private applyQuality(q: Quality, rebuild = false): void {
     this.quality = q;
-    const shadow = q === 'high' ? 2048 : q === 'medium' ? 1024 : 0;
-    this.renderer.setPixelRatio(pixelRatioFor(q));
-    this.renderer.setSize(window.innerWidth, window.innerHeight, false);
-    this.renderer.shadowMap.enabled = shadow > 0;
-    this.post?.configure(q, window.innerWidth, window.innerHeight);
-    this.arena.setShadowQuality(shadow);
-    if (rebuild) this.rebuildArena();
+    this.renderHost.applyQuality(q, this.arena, rebuild ? () => this.rebuildArena() : undefined);
   }
 
   /**
@@ -4482,28 +4636,16 @@ export class Game {
    * once rather than letting the player fight a slideshow.
    */
   private autoQuality(rdt: number): void {
-    if (!this.mgr.data.settings.autoQuality) return;
-    if (this.quality === 'low') return;
-    if (this.loop.fps > 45) {
-      this.lowFpsTime = Math.max(0, this.lowFpsTime - rdt);
-      return;
-    }
-    this.lowFpsTime += rdt;
-    if (this.lowFpsTime < 4) return;
-    this.lowFpsTime = 0;
-    const next: Quality = this.quality === 'high' ? 'medium' : 'low';
-    this.mgr.data.settings.quality = next;
-    this.applyQuality(next);
-    this.ui.hud.toast(`RENDER QUALITY LOWERED TO ${next.toUpperCase()}`, 'neutral', 5);
-    console.info('[SHDOWPIT] auto quality ->', next);
+    this.renderHost.autoQuality(rdt, this.loop.fps, !!this.mgr.data.settings.autoQuality, (next: Quality) => {
+      this.mgr.data.settings.quality = next;
+      this.applyQuality(next);
+      this.ui.hud.toast(`RENDER QUALITY LOWERED TO ${next.toUpperCase()}`, 'neutral', 5);
+      console.info('[SHDOWPIT] auto quality ->', next);
+    });
   }
 
   private onResize(): void {
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    this.renderer.setSize(w, h, false);
-    this.post.setSize(w, h);
-    this.camera.resize(w / h);
+    this.renderHost.onResize();
   }
 
   /* ============================================================
@@ -5797,7 +5939,7 @@ export class Game {
   }
 
   /** Switch provider routing live — no restart of anything. */
-  __setAIProvider(provider: 'openai' | 'local' | 'auto'): void {
+  __setAIProvider(provider: 'openai' | 'groq' | 'local' | 'auto'): void {
     const s = { ...this.mgr.data.settings.ai, provider };
     this.mgr.data.settings.ai = s;
     this.ai.setSettings(s);
@@ -6052,6 +6194,11 @@ export class Game {
   __storySelfTest(): { passed: number; failed: number; log: string } {
     const r = runStorySelfTest();
     return { passed: r.passed, failed: r.failed, log: formatStorySelfTest(r) };
+  }
+
+  __runStorySelfTest(): { passed: number; failed: number; log: string } {
+    const r = runRunStorySelfTest();
+    return { passed: r.passed, failed: r.failed, log: formatRunStorySelfTest(r) };
   }
 
   __wiringSelfTest(): {
@@ -6691,9 +6838,88 @@ export class Game {
         return this.__godAi('snapshot');
       case 'ai':
         return this.__godAi(arg ?? 'scope', arg2);
+      case 'bgTickProbe': {
+        const res = simulateTurn(this.mgr);
+        const events = res.events.length ? res.events : this.mgr.recentEvents(3);
+        const lead = events.find((e) => e.important) ?? events[events.length - 1];
+        return { fired: true, headline: lead?.text ?? 'THE WORLD TURNED WITHOUT YOU', turn: res.turn };
+      }
+      case 'simregReset': {
+        const seed = parseInt(arg ?? '424242', 10) || 424242;
+        this.godRun = null;
+        this.descent = null;
+        this.mgr.wipe();
+        this.mgr.newWorld(seed);
+        this.world.endRun();
+        this.rebuildArena();
+        this.mgr.persist();
+        return { ok: true, seed, worldTurn: this.mgr.turn };
+      }
+      case 'simregSnapshot':
+        return this.simregSnapshot();
+      case 'pitAdvance': {
+        const n = Math.max(1, parseInt(arg ?? '1', 10) || 1);
+        for (let i = 0; i < n; i++) simulateTurn(this.mgr);
+        return { ok: true, turns: n, ...this.simregSnapshot() };
+      }
+      case 'simregGrudge': {
+        const actor = this.mgr.living().find((n) => rankIndex(n.rank) >= 2);
+        const target = this.mgr.living().find((n) => n.id !== actor?.id);
+        const other = this.mgr.living().find((n) => n.id !== actor?.id && n.id !== target?.id);
+        if (!actor || !target || !other) return { ageOk: false, retargetOk: false, reason: 'roster too small' };
+        const s = simOf(actor);
+        s.goal = 'revenge';
+        s.goalTargetId = target.id;
+        s.goalAge = 5;
+        const goalBefore = s.goal;
+        applyGoalAfterAction(s, 'seize', { id: 'pit', name: 'Pit', areaId: 'pit' }, goalBefore);
+        const ageOk = s.goalAge === 6 && s.goalTargetId === target.id;
+        applyGoalAfterAction(s, 'revenge', { id: other.id, name: fullName(other), nemesis: other }, s.goal);
+        const retargetOk = s.goalTargetId === other.id && s.goalAge === 0;
+        return { ageOk, retargetOk, goalAge: s.goalAge, goalTargetId: s.goalTargetId };
+      }
+      case 'simregSuccession': {
+        const ov = this.mgr.overlord();
+        if (!ov) return { ok: false, reason: 'no overlord' };
+        const deadId = ov.id;
+        this.mgr.killNemesis(ov, false, `${fullName(ov)} fell.`);
+        simulateSuccession(this.mgr);
+        this.mgr.fillRanks();
+        const crown = this.mgr.overlord();
+        const ok = !!crown && crown.alive && crown.id !== deadId;
+        return { ok, deadId, newId: crown?.id ?? null, newAlive: crown?.alive ?? false };
+      }
       default:
         return { error: 'unknown command ' + cmd };
     }
+  }
+
+  /** Deterministic snapshot for simulation regression harnesses. */
+  private simregSnapshot(): Record<string, unknown> {
+    const roster = this.mgr.roster;
+    const rosterHash = roster
+      .map((n) => `${n.id}:${n.alive ? 1 : 0}:${n.rank}:${n.power}`)
+      .sort()
+      .join('|');
+    const log = this.mgr.data.eventLog;
+    const ids = log.map((e) => e.id).filter(Boolean) as string[];
+    const seen = new Set<string>();
+    let duplicateEventIds = 0;
+    for (const id of ids) {
+      if (seen.has(id)) duplicateEventIds++;
+      else seen.add(id);
+    }
+    return {
+      worldTurn: this.mgr.turn,
+      worldAge: this.mgr.age,
+      rosterHash,
+      living: this.mgr.living().length,
+      dead: this.mgr.dead().length,
+      eventCount: log.length,
+      duplicateEventIds,
+      last50EventTypes: log.slice(-50).map((e) => e.type),
+      archiveCount: (this.mgr.data.chronicleArchives ?? []).length,
+    };
   }
 
   __teleport(areaId: string): void {
@@ -6765,31 +6991,9 @@ export class Game {
     this.vfx.dispose();
     this.damageNumbers.clear();
     this.arena.clear();
-    this.renderer.dispose();
+    this.renderHost.dispose();
     while (this.uiRoot.firstChild) this.uiRoot.removeChild(this.uiRoot.firstChild);
   }
-}
-
-function pixelRatioFor(q: Quality): number {
-  if (q === 'high') return Math.min(window.devicePixelRatio, 2);
-  if (q === 'medium') return 1;
-  return 0.6;
-}
-
-/** Quality chosen before the renderer exists: URL param wins, then the save. */
-function readBootQuality(): Quality {
-  const url = new URLSearchParams(location.search).get('quality');
-  if (url === 'low' || url === 'medium' || url === 'high') return url;
-  try {
-    const raw = localStorage.getItem('shdowpit.world.v1');
-    if (raw) {
-      const q = JSON.parse(raw)?.settings?.quality;
-      if (q === 'low' || q === 'medium' || q === 'high') return q;
-    }
-  } catch {
-    /* ignore */
-  }
-  return 'high';
 }
 
 interface ReportArgs {

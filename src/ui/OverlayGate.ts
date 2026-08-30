@@ -16,6 +16,24 @@ export type OverlayLane =
   | 'banner'
   | 'none';
 
+/** Enter / exit / plate-delay timing per lane (intro → plate → execute). */
+export interface LaneTiming {
+  enterMs: number;
+  exitMs: number;
+  /** ms before the target plate may appear after this lane takes over */
+  plateDelayMs: number;
+}
+
+export const LANE_TIMING: Record<OverlayLane, LaneTiming> = {
+  modal: { enterMs: 500, exitMs: 340, plateDelayMs: 0 },
+  intro: { enterMs: 640, exitMs: 500, plateDelayMs: 0 },
+  execute: { enterMs: 340, exitMs: 260, plateDelayMs: 220 },
+  tutorial: { enterMs: 340, exitMs: 260, plateDelayMs: 0 },
+  interact: { enterMs: 260, exitMs: 200, plateDelayMs: 0 },
+  banner: { enterMs: 500, exitMs: 500, plateDelayMs: 0 },
+  none: { enterMs: 200, exitMs: 200, plateDelayMs: 0 },
+};
+
 export interface OverlayQuery {
   mode: string;
   introActive: boolean;
@@ -34,6 +52,11 @@ export interface OverlayQuery {
 
 export interface OverlayDecision {
   lane: OverlayLane;
+  timing: LaneTiming;
+  /** Target plate gets frame emphasis (execute lane or mid-combat focus). */
+  emphasizePlate: boolean;
+  /** Hide the nemesis plate while intro / modal owns centre. */
+  hidePlate: boolean;
   showTutorial: boolean;
   showPurpose: boolean;
   showBanner: boolean;
@@ -70,6 +93,10 @@ export function decideOverlays(q: OverlayQuery): OverlayDecision {
   else if (q.interact) lane = 'interact';
   else if (q.bannerActive) lane = 'banner';
 
+  const timing = LANE_TIMING[lane];
+  const hidePlate = modal || intro;
+  const emphasizePlate = lane === 'execute' || (q.inCombat && !hidePlate && q.mode === 'playing');
+
   const queued = q.pendingLabel ?? (q.pendingComic ? 'ENCOUNTER' : null);
 
   let nextLabel: string | null = null;
@@ -87,6 +114,9 @@ export function decideOverlays(q: OverlayQuery): OverlayDecision {
 
   return {
     lane,
+    timing,
+    emphasizePlate,
+    hidePlate,
     showTutorial: !modal && !intro && !dying && q.tutorialActive && !q.executable,
     showPurpose: !modal && !intro && !dying && !q.executable && (!q.inCombat || !q.tutorialActive),
     showBanner: !modal && !intro && !dying && !q.executable && !q.tutorialActive && !q.inCombat,

@@ -3,7 +3,7 @@
  * and player progression. Old Order / Book / Dead views remain as modes.
  */
 
-import { button, clear, div, el, esc, show } from './Dom';
+import { button, clear, div, el, esc, show, actionable } from './Dom';
 import type { NemesisManager } from '../nemesis/NemesisManager';
 import { rankName } from '../nemesis/NemesisManager';
 import type { Nemesis, Rank } from '../nemesis/Nemesis';
@@ -32,6 +32,8 @@ import {
 } from '../story/StoryAI';
 import { defaultStoryFilters, PLAYER_ID, type StoryFilters, type StoryMode } from '../story/StoryTypes';
 import { StoryWebView, edgeExplain } from '../story/StoryWeb';
+import { TabBar } from './primitives/TabBar';
+import { trapFocus, type FocusTrap } from './focusTrap';
 
 type Tab = StoryMode | 'book' | 'dead';
 
@@ -58,6 +60,7 @@ export class HierarchyScreen {
   private mgr: NemesisManager | null = null;
   private onClose: () => void = () => void 0;
   private ai: AIContentService | null = null;
+  private onInspect: ((n: Nemesis) => void) | null = null;
   private bookId: string | null = null;
   private filters: StoryFilters = defaultStoryFilters();
   private web = new StoryWebView({
@@ -77,6 +80,7 @@ export class HierarchyScreen {
   });
   private h1 = document.createElement('h1');
   private h2 = document.createElement('h2');
+  private focusTrap: FocusTrap | null = null;
 
   constructor() {
     this.root.id = 'hierarchy-screen';
@@ -91,15 +95,24 @@ export class HierarchyScreen {
     return !this.root.classList.contains('hidden');
   }
 
-  open(mgr: NemesisManager, onClose: () => void, ai: AIContentService | null = null, tab?: Tab): void {
+  open(
+    mgr: NemesisManager,
+    onClose: () => void,
+    ai: AIContentService | null = null,
+    tab?: Tab,
+    onInspect?: (n: Nemesis) => void
+  ): void {
     this.mgr = mgr;
     this.onClose = onClose;
     this.ai = ai;
+    this.onInspect = onInspect ?? null;
     if (tab) this.tab = tab;
     this.web.setReducedMotion(!!mgr.data.settings.reducedMotion);
     const sv = mgr.data.storyView;
     if (sv) this.web.setCamera(sv.panX, sv.panY, sv.zoom);
     show(this.root, true);
+    this.focusTrap?.release();
+    this.focusTrap = trapFocus(this.root);
     this.render();
     this.web.root.focus();
   }
@@ -117,6 +130,8 @@ export class HierarchyScreen {
   }
 
   close(): void {
+    this.focusTrap?.release();
+    this.focusTrap = null;
     show(this.root, false);
   }
 
@@ -170,14 +185,16 @@ export class HierarchyScreen {
     this.h2.textContent = t.s;
 
     clear(this.tabsEl);
-    for (const tab of TAB_META) {
-      const elTab = div(`tab${this.tab === tab.id ? ' active' : ''}`, tab.label);
-      elTab.addEventListener('click', () => {
-        this.tab = tab.id;
-        this.render();
-      });
-      this.tabsEl.append(elTab);
-    }
+    this.tabsEl.append(
+      TabBar({
+        items: TAB_META,
+        active: this.tab,
+        onSelect: (id) => {
+          this.tab = id;
+          this.render();
+        },
+      })
+    );
 
     clear(this.bodyEl);
     if (this.tab === 'web') this.renderWeb(mgr);
@@ -228,7 +245,7 @@ export class HierarchyScreen {
     search.placeholder = 'NAME';
     search.value = this.filters.search;
     search.className = 'story-search';
-    search.addEventListener('change', () => {
+    search.addEventListener('input', () => {
       this.filters.search = search.value;
       this.render();
     });
@@ -318,7 +335,7 @@ export class HierarchyScreen {
       const meta = div('cmeta');
       meta.innerHTML = `LAW ${esc(s.rule)}${s.previous ? `<br>WAS ${esc(s.previous)}` : ''}${s.heat ? `<br>${esc(s.heat)}` : ''}`;
       card.append(meta);
-      card.addEventListener('click', () => {
+      actionable(card, () => {
         this.filters.territory = s.areaId;
         this.tab = 'timeline';
         this.render();
@@ -533,7 +550,7 @@ export class HierarchyScreen {
       const head = div('book-rail-head');
       head.append(sw, label);
       row.append(head, sub);
-      row.addEventListener('click', () => {
+      actionable(row, () => {
         this.bookId = n.id;
         this.render();
       });
@@ -544,6 +561,7 @@ export class HierarchyScreen {
     const n = mgr.byId(this.bookId);
     if (n) {
       if (this.ai) this.ai.ensureFor(n);
+      this.onInspect?.(n);
       wrap.append(this.bookCard(mgr, n));
     }
     this.bodyEl.append(wrap);
@@ -695,7 +713,7 @@ export class HierarchyScreen {
     if (!n.alive) bits.push(`DEAD (T${n.diedOnTurn ?? '?'})`);
     meta.innerHTML = bits.join('<br>');
     c.append(name, title, meta);
-    c.addEventListener('click', () => {
+    actionable(c, () => {
       this.selected = this.selected === n.id ? null : n.id;
       this.render();
     });

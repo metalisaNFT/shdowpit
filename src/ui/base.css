@@ -1,0 +1,547 @@
+/* base widgets + screens + primitives */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--ui-font);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+}
+
+#app {
+  position: fixed;
+  inset: 0;
+}
+
+#viewport {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+#ui {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+  transform: scale(var(--hud-scale, 1));
+  transform-origin: top left;
+  width: calc(100% / var(--hud-scale, 1));
+  height: calc(100% / var(--hud-scale, 1));
+}
+
+.hidden {
+  display: none !important;
+}
+
+.layer {
+  position: absolute;
+  inset: 0;
+}
+
+/* ---------- generic brutalist widgets ---------- */
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 18px 22px;
+}
+
+.kicker {
+  font-size: 11px;
+  letter-spacing: 0.32em;
+  color: var(--dim);
+  text-transform: uppercase;
+}
+
+.rule {
+  height: 1px;
+  background: var(--line);
+  margin: 10px 0;
+}
+
+button.brut {
+  pointer-events: auto;
+  font-family: var(--ui-font);
+  font-size: 13px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--dimmer);
+  padding: 12px 26px;
+  cursor: pointer;
+  transition: background 90ms linear, border-color 90ms linear, color 90ms linear;
+}
+
+button.brut:hover {
+  background: var(--ink);
+  color: var(--bg);
+  border-color: var(--ink);
+}
+
+button.brut.danger:hover {
+  background: var(--hot);
+  border-color: var(--hot);
+  color: #fff;
+}
+
+button.brut:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* ============================================================
+   FULLSCREEN SCREENS
+   ============================================================ */
+
+.screen {
+  position: absolute;
+  inset: 0;
+  background: rgba(4, 4, 6, 0.96);
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  overflow: hidden;
+}
+
+.screen h1 {
+  font-size: 44px;
+  letter-spacing: 0.5em;
+  font-weight: normal;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.screen-headline {
+  font-size: var(--text-headline);
+  letter-spacing: 0.5em;
+  font-weight: normal;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.screen h2 {
+  font-size: 16px;
+  letter-spacing: 0.42em;
+  font-weight: normal;
+  text-transform: uppercase;
+  color: var(--dim);
+  margin-bottom: 26px;
+}
+
+.screen .body {
+  width: min(940px, 92vw);
+  max-height: 62vh;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--dimmer) transparent;
+}
+
+.screen .body::-webkit-scrollbar {
+  width: 6px;
+}
+.screen .body::-webkit-scrollbar-thumb {
+  background: var(--dimmer);
+}
+
+.screen .actions {
+  margin-top: 30px;
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+
+/* ============================================================
+   MODE-DRIVEN LAYER DISCIPLINE
+   Fullscreen decision/menu screens own the frame. Gameplay chrome —
+   toasts, damage numbers, tutorial lines, the arrival card — must never
+   bleed through a panel. Game.tickInner mirrors the mode onto
+   <div id="ui" data-mode="...">; everything below keys off that.
+   ============================================================ */
+
+#ui[data-mode='power'] #hud,
+#ui[data-mode='choice'] #hud,
+#ui[data-mode='hierarchy'] #hud,
+#ui[data-mode='report'] #hud,
+#ui[data-mode='build'] #hud,
+#ui[data-mode='paused'] #hud,
+#ui[data-mode='god'] #hud,
+#ui[data-mode='legends'] #hud,
+#ui[data-mode='godend'] #hud,
+#ui[data-mode='title'] #hud {
+  opacity: 0;
+  transition: opacity 120ms linear;
+}
+
+#ui[data-mode='power'] #intro-card,
+#ui[data-mode='choice'] #intro-card,
+#ui[data-mode='hierarchy'] #intro-card,
+#ui[data-mode='report'] #intro-card,
+#ui[data-mode='build'] #intro-card,
+#ui[data-mode='god'] #intro-card,
+#ui[data-mode='legends'] #intro-card,
+#ui[data-mode='godend'] #intro-card,
+#ui[data-mode='paused'] #intro-card,
+#ui.comic-open #intro-card {
+  visibility: hidden;
+}
+
+#ui[data-mode='playing'] #hud,
+#ui[data-mode='dying'] #hud {
+  opacity: 1;
+  transition: opacity 200ms linear;
+}
+
+/* Comic is not a Mode; it still owns the frame while open. */
+#ui.comic-open #hud {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* Scrolling rails start flush against their headers — give the first row
+   breathing room so it is never half-clipped under the screen title. */
+.book-rail {
+  padding-top: 6px;
+}
+
+/* Dense variant: choice screens with 6+ cards (THEIR FATE) fit one 720p
+   frame — no card may clip at the viewport edge. */
+.power-grid.dense .power-card {
+  width: 218px;
+  min-height: 128px;
+  padding: 14px 16px;
+}
+.power-grid.dense .pdesc {
+  font-size: 11px;
+}
+
+/* A tier label that follows a recap card needs air above it, or it reads as
+   an orphaned caption hanging off the previous card's bottom border. */
+.recap-card + .tier-label,
+.report-line + .tier-label,
+.killer-spot + .tier-label {
+  margin-top: 22px;
+}
+
+/* While a named-NPC card owns the bottom-centre column, hide the toast
+   stack rather than lifting it — kill-feed lines through a name are noise. */
+#hud.story-centre #toasts {
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 120ms linear;
+}
+
+#hud.story-centre #target-plate {
+  opacity: 0;
+  visibility: hidden;
+}
+#hud #toasts {
+  transition: opacity 180ms linear, top 220ms ease-out;
+}
+
+#hud.story-centre #prompt {
+  opacity: 0;
+  visibility: hidden;
+}
+#hud #prompt {
+  transition: opacity 160ms linear, bottom 180ms ease-out;
+}
+
+#hud.story-centre .hud-tutorial,
+#hud.story-centre .hud-purpose,
+#hud.story-centre #area-banner {
+  opacity: 0;
+  visibility: hidden;
+}
+
+#hud.story-centre .overlay-next {
+  bottom: auto;
+  top: 16%;
+  color: var(--ink);
+  letter-spacing: 0.32em;
+}
+
+#hud.combat-focus .hud-br {
+  opacity: 0;
+}
+#hud.combat-focus #minimap {
+  opacity: 0.42;
+  transform: scale(0.82);
+  transform-origin: top right;
+}
+#hud.combat-focus .hud-tr {
+  font-size: 10px;
+}
+#hud.combat-focus .needles .hud-label,
+#hud.combat-focus .surge .hud-label {
+  display: none;
+}
+#hud.combat-focus .skill-name {
+  display: none;
+}
+#hud.combat-focus .hud-purpose {
+  max-width: 240px;
+  font-size: 10px;
+  color: var(--dim);
+}
+#hud.combat-focus .overlay-next {
+  color: var(--ink);
+}
+
+.teach-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 10px;
+  text-align: left;
+}
+.teach-row .sname {
+  letter-spacing: 0.28em;
+  font-size: 10px;
+  color: var(--gold);
+}
+.teach-row .sval {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+  line-height: 1.45;
+  text-transform: none;
+}
+
+button.primary {
+  color: var(--bg);
+  background: var(--gold);
+  border-color: var(--gold);
+}
+
+button.primary:hover {
+  background: var(--ink);
+  border-color: var(--ink);
+}
+/* ---------- shared primitives ---------- */
+
+.screen-chrome h1 {
+  font-size: var(--text-title);
+  letter-spacing: 0.4em;
+}
+
+.mode-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: min(520px, 92vw);
+  margin: 4px 0 10px;
+}
+
+.mode-card-primary {
+  border: 1px solid rgba(255, 176, 32, 0.35);
+  padding: 18px 22px 16px;
+  background: rgba(255, 176, 32, 0.04);
+}
+
+.mode-card-secondary {
+  border: 1px solid var(--line);
+  padding: 14px 22px 12px;
+  opacity: 0.88;
+}
+
+.mode-card-kicker {
+  font-size: var(--text-whisper);
+  letter-spacing: 0.42em;
+  color: var(--gold);
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+
+.mode-card-secondary .mode-card-kicker {
+  color: var(--dim);
+}
+
+.mode-card-hint {
+  font-size: var(--text-whisper);
+  letter-spacing: 0.28em;
+  color: var(--dim);
+  margin-top: 8px;
+  text-align: center;
+}
+
+.card-grid {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+button.choice-card {
+  appearance: none;
+  -webkit-appearance: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+}
+
+.choice-card {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+button.choice-card:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 3px;
+}
+
+button.choice-card:focus:not(:focus-visible) {
+  outline: none;
+}
+
+.resource-meter {
+  min-width: 120px;
+}
+
+.resource-meter-head {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 5px;
+}
+
+.resource-meter-label {
+  font-size: var(--text-whisper);
+  letter-spacing: 0.24em;
+  color: var(--dim);
+  text-transform: uppercase;
+}
+
+.resource-meter-values {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.resource-meter-value,
+.resource-meter-val {
+  font-size: var(--text-whisper);
+  letter-spacing: 0.18em;
+  color: var(--ink);
+}
+
+.resource-meter-tier {
+  font-size: 7px;
+  letter-spacing: 0.2em;
+  color: var(--gold);
+  text-transform: uppercase;
+}
+
+.resource-meter-track {
+  position: relative;
+}
+
+.resource-meter-segments {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  pointer-events: none;
+}
+
+.resource-meter-tick {
+  flex: 1;
+  border-right: 1px solid rgba(0, 0, 0, 0.35);
+}
+
+.resource-meter-tick:last-child {
+  border-right: none;
+}
+
+.resource-meter-fill.gold { background: var(--gold); }
+.resource-meter-fill.hot { background: var(--hot); }
+.resource-meter-fill.cold { background: var(--cold); }
+.resource-meter-fill.good { background: var(--good); }
+
+.drawer-root {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  pointer-events: none;
+}
+
+.drawer-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(4, 4, 6, 0.55);
+  opacity: 0;
+  transition: opacity var(--dur-fast) linear;
+  pointer-events: auto;
+}
+
+.drawer-backdrop-visible {
+  opacity: 1;
+}
+
+.drawer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: min(420px, 92vw);
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  transition: transform var(--dur-beat) cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.drawer-right {
+  right: 0;
+  transform: translateX(100%);
+  border-right: none;
+}
+
+.drawer-left {
+  left: 0;
+  transform: translateX(-100%);
+  border-left: none;
+}
+
+.drawer-open.drawer-right,
+.drawer-open.drawer-left {
+  transform: translateX(0);
+}
+
+.drawer-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.drawer-title {
+  font-size: var(--text-label);
+  letter-spacing: 0.36em;
+  text-transform: uppercase;
+}
+
+.drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 16px;
+}

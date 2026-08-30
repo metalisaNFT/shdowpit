@@ -3,6 +3,7 @@
  */
 
 import { button, clear, div, el, show } from './Dom';
+import { trapFocus, type FocusTrap } from './focusTrap';
 import type { Settings } from '../core/SaveSystem';
 import { AISettingsPanel, type AISettingsHooks } from './AISettingsPanel';
 import type { SkillId } from '../data/skills';
@@ -48,11 +49,14 @@ export class PauseScreen {
   private handlers: PauseHandlers | null = null;
   private aiPanel = new AISettingsPanel();
   private aiTicker = 0;
+  private focusTrap: FocusTrap | null = null;
 
   constructor() {
     this.root.id = 'pause-screen';
+    this.root.setAttribute('role', 'dialog');
+    this.root.setAttribute('aria-modal', 'true');
+    this.heading.className = 'screen-headline';
     this.heading.textContent = 'PAUSED';
-    this.heading.style.fontSize = '34px';
     this.root.append(this.heading, this.body, this.actions);
   }
 
@@ -245,10 +249,14 @@ export class PauseScreen {
       this.actions.append(button('QUIT TO TITLE', handlers.onQuit));
     }
     show(this.root, true);
+    this.focusTrap?.release();
+    this.focusTrap = trapFocus(this.root);
   }
 
   close(): void {
     window.clearInterval(this.aiTicker);
+    this.focusTrap?.release();
+    this.focusTrap = null;
     show(this.root, false);
   }
 
@@ -272,7 +280,9 @@ export class PauseScreen {
     input.addEventListener('input', () => {
       const v = parseFloat(input.value);
       l.textContent = `${label}  —  ${Math.round(v * 100) / 100}`;
-      onChange(v);
+    });
+    input.addEventListener('change', () => {
+      onChange(parseFloat(input.value));
     });
     wrap.append(l, input);
     return wrap;

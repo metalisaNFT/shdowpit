@@ -24,6 +24,16 @@ import {
 import type { ItemInstance } from '../progress/Types';
 import { STAT_TIPS } from '../data/stats';
 import { playerWeapon } from '../data/weapons';
+import { trapFocus, type FocusTrap } from './focusTrap';
+
+const WEAPON_SIL: Record<string, string> = {
+  sword: 'sword',
+  greatsword: 'greatsword',
+  spear: 'spear',
+  hammer: 'hammer',
+  dagger: 'dagger',
+  axe: 'axe',
+};
 
 export interface BuildHandlers {
   onClose: () => void;
@@ -43,6 +53,7 @@ export class BuildScreen {
   private meta: PlayerMeta | null = null;
   private stats: PlayerStats | null = null;
   private runNotes: string[] = [];
+  private focusTrap: FocusTrap | null = null;
 
   constructor() {
     this.root.id = 'build-screen';
@@ -64,9 +75,13 @@ export class BuildScreen {
     syncFavoriteFlags(meta.progress);
     this.render();
     show(this.root, true);
+    this.focusTrap?.release();
+    this.focusTrap = trapFocus(this.root);
   }
 
   hide(): void {
+    this.focusTrap?.release();
+    this.focusTrap = null;
     show(this.root, false);
     this.handlers = null;
   }
@@ -120,6 +135,10 @@ export class BuildScreen {
       const it = findItem(p, p.loadout[slot]);
       const card = div('build-card');
       card.append(div('kicker', label));
+      if (slot === 'weapon') {
+        const weaponId = it ? ITEM_MAP.get(it.defId)?.weaponId ?? 'sword' : 'empty';
+        card.append(div(`weapon-silhouette sil-${WEAPON_SIL[weaponId] ?? weaponId}`));
+      }
       card.append(el('h3', undefined, it ? it.name : 'EMPTY'));
       if (it) {
         card.append(div('sval', `${it.rarity.toUpperCase()}${it.history.length ? ' · HISTORY' : ''}`));
@@ -164,7 +183,8 @@ export class BuildScreen {
       const owned = p.skillNodes.includes(n.id);
       const open = canUnlock(n.id, p.skillNodes);
       const preview = nodePreview(n.id);
-      const card = div('tree-node' + (owned ? ' owned' : open ? ' open' : ' locked'));
+      const state = owned ? 'owned' : open ? 'open' : 'locked';
+      const card = div(`tree-node tree-node-${state}`);
       card.append(div('kicker', `${n.cost} CINDERS`));
       card.append(el('h3', undefined, preview?.name ?? n.name));
       card.append(div('sval', preview?.desc ?? n.desc));

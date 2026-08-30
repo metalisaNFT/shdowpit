@@ -4,26 +4,30 @@
 
 import { button, clear, div, show } from './Dom';
 import type { ComicPanel, ComicSequence } from '../comic/Types';
+import { enter, respectReducedMotion, stagger } from './motion';
 
 export class ComicViewer {
   readonly root = div('layer hidden');
   private stage = div('comic-stage');
   private grid = div('comic-grid');
   private footer = div('comic-footer');
+  private progress = div('comic-progress');
   private onClose: (() => void) | null = null;
   private panels: ComicPanel[] = [];
   private seq: ComicSequence | null = null;
   private continueBtn: HTMLButtonElement | null = null;
   private animRaf = 0;
   private t0 = 0;
+  private activeIndex = 0;
 
   constructor() {
     this.root.id = 'comic-viewer';
     this.root.append(this.stage);
     this.stage.append(this.grid, this.footer);
+    this.footer.append(this.progress);
     this.root.style.pointerEvents = 'auto';
     this.root.addEventListener('click', (e) => {
-      if (e.target === this.root) this.hide();
+      if (e.target === this.root && this.continueBtn && !this.continueBtn.disabled) this.hide();
     });
   }
 
@@ -36,12 +40,16 @@ export class ComicViewer {
     this.onClose = onClose ?? null;
     this.seq = seq;
     this.panels = [];
+    this.activeIndex = 0;
     clear(this.grid);
     clear(this.footer);
+    clear(this.progress);
 
     const title = div('comic-title', `ENCOUNTER — ${seq.story.nemesisName.toUpperCase()}`);
     this.grid.append(title);
+    enter(title, 'fade');
 
+    this.footer.append(this.progress);
     this.continueBtn = button('CONTINUE', () => this.hide(), 'brut');
     this.continueBtn.disabled = true;
     this.footer.append(div('comic-meta', 'RENDERING…'), this.continueBtn);
@@ -54,7 +62,10 @@ export class ComicViewer {
     if (this.seq !== seq) return;
     if (this.panels.some((x) => x.id === p.id)) return;
     this.panels.push(p);
-    this.grid.append(this.buildPanelEl(p));
+    const cell = this.buildPanelEl(p);
+    this.grid.append(cell);
+    enter(cell, 'scale');
+    this.syncProgress();
     this.kickAnim();
   }
 
@@ -65,12 +76,21 @@ export class ComicViewer {
     if (meta) {
       meta.textContent = `${seq.profileId.toUpperCase()} · ${seq.styleId} · ${seq.panels.filter((x) => x.usedAi).length} AI`;
     }
+    this.syncProgress();
     this.kickAnim();
   }
 
   present(seq: ComicSequence, onClose?: () => void): void {
     this.beginSequence(seq, onClose);
-    for (const p of seq.panels) this.appendPanel(p, seq);
+    const cells: HTMLElement[] = [];
+    for (const p of seq.panels) {
+      this.panels.push(p);
+      const cell = this.buildPanelEl(p);
+      this.grid.append(cell);
+      cells.push(cell);
+    }
+    stagger(cells, 80, 'scale');
+    this.syncProgress();
     this.finalizeSequence(seq);
   }
 
@@ -80,6 +100,7 @@ export class ComicViewer {
     this.animRaf = 0;
     this.seq = null;
     this.continueBtn = null;
+    clear(this.progress);
     const cb = this.onClose;
     this.onClose = null;
     cb?.();
@@ -114,30 +135,55 @@ export class ComicViewer {
     return cell;
   }
 
+  private syncProgress(): void {
+    clear(this.progress);
+    if (this.panels.length <= 1) return;
+    this.progress.className = 'comic-progress';
+    for (let i = 0; i < this.panels.length; i++) {
+      const dot = div(`comic-progress-dot${i <= this.activeIndex ? ' on' : ''}`);
+      this.progress.append(dot);
+    }
+  }
+
   private kickAnim(): void {
     if (this.animRaf) cancelAnimationFrame(this.animRaf);
+    const reduced = respectReducedMotion();
     const step = (now: number) => {
       if (!this.visible) return;
       const t = (now - this.t0) / 1000;
       const cells = this.grid.querySelectorAll('.comic-panel');
+      let active = 0;
       cells.forEach((node, i) => {
         const el = node as HTMLElement;
         const p = this.panels[i];
         if (!p) return;
         const local = Math.max(0, t - i * 0.18);
-        const shake = p.anim.shake * Math.exp(-local * 3) * Math.sin(local * 55) * 6;
-        const push = 1 + p.anim.pushIn * Math.min(1, local * 2) * 0.04;
+        if (local > 0) active = i;
+        const shake = reduced ? 0 : p.anim.shake * Math.exp(-local * 3) * Math.sin(local * 55) * 6;
+        const push = reduced ? 1 : 1 + p.anim.pushIn * Math.min(1, local * 2) * 0.04;
         const frame = el.querySelector('.comic-frame') as HTMLElement | null;
+        const img = el.querySelector('.comic-img') as HTMLElement | null;
         if (frame) {
-          frame.style.transform = `translate(${shake}px, ${-shake * 0.4}px) scale(${push})`;
+          frame.style.transform = reduced ? 'none' : `translate(${shake}px, ${-shake * 0.4}px) scale(${push})`;
+        }
+        if (img && !reduced) {
+          const ken = 1 + Math.min(0.14, local * 0.06);
+          const panX = Math.sin(local * 0.35 + i) * 2.5;
+          const panY = Math.cos(local * 0.28 + i) * 1.8;
+          img.style.transform = `scale(${ken}) translate(${panX}%, ${panY}%)`;
         }
         const depth = el.querySelector('.comic-depth') as HTMLElement | null;
-        if (depth) {
+        if (depth && !reduced) {
           const par = Math.sin(t * 1.2 + i) * p.anim.parallax * 4;
           depth.style.transform = `translate(${par}px, ${par * 0.5}px)`;
         }
-        el.style.opacity = local > 0 ? '1' : '0';
+        el.style.opacity = local > 0 || reduced ? '1' : '0';
+        el.classList.toggle('is-active', i === active);
       });
+      if (active !== this.activeIndex) {
+        this.activeIndex = active;
+        this.syncProgress();
+      }
       this.animRaf = requestAnimationFrame(step);
     };
     this.animRaf = requestAnimationFrame(step);

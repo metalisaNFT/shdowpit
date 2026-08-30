@@ -2,7 +2,7 @@
  * Collapsible intervention strip for THE LONG GAME.
  */
 
-import { button, clear, div } from './Dom';
+import { button, clear, div, el } from './Dom';
 import { AREAS } from '../data/areas';
 import { AREA_NAMES } from '../data/names';
 import { fullName } from '../nemesis/Nemesis';
@@ -23,23 +23,56 @@ export interface ActionStripState {
 }
 
 export class GodActionStrip {
-  readonly root = div('god-action-strip hidden');
+  readonly root = div('god-action-strip');
+  private collapsedEl = div('god-strip-collapsed');
+  private expandedEl = div('god-strip-expanded');
 
   onChange: (() => void) | null = null;
   onConfirm: ((def: InterventionDef) => void) | null = null;
   onAdvance: (() => void) | null = null;
   onInspect: ((id: string) => void) | null = null;
+  onExpand: (() => void) | null = null;
+
+  constructor() {
+    this.root.append(this.collapsedEl, this.expandedEl);
+    this.collapsedEl.addEventListener('click', (ev) => {
+      const t = ev.target as HTMLElement;
+      if (t.closest('#god-advance')) return;
+      this.onExpand?.();
+    });
+  }
 
   render(run: GodRun, hooks: GodHooks, state: ActionStripState): void {
+    this.root.classList.toggle('expanded', state.expanded);
+    clear(this.expandedEl);
+    clear(this.collapsedEl);
+    this.collapsedEl.append(
+      div('god-strip-collapsed-label', 'INTERFERE'),
+      div('god-strip-collapsed-hint', 'WRITE CONDITIONS · NEVER OUTCOMES')
+    );
+
+    const spent = run.spentThisCycle;
+    const advanceLabel = spent ? 'ADVANCE ▸' : 'LET TIME PASS ▸';
+    const appendAdvance = (parent: HTMLElement, cls = 'brut tiny god-strip-collapsed-advance') => {
+      const go = button(advanceLabel, () => this.onAdvance?.(), cls);
+      go.id = 'god-advance';
+      if (spent) go.classList.add('ready');
+      parent.append(go);
+    };
     if (!state.expanded) {
-      this.root.classList.add('hidden');
+      appendAdvance(this.collapsedEl);
       return;
     }
-    this.root.classList.remove('hidden');
-    clear(this.root);
 
-    const head = div('god-strip-head', 'INTERFERE — CONDITIONS, NEVER OUTCOMES');
-    this.root.append(head);
+    const head = div('god-strip-head');
+    head.append(div('god-strip-head-label', 'INTERFERE'));
+    head.append(
+      button('COLLAPSE', () => {
+        state.expanded = false;
+        this.onChange?.();
+      }, 'brut tiny')
+    );
+    this.expandedEl.append(head);
 
     const sel = div('god-sel');
     sel.append(slot('A', state.selA, run, () => {
@@ -55,7 +88,8 @@ export class GodActionStrip {
       const areaRow = div('god-area-row');
       areaRow.append(div('god-slot-label', 'GROUND'));
       for (const a of AREAS) {
-        const b = div('god-area' + (state.selArea === a.id ? ' sel' : ''), AREA_NAMES[a.id] ?? a.name);
+        const b = el('button', 'god-area' + (state.selArea === a.id ? ' sel' : ''), AREA_NAMES[a.id] ?? a.name);
+        b.type = 'button';
         b.addEventListener('click', () => {
           state.selArea = state.selArea === a.id ? null : a.id;
           this.onChange?.();
@@ -64,21 +98,17 @@ export class GodActionStrip {
       }
       sel.append(areaRow);
     }
-    this.root.append(sel);
+    this.expandedEl.append(sel);
 
     if (state.note) {
       const note = div('god-note', state.note);
       if (!state.note.includes('Nothing') && !state.note.includes('Pick')) note.classList.add('ok');
-      this.root.append(note);
+      this.expandedEl.append(note);
     }
 
-    if (run.spentThisCycle) {
-      const go = button('ADVANCE ▸', () => this.onAdvance?.());
-      go.id = 'god-advance';
-      go.classList.add('god-quiet-advance', 'ready');
-      this.root.append(go);
-    }
+    appendAdvance(this.expandedEl, 'brut tiny god-quiet-advance');
 
+    const scroll = div('god-int-scroll');
     const grid = div('god-int-grid');
     const catalogue = run.interventions();
     const focused = catalogue.filter(({ def }) => {
@@ -93,9 +123,15 @@ export class GodActionStrip {
       const why = blockedReason(run, def, state);
       const usable = affordable && !why && !state.busy;
       if (!usable) card.classList.add('off');
-      card.append(div('god-int-name', def.name));
+      if (NEEDS_CONFIRM.has(def.id)) card.classList.add('danger');
+      const headRow = div('god-int-head');
+      headRow.append(div('god-int-name', def.name));
+      headRow.append(
+        div('god-int-badge', `${def.cost} INF`)
+      );
+      card.append(headRow);
       card.append(
-        div('god-int-cost', `${def.cost} INF · ${def.chaos >= 0 ? '+' : ''}${def.chaos} CHAOS · ${TARGET_LABEL[def.targeting]}`)
+        div('god-int-cost', `${def.chaos >= 0 ? '+' : ''}${def.chaos} CHAOS · ${TARGET_LABEL[def.targeting]}`)
       );
       card.append(div('god-int-desc', def.desc));
       if (why) card.append(div('god-int-block', why));
@@ -106,10 +142,11 @@ export class GodActionStrip {
       });
       grid.append(card);
     }
-    this.root.append(grid);
+    scroll.append(grid);
+    this.expandedEl.append(scroll);
 
     if (!run.god.boardUnlocked) {
-      this.root.append(
+      this.expandedEl.append(
         button(state.showAllInterventions ? 'FEWER LEVERS' : 'SHOW ALL INTERVENTIONS', () => {
           state.showAllInterventions = !state.showAllInterventions;
           this.onChange?.();

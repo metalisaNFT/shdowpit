@@ -5,6 +5,8 @@
  * or touch layer later is a matter of writing into the same action table.
  */
 
+import { isNativeKeyTarget } from '../ui/Dom';
+
 export type Action =
   | 'light'
   | 'heavy'
@@ -112,8 +114,12 @@ export class Input {
 
   private attach(): void {
     const onKeyDown = (e: KeyboardEvent) => {
-      // Never let the browser steal Tab / Space / F1 from us.
-      if (e.code === 'Tab' || e.code === 'Space' || e.code === 'F1') e.preventDefault();
+      // Let focused form controls and buttons use native Tab / Space / Enter.
+      const allowNative =
+        e.code !== 'F1' &&
+        (e.code === 'Tab' || e.code === 'Space' || e.code === 'Enter') &&
+        isNativeKeyTarget(document.activeElement);
+      if (!allowNative && (e.code === 'Tab' || e.code === 'Space' || e.code === 'F1')) e.preventDefault();
       if (e.repeat) return;
       this.keys.add(e.code);
       const a = this.binds[e.code];
@@ -248,6 +254,7 @@ export class Input {
     }
     this.axisX = x;
     this.axisY = y;
+    this.pollGamepad();
   }
 
   /** Call once per frame, after systems read input. */
@@ -317,4 +324,62 @@ export class Input {
       s.released = false;
     }
   }
+
+  /**
+   * Standard gamepad mapping → named actions (Xbox / PlayStation layout).
+   * Left stick = move; right stick = look (when pointer locked).
+   */
+  private pollGamepad(): void {
+    const pads = navigator.getGamepads?.();
+    if (!pads) return;
+    const pad = pads.find((p) => p && p.connected);
+    if (!pad) return;
+
+    const btn = (i: number) => pad.buttons[i]?.pressed ?? false;
+    const axis = (i: number, dead = 0.18) => {
+      const v = pad.axes[i] ?? 0;
+      return Math.abs(v) < dead ? 0 : v;
+    };
+
+    let x = axis(0);
+    let y = -axis(1);
+    if (Math.abs(x) < 0.01 && Math.abs(y) < 0.01) {
+      if (btn(14)) x -= 1;
+      if (btn(15)) x += 1;
+      if (btn(12)) y += 1;
+      if (btn(13)) y -= 1;
+    }
+    const glen = Math.hypot(x, y);
+    if (glen > 0.2 && this.enabled) {
+      this.axisX = x / glen;
+      this.axisY = y / glen;
+    }
+
+    if (this.pointerLocked && this.enabled) {
+      this.lookDX += axis(2) * 14;
+      this.lookDY += axis(3) * 14;
+    }
+
+    const map: Array<[boolean, Action]> = [
+      [btn(0), 'light'],
+      [btn(2), 'heavy'],
+      [btn(1), 'dodge'],
+      [btn(5), 'parry'],
+      [btn(7), 'ranged'],
+      [btn(3), 'interact'],
+      [btn(10), 'sprint'],
+      [btn(8), 'hierarchy'],
+      [btn(9), 'pause'],
+      [btn(11), 'lockon'],
+      [btn(4), 'skill1'],
+      [btn(6), 'skill2'],
+    ];
+
+    for (const [down, action] of map) {
+      const s = this.state[action];
+      if (down && !s.down) this.press(action);
+      else if (!down && s.down) this.release(action);
+    }
+  }
 }
+

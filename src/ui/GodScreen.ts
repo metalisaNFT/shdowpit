@@ -18,11 +18,13 @@ import { CHAOS_HERESY_AT, type GuideEvent } from '../god/Teaching';
 import { livingFactions } from '../god/Factions';
 import { GodTeachRail, type RailHandlers } from './GodTutorial';
 import { GodNowCard, type NowCardModel } from './GodNowCard';
-import { GodActionStrip, type ActionStripState, blockedReason } from './GodActionStrip';
+import { latestWhisperLine } from '../story/RunStory/ConversationLedger';
+import { GodActionStrip, type ActionStripState, blockedReason, NEEDS_CONFIRM } from './GodActionStrip';
 import { GodFeedDrawer } from './GodFeedDrawer';
 import { GodInspectDrawer } from './GodInspectDrawer';
 import { GodMap, situationAreaId, topUrgentAreas } from './GodMap';
 import { GodActorRail } from './GodActorRail';
+import { ResourceMeter } from './primitives/ResourceMeter';
 
 export interface GodHooks {
   run(): GodRun;
@@ -102,21 +104,24 @@ export class GodScreen {
   constructor() {
     this.root.id = 'god-screen';
     this.clockEl.append(this.clockFill, this.clockLabel);
-    this.bodyEl.append(this.distantViolenceEl, this.actors.root, this.now.root, this.action.root, this.feed.root, this.inspectDrawer.root);
+    this.bodyEl.append(this.distantViolenceEl, this.actors.root, this.now.root, this.action.root);
+    this.feed.mount(this.bodyEl);
+    this.inspectDrawer.mount(this.bodyEl);
     this.root.append(this.topBar, this.teach.root, this.bodyEl, this.footEl, this.flashEl, this.overlayEl);
 
     this.action.onChange = () => this.render();
+    this.action.onExpand = () => this.openInterfere();
     this.action.onConfirm = (def) => this.confirmIntervention(def);
     this.action.onAdvance = () => this.hooks?.advance(1);
     this.action.onInspect = (id) => this.openInspect(id);
 
+    this.feed.drawer.onClose = () => this.render();
     this.now.onInterfere = () => this.openInterfere();
     this.now.onDismiss = () => this.hooks?.onClockDismiss?.();
     this.now.onWhy = () => this.hooks?.onTeach?.('whyOpened');
     this.feed.onBeatClick = () => this.hooks?.onTeach?.('beatOpened');
 
     this.inspectDrawer.onClose = () => {
-      this.inspectDrawer.open(null);
       this.render();
     };
     this.inspectDrawer.onSetA = (id) => {
@@ -174,6 +179,9 @@ export class GodScreen {
     this.clockLabel.textContent = label;
     this.clockFill.style.width = `${Math.max(0, Math.min(1, frac)) * 100}%`;
     this.clockEl.dataset.state = state;
+    const held = state === 'paused' || state === 'modal';
+    this.clockEl.classList.toggle('god-clock-held', held);
+    if (held) this.clockLabel.textContent = state === 'modal' ? 'HELD' : label || 'PAUSED';
   }
 
   setPauseBeat(b: Beat | null): void {
@@ -337,8 +345,31 @@ export class GodScreen {
       div('god-sub', `RUN ${god.run} · CYCLE ${god.cycle} · ${act.name}`)
     );
     const meters = div('god-meters compact');
-    meters.append(meter('INF', `${Math.round(god.influence)}/${god.influenceMax}`, god.influence / god.influenceMax, 'good'));
-    meters.append(meter('CHAOS', `${Math.round(god.chaos)} ${tier.name}`, god.chaos / 100, god.chaos > 60 ? 'hot' : 'gold'));
+    const infSegs = Math.min(8, Math.max(3, Math.round(god.influenceMax / 5)));
+    meters.append(
+      ResourceMeter({
+        label: 'INFLUENCE',
+        value: `${Math.round(god.influence)}/${god.influenceMax}`,
+        ratio: god.influence / god.influenceMax,
+        tone: 'good',
+        small: true,
+        segments: infSegs,
+        className: 'god-meter-inf',
+        fillId: 'god-inf-fill',
+      })
+    );
+    meters.append(
+      ResourceMeter({
+        label: 'CHAOS',
+        value: String(Math.round(god.chaos)),
+        tierLabel: tier.name,
+        ratio: god.chaos / 100,
+        tone: chaosMeterTone(god.chaos),
+        small: true,
+        className: `god-meter-chaos tier-${tier.at}`,
+        fillId: 'god-chaos-fill',
+      })
+    );
     if (god.chaos >= CHAOS_HERESY_AT - 8) {
       meters.append(div('god-meter-note', 'HERESY NEAR'));
     }
@@ -390,6 +421,7 @@ export class GodScreen {
 
   private renderNow(run: GodRun, h: GodHooks): void {
     let model: NowCardModel;
+    const whisper = latestWhisperLine(run.god, run.god.feed) ?? undefined;
 
     if (this.spectacleBeat?.spectacle) {
       const b = this.spectacleBeat;
@@ -450,6 +482,8 @@ export class GodScreen {
         run.god.focusSituationId = sit.id;
       }
     }
+
+    if (whisper && model.mode !== 'spectacle') model.whisper = whisper;
 
     this.now.render(model, run);
     const sit = model.situation;
@@ -572,6 +606,7 @@ export class GodScreen {
       show(this.overlayEl, true);
       const def = this.pendingDef;
       const box = div('god-modal');
+      if (NEEDS_CONFIRM.has(def.id)) box.classList.add('god-modal-danger');
       box.append(div('god-modal-title', def.name));
       box.append(div('god-modal-sub', def.promise));
       const targets = confirmTargets(run, def, this.stripState);
@@ -634,6 +669,12 @@ export class GodScreen {
     this.render();
   }
 
+  /** True while CONTINUE must walk the aftermath chain instead of advancing a cycle. */
+  needsAftermathStep(): boolean {
+    const run = this.hooks?.run();
+    return this.phase === 'aftermath' && !!run?.god.lastAftermath;
+  }
+
   /** Reset oracle UI blockers — used by the test harness between advances. */
   resetBoardState(): void {
     this.pauseBeat = null;
@@ -651,15 +692,12 @@ export class GodScreen {
   }
 }
 
-function meter(label: string, value: string, frac: number, tone: string): HTMLElement {
-  const el = div('god-meter compact');
-  el.append(div('god-meter-label', label), div('god-meter-value', value));
-  const track = div('god-meter-track');
-  const fill = div('god-meter-fill ' + tone);
-  fill.style.width = `${Math.max(0, Math.min(1, frac)) * 100}%`;
-  track.append(fill);
-  el.append(track);
-  return el;
+function chaosMeterTone(chaos: number): 'default' | 'good' | 'gold' | 'hot' | 'cold' {
+  if (chaos >= 85) return 'hot';
+  if (chaos >= 60) return 'hot';
+  if (chaos >= 40) return 'gold';
+  if (chaos >= 20) return 'gold';
+  return 'cold';
 }
 
 function confirmLabel(def: InterventionDef): string {

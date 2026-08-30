@@ -9,6 +9,8 @@ import { button, clear, div, show, esc } from './Dom';
 import type { WorldEvent } from '../world/WorldEvent';
 import type { RecapBeat } from '../story/StoryTypes';
 import { recapPlainText } from '../story/StoryRecap';
+import { enter } from './motion';
+import { trapFocus, type FocusTrap } from './focusTrap';
 
 export interface ReportSpotlight {
   portrait: string;
@@ -45,6 +47,7 @@ export class DeathReport {
   private sr = div('sr-only');
   private timers: number[] = [];
   private recapBeats: RecapBeat[] = [];
+  private focusTrap: FocusTrap | null = null;
 
   constructor() {
     this.root.id = 'death-screen';
@@ -84,6 +87,7 @@ export class DeathReport {
         spot.append(div('killer-rank', `${s.rankFrom}  →  ${s.rankTo}`));
       }
       this.bodyEl.append(spot);
+      if (!opts.reducedMotion) enter(spot, 'fade');
     }
 
     const recap = opts.recap ?? [];
@@ -93,20 +97,40 @@ export class DeathReport {
       : opts.events.map((e) => e.text).join('. ');
 
     if (recap.length) {
+      const timeline = div('death-timeline');
+      const rail = div('death-timeline-rail');
+      const beats = div('death-timeline-beats');
+      timeline.append(rail, beats);
+      this.bodyEl.append(timeline);
+
       const acts: RecapBeat['act'][] = ['opening', 'rising', 'turn', 'end', 'consequence'];
+      let beatIndex = 0;
       for (const act of acts) {
         const group = recap.filter((b) => b.act === act);
         if (!group.length) continue;
-        this.bodyEl.append(div('tier-label', act.replace('_', ' ').toUpperCase()));
-        group.forEach((b, i) => {
-          const card = div(`recap-card vfx-${b.vfx}`);
-          if (!opts.reducedMotion) card.style.animationDelay = `${i * 0.12}s`;
-          else card.style.animation = 'none';
-          card.append(div('recap-h', b.headline));
-          card.append(div('recap-l', opts.recapLineFor ? opts.recapLineFor(b) : b.line));
-          if (b.detail) card.append(div('recap-d', b.detail));
-          this.bodyEl.append(card);
-        });
+        const actLabel = div('death-act-label tier-label', act.replace('_', ' ').toUpperCase());
+        beats.append(actLabel);
+        if (!opts.reducedMotion) {
+          actLabel.style.opacity = '0';
+          this.timers.push(window.setTimeout(() => enter(actLabel, 'fade'), beatIndex * 280));
+        }
+        for (const b of group) {
+          const emphasis = b.vfx === 'succession' || b.vfx === 'age';
+          const beat = div(`death-beat recap-card vfx-${b.vfx}${emphasis ? ' death-beat-emphasis' : ''}`);
+          beat.append(div('recap-h', b.headline));
+          beat.append(div('recap-l', opts.recapLineFor ? opts.recapLineFor(b) : b.line));
+          if (b.detail) beat.append(div('recap-d', b.detail));
+          beats.append(beat);
+          if (opts.reducedMotion) {
+            beat.style.opacity = '1';
+          } else {
+            beat.style.opacity = '0';
+            const delay = beatIndex * 340;
+            const variant = emphasis ? 'scale' : 'slide-left';
+            this.timers.push(window.setTimeout(() => enter(beat, variant), delay));
+          }
+          beatIndex++;
+        }
       }
     } else {
       const highlight = new Set((opts.highlight ?? []).map((h) => h.toUpperCase()));
@@ -123,15 +147,13 @@ export class DeathReport {
               tone: 'neutral' as const,
             },
           ];
-      this.bodyEl.append(div('tier-label', 'THE WORLD'));
+
+      const timeline = div('death-timeline');
+      timeline.append(div('death-timeline-rail'), div('death-timeline-beats death-timeline-events'));
+      const beats = timeline.querySelector('.death-timeline-beats')!;
+      beats.append(div('tier-label', 'THE WORLD'));
+
       lines.forEach((ev, i) => {
-        const line = div('report-line');
-        if (opts.reducedMotion) {
-          line.style.animation = 'none';
-          line.style.opacity = '1';
-        } else {
-          line.style.animationDelay = `${Math.min(i, 12) * 0.08}s`;
-        }
         let text = esc(ev.text);
         for (const h of highlight) {
           if (!h) continue;
@@ -140,9 +162,18 @@ export class DeathReport {
         const toneClass = ev.tone === 'bad' ? 'bad' : ev.tone === 'good' ? 'ok' : ev.tone === 'gold' ? 'who' : '';
         const seen = ev.witnessed ? 'SAW' : 'WHILE GONE';
         const turnTag = `<span class="turn">T${ev.turn} ${seen}</span>`;
-        line.innerHTML = toneClass ? `${turnTag}<span class="${toneClass}">${text}</span>` : `${turnTag}${text}`;
-        this.bodyEl.append(line);
+        const html = toneClass ? `${turnTag}<span class="${toneClass}">${text}</span>` : `${turnTag}${text}`;
+        const line = div(`report-line beat-reveal${toneClass ? ' ' + toneClass : ''}`);
+        line.innerHTML = html;
+        beats.append(line);
+        if (opts.reducedMotion) {
+          line.style.opacity = '1';
+        } else {
+          line.style.opacity = '0';
+          this.timers.push(window.setTimeout(() => enter(line, 'slide-left'), Math.min(i, 12) * 280));
+        }
       });
+      this.bodyEl.append(timeline);
     }
 
     const finish = () => {
@@ -158,6 +189,8 @@ export class DeathReport {
     this.timers.push(window.setTimeout(finish, revealAt));
 
     show(this.root, true);
+    this.focusTrap?.release();
+    this.focusTrap = trapFocus(this.root);
   }
 
   /** Patch AI-generated recap lines without rebuilding the whole screen. */
@@ -174,6 +207,8 @@ export class DeathReport {
 
   hide(): void {
     this.cancelTimers();
+    this.focusTrap?.release();
+    this.focusTrap = null;
     show(this.root, false);
   }
 

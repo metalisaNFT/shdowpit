@@ -2,17 +2,17 @@
  * Feed timeline drawer for THE LONG GAME.
  */
 
-import { button, clear, div, show } from './Dom';
+import { clear, div, el } from './Dom';
 import { filterFeed, groupByCycle, PRIORITY_LABEL, beatToneClass, summariseCycle } from '../god/Feed';
 import type { GodRun } from '../god/GodRun';
 import type { Beat, BeatPriority } from '../god/GodTypes';
 import type { GodHooks } from './GodScreen';
+import { Drawer } from './primitives/Drawer';
 
 const PRIORITIES: BeatPriority[] = ['background', 'notable', 'major', 'legendary'];
 
 export class GodFeedDrawer {
-  readonly root = div('god-feed-drawer hidden');
-  private open = false;
+  readonly drawer: Drawer;
   private feedFloor: BeatPriority = 'notable';
   private expanded = new Set<string>();
   private filterActor: string | null = null;
@@ -20,47 +20,71 @@ export class GodFeedDrawer {
   onBeatClick: ((b: Beat) => void) | null = null;
   onInspect: ((id: string) => void) | null = null;
 
+  constructor() {
+    this.drawer = new Drawer({
+      title: 'CONSEQUENCES',
+      className: 'god-feed-drawer',
+      side: 'right',
+      closeLabel: 'CLOSE',
+    });
+    this.drawer.onClose = () => {
+      /* sync handled by GodScreen render */
+    };
+  }
+
+  mount(parent: HTMLElement): void {
+    this.drawer.mount(parent);
+  }
+
   toggle(): void {
-    this.open = !this.open;
-    show(this.root, this.open);
+    this.drawer.toggle();
+  }
+
+  open(): void {
+    this.drawer.open();
+  }
+
+  close(): void {
+    this.drawer.close();
   }
 
   isOpen(): boolean {
-    return this.open;
+    return this.drawer.isOpen();
   }
 
   render(run: GodRun, hooks: GodHooks): void {
-    if (!this.open) return;
-    clear(this.root);
-
-    const head = div('god-drawer-head');
-    head.append(div('god-drawer-title', 'CONSEQUENCES'));
-    head.append(button('CLOSE', () => this.toggle(), 'brut tiny'));
-    this.root.append(head);
+    if (!this.drawer.isOpen()) return;
+    clear(this.drawer.body);
 
     const filter = div('god-filter');
     for (const p of PRIORITIES) {
-      const b = div('god-filter-btn' + (this.feedFloor === p ? ' sel' : ''), PRIORITY_LABEL[p]);
+      const b = el('button', 'god-filter-btn' + (this.feedFloor === p ? ' sel' : ''), PRIORITY_LABEL[p]);
+      b.type = 'button';
       b.addEventListener('click', () => {
         this.feedFloor = p;
         this.render(run, hooks);
       });
       filter.append(b);
     }
-    this.root.append(filter);
+    this.drawer.body.append(filter);
 
     const feedSource = this.filterActor
       ? filterFeed(run.god.feed, this.feedFloor, this.filterActor)
       : filterFeed(run.god.feed, this.feedFloor);
     const groups = groupByCycle(feedSource, this.feedFloor).slice(0, 14);
     if (!groups.length) {
-      this.root.append(div('god-empty', 'Nothing at this level yet.'));
+      this.drawer.body.append(div('god-empty', 'Nothing at this level yet.'));
       return;
     }
+
+    const list = div('god-feed-list');
     for (const g of groups) {
-      this.root.append(div('god-cycle-head', summariseCycle(g.cycle, g.beats)));
-      for (const b of g.beats.slice().reverse()) this.root.append(this.beatEl(b, run, hooks));
+      const section = div('god-feed-cycle');
+      section.append(div('god-cycle-head god-cycle-sticky', summariseCycle(g.cycle, g.beats)));
+      for (const b of g.beats.slice().reverse()) section.append(this.beatEl(b, run, hooks));
+      list.append(section);
     }
+    this.drawer.body.append(list);
   }
 
   private beatEl(b: Beat, run: GodRun, hooks: GodHooks): HTMLElement {
