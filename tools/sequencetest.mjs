@@ -411,7 +411,8 @@ async function main() {
   /* ============================================================ */
   beat(18, 'RELOAD');
   await page.reload({ waitUntil: 'load' });
-  await page.waitForTimeout(3000);
+  await page.waitForFunction(() => typeof window.SHDOWPIT?.__state === 'function', { timeout: 45000 });
+  await page.waitForTimeout(1500);
   const after = JSON.parse(await ev(() => window.SHDOWPIT.__rawSave()));
   const sameRoster =
     JSON.stringify(save.nemeses.map((n) => [n.id, n.name, n.rank])) ===
