@@ -355,6 +355,7 @@ export class SaveSystem {
       n.branded ??= false;
       n.abandonedTerritoryTurn ??= null;
       n.stolenFromThem ??= [];
+      n.metPlayer ??= false;
       n.fakeDeathPenalty ??= 0;
       n.archetype = coerceArchetype(n.archetype);
       n.signatureKnown = n.signatureKnown ?? false;

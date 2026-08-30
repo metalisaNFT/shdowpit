@@ -206,6 +206,8 @@ export interface Nemesis {
   branded?: boolean;
   abandonedTerritoryTurn?: number | null;
   stolenFromThem?: StolenItem[];
+  /** Player has faced this nemesis in combat at least once. */
+  metPlayer?: boolean;
   /** extra chance their next apparent death is real */
   fakeDeathPenalty?: number;
 

@@ -72,6 +72,9 @@ export function tickHeatEconomy(
     run.areaDwell = 0;
   }
   if (carryingRelic) addHeat(run, HEAT.relicCarry * dt);
+  if (run.informantIds.length > 0) {
+    addHeat(run, -0.35 * dt * run.informantIds.length);
+  }
 }
 
 export function spawnSafeOffset(px: number, pz: number, facing: number, behind: boolean, dist: number): { x: number; z: number } {

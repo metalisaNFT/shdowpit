@@ -273,7 +273,7 @@ function territoryWars(arcs: StoryArc[], log: WorldEvent[], data: SaveData): voi
     (byArea.get(area) ?? byArea.set(area, []).get(area)!).push(ev);
   }
   for (const [area, evs] of byArea) {
-    if (evs.length < 2) continue;
+    if (area === 'unknown' || evs.length < 2) continue;
     const holder = data.territories[area];
     arcs.push({
       id: `tw-${area}`,

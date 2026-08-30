@@ -183,7 +183,7 @@ export function nearestArea(x: number, z: number): AreaDef {
   return best;
 }
 
-/** Angles (atan2 dx, dz) of each road leaving an area. */
+/** Angles (atan2 dz, dx) of each road leaving an area. */
 export function exitAngles(areaId: string): number[] {
   const a = getArea(areaId);
   const out: number[] = [];
@@ -191,7 +191,7 @@ export function exitAngles(areaId: string): number[] {
     const other = x === areaId ? y : y === areaId ? x : null;
     if (!other) continue;
     const b = getArea(other);
-    out.push(Math.atan2(b.cx - a.cx, b.cz - a.cz));
+    out.push(Math.atan2(b.cz - a.cz, b.cx - a.cx));
   }
   return out;
 }

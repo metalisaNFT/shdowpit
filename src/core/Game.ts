@@ -122,6 +122,7 @@ import type { MythEventKind } from '../ai/AITypes';
 
 import { type PowerDef, type PowerId } from '../data/abilities';
 import { getArea } from '../data/areas';
+import { AREA_NAMES } from '../data/names';
 import { chooseTitle } from '../data/names';
 import { rollPowerOffers, rollUncappedStats } from '../abilities/OfferRoller';
 import { activeReactions, potentialReactions } from '../abilities/Reactions';
@@ -2139,7 +2140,6 @@ export class Game {
         onChanged: () => {
           syncLegacyWeapons(this.mgr.data.playerMeta);
           if (this.world.runActive) this.applyPlayerBuild();
-          this.player.rebuildWeapon();
           this.mgr.persist();
         },
       },
@@ -3214,6 +3214,7 @@ export class Game {
     this.ui.hud.clearAreaBanner();
     this.syncAIWorld();
     const n = e.nemesis;
+    n.metPlayer = true;
     const god = this.godRun?.god ?? null;
     const legends = this.mgr.data.legends ?? [];
     const echoes = this.godRun?.echoes ?? god?.legacyEchoes ?? [];
@@ -3360,8 +3361,10 @@ export class Game {
       this.mgr.data.playerMeta.unlockedSkills = [...this.abilities.unlocked];
     }
     this.world.dropRemnant(e.named, this.combat.lastKillPlayerCredit, false);
-    this.finishVendettaAgainst(e, executed, false);
+    const weaponAtKill = this.player.stats.weaponId;
+    const recoveredWeaponId = e.nemesis.stolen.find((s) => s.weaponId)?.weaponId ?? null;
     this.world.onEnemyKilled(e, executed, definite);
+    this.finishVendettaAgainst(e, executed, false, recoveredWeaponId, weaponAtKill);
     this.applyPlayerBuild();
     if (!wasOverlord && e.named) {
       this.offerNemesisReward(e.nemesis, executed);
@@ -3781,13 +3784,32 @@ export class Game {
     }
     if (id === 'abandon_territory') {
       n.abandonedTerritoryTurn = turn;
-      this.world.liberateCurrent(liberationRewardFor(n.personality, n.archetype));
+      const held = n.territory;
+      if (held && held !== 'pit' && held !== 'fortress') {
+        this.mgr.data.territories[held] = null;
+        n.territory = 'pit';
+        this.mgr.assignTerritories();
+        this.mgr.log(
+          makeEvent(turn, this.mgr.age, 'territory', `${fullName(n)} abandoned ${AREA_NAMES[held] ?? held}.`, [n.id], true, 'neutral', {
+            payload: { areaId: held },
+          })
+        );
+      }
+      if (this.world.currentArea.id === held) {
+        this.world.liberateCurrent(liberationRewardFor(n.personality, n.archetype));
+      }
       e.escaping = true;
     }
     if (id === 'informant') {
       n.informant = true;
-      this.world.run.informantIds.push(n.id);
+      if (!this.world.run.informantIds.includes(n.id)) this.world.run.informantIds.push(n.id);
       addHeat(this.world.run, HEAT.informant);
+      const master = n.master ? this.mgr.byId(n.master) : null;
+      this.ui.hud.toast(
+        master ? `INTEL: SERVES ${fullName(master).toUpperCase()}` : 'INTEL: HEAT WILL COOL FASTER',
+        'gold',
+        4.5
+      );
       e.escaping = true;
     }
     if (id === 'betrayal' && n.master) {
@@ -4043,7 +4065,13 @@ export class Game {
     }
   }
 
-  private finishVendettaAgainst(e: Enemy, executed: boolean, fled: boolean): void {
+  private finishVendettaAgainst(
+    e: Enemy,
+    executed: boolean,
+    fled: boolean,
+    recoveredWeaponId: string | null = null,
+    weaponAtKill: string | null = null
+  ): void {
     const v = this.world.run.vendetta;
     if (!v || !v.committed || v.targetId !== e.nemesis.id) return;
     const facts = factsFromNemesis(
@@ -4051,6 +4079,7 @@ export class Game {
       (id) => this.mgr.byId(id) ?? undefined,
       (id) => !!this.mgr.byId(id)?.alive
     );
+    const stolenWeaponId = recoveredWeaponId ?? facts.stolenWeaponId;
     const master = e.nemesis.master ? this.mgr.byId(e.nemesis.master) : null;
     const next = applyVendettaProgress(v, {
       postureBreaks: this.world.vendettaCounters.posture,
@@ -4063,15 +4092,15 @@ export class Game {
       inMasterTerritory: !!master && this.world.currentArea.id === master.territory,
       heat: this.world.run.heat,
       heatMax: HEAT.max,
-      weaponId: this.player.stats.weaponId,
-      stolenWeaponId: facts.stolenWeaponId,
+      weaponId: weaponAtKill ?? this.player.stats.weaponId,
+      stolenWeaponId,
       usedWeakness: this.world.vendettaCounters.weakness,
       usedAdaptedHabit: this.world.vendettaCounters.adapted,
       loyalistSeparated: this.world.vendettaCounters.loyalistSeparated || !facts.hasLoyalistFollower,
     });
     this.world.run.vendetta = next;
     if (next.complete) {
-      this.applyVendettaCompletion(next, e.nemesis);
+      this.applyVendettaCompletion(next, e.nemesis, recoveredWeaponId);
       this.ui.hud.toast('VENDETTA COMPLETE', 'gold');
       this.mgr.log(makeEvent(this.mgr.turn, this.mgr.age, 'vendetta', `Vendetta against ${fullName(e.nemesis)} complete.`, [e.nemesis.id], true, 'gold'));
     } else if (next.failed) {
@@ -4081,7 +4110,11 @@ export class Game {
     }
   }
 
-  private applyVendettaCompletion(v: VendettaInstance, n: import('../nemesis/Nemesis').Nemesis): void {
+  private applyVendettaCompletion(
+    v: VendettaInstance,
+    n: import('../nemesis/Nemesis').Nemesis,
+    recoveredWeaponId: string | null = null
+  ): void {
     const kind = v.reward.kind;
     switch (kind) {
       case 'essence':
@@ -4090,8 +4123,8 @@ export class Game {
         break;
       case 'technique': {
         const wid =
-          v.pattern === 'defeat_recovered_weapon' && n.stolen.find((s) => s.weaponId)?.weaponId
-            ? n.stolen.find((s) => s.weaponId)!.weaponId!
+          v.pattern === 'defeat_recovered_weapon' && recoveredWeaponId
+            ? recoveredWeaponId
             : this.player.stats.weaponId;
         const list = this.mgr.data.playerMeta.techniques[wid] ?? [];
         const add =

@@ -4,6 +4,7 @@
  */
 
 import type { Nemesis } from './Nemesis';
+import { hasMetPlayer } from './NemesisMemory';
 
 export type EncounterKind =
   | 'FIRST_MEETING'
@@ -64,13 +65,7 @@ export function classifyEncounter(n: Nemesis, ctx: ClassifyContext = {}): Encoun
 
   if (ctx.hunting && n.personality === 'hunter') return 'AMBUSH';
 
-  const met =
-    n.memory.length > 0 ||
-    n.killsAgainstPlayer > 0 ||
-    n.defeatsByPlayer > 0 ||
-    n.escapedPlayer > 0 ||
-    n.returns > 0;
-  if (!met) return 'FIRST_MEETING';
+  if (!hasMetPlayer(n)) return 'FIRST_MEETING';
 
   return 'RETURNING_RIVAL';
 }

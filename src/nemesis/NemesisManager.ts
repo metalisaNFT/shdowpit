@@ -280,7 +280,7 @@ export class NemesisManager {
 
       // Too many at this rank (can happen after a resurrection) — demote the weakest.
       while (have.length > targets[rank] && rank !== 'elite') {
-        have.sort((a, b) => a.power - b.power);
+        have.sort((a, b) => a.power - b.power || a.returns - b.returns);
         const victim = have.shift()!;
         events.push(this.demote(victim, 'the hierarchy closed around them'));
         have = this.ofRank(rank);
@@ -355,12 +355,16 @@ export class NemesisManager {
     }
   }
 
-  /** Give every area a holder; the Overlord always sits in the Fortress. */
+  /** Give every area a holder; the Overlord always sits in the Fortress alone. */
   assignTerritories(): void {
     const ov = this.overlord();
     if (ov) {
       ov.territory = 'fortress';
       this.data.territories.fortress = ov.id;
+      for (const a of AREAS) {
+        if (a.id === 'fortress') continue;
+        if (this.data.territories[a.id] === ov.id) this.data.territories[a.id] = null;
+      }
     }
     for (const a of AREAS) {
       if (a.id === 'fortress' && ov) continue;
@@ -449,12 +453,17 @@ export class NemesisManager {
     );
   }
 
-  /** Bring someone back, scarred and angrier. */
+  /** Bring someone back, scarred and angrier. A former Overlord re-enters one rank down. */
   resurrect(n: Nemesis, scarLabel: string | null): WorldEvent {
+    const wasOverlord = n.rank === 'overlord';
     n.alive = true;
     n.diedOnTurn = null;
     n.returns++;
     n.level += 1;
+    if (wasOverlord) {
+      n.rank = 'warlord';
+      remember(n, 'I_WAS_DEMOTED', this.turn);
+    }
     remember(n, 'I_RETURNED_FROM_DEATH', this.turn);
     n.title = chooseTitle(n, this.titlesInUse(n));
     recomputeRevenge(n);

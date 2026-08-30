@@ -288,9 +288,10 @@ function buildActions(mgr: NemesisManager, rng: RNG): Action[] {
       const a = rng.pick(alive);
       if (rankIndex(a.rank) < 1) return null;
       const area = rng.pick(AREAS);
-      if (area.id === 'fortress' && a.rank !== 'overlord') {
-        // Only warlords and up dare.
-        if (rankIndex(a.rank) < 3) return null;
+      if (area.id === 'fortress') {
+        if (a.rank !== 'warlord') return null;
+      } else if (a.rank === 'overlord') {
+        return null;
       }
       const holder = mgr.territoryHolder(area.id);
       if (holder && holder.id === a.id) return null;
@@ -302,7 +303,10 @@ function buildActions(mgr: NemesisManager, rng: RNG): Action[] {
               mgr.age,
               'territory',
               `${fullName(a)} was driven out of ${AREA_NAMES[area.id]} by ${fullName(holder)}.`,
-              [a.id, holder.id]
+              [holder.id, a.id],
+              false,
+              'neutral',
+              { payload: { areaId: area.id } }
             )
           );
         }

@@ -67,9 +67,11 @@ export function copyForEvent(ev: WorldEvent, names: Map<string, Nemesis>): CopyL
       break;
     case 'weapon_theft':
       headline = 'YOUR BLADE MOVED AGAIN';
-      line = ev.payload?.itemName
-        ? `${a} claimed ${ev.payload.itemName}${b ? ` from ${b}` : ''}.`
-        : line;
+      line = ev.payload?.recoveredFrom
+        ? `You took ${ev.payload.itemName ?? 'your weapon'} back from ${ev.payload.recoveredFrom}.`
+        : ev.payload?.itemName
+          ? `${a} claimed ${ev.payload.itemName}${b ? ` from ${b}` : ''}.`
+          : line;
       break;
     case 'territory':
       headline = area ? `${area} CHANGED HANDS` : 'THE GROUND CHANGED';

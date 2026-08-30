@@ -66,6 +66,18 @@ export function isNpcMemory(type: MemoryType): boolean {
   return NPC_ONLY.has(type);
 }
 
+/** True once the player has actually faced this nemesis in a run. */
+export function hasMetPlayer(n: Nemesis): boolean {
+  if (n.metPlayer) return true;
+  if (n.killsAgainstPlayer > 0 || n.defeatsByPlayer > 0 || n.escapedPlayer > 0 || n.returns > 0) return true;
+  for (const m of n.memory) {
+    if (m.type.startsWith('PLAYER_') || m.type === 'I_KILLED_PLAYER' || m.type === 'I_ESCAPED_PLAYER' || m.type === 'I_STOLE_PLAYER_WEAPON') {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function remember(n: Nemesis, type: MemoryType, turn: number, subject?: string): MemoryEvent {
   const ev: MemoryEvent = { type, turn };
   if (subject) ev.subject = subject;
