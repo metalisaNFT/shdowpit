@@ -12,6 +12,7 @@ import type { RNG } from '../core/RNG';
 import { mixSeed } from '../core/RNG';
 import type { AgeModifier } from '../data/ages';
 import { getPersonality } from '../data/personalities';
+import { AREAS } from '../data/areas';
 import { chooseTitle } from '../data/names';
 import { makeEvent, type WorldEvent, type WorldEventType } from '../world/WorldEvent';
 import type { NemesisManager } from '../nemesis/NemesisManager';
@@ -86,6 +87,13 @@ export class GodContext {
   skirmishMode = false;
   /** When true, chronicle still writes but feed/UI beats are suppressed. */
   silent = false;
+  /**
+   * True when `god` is a throwaway state rebuilt for this beat (the offscreen
+   * / world-turn path) rather than a persisted god run. Its `cycle` is a
+   * constant there, so anything that measures elapsed cycles has to use the
+   * world turn instead.
+   */
+  ephemeralGod = false;
 
   constructor(mgr: NemesisManager, god: GodState, rng: RNG, age: AgeModifier, act: ActDef) {
     this.mgr = mgr;
@@ -102,6 +110,16 @@ export class GodContext {
 
   get cycle(): number {
     return this.god.cycle;
+  }
+
+  /**
+   * The clock that actually advances here. A persisted god run counts cycles;
+   * the offscreen path rebuilds a throwaway god each beat whose cycle is pinned
+   * at 1, so anything that says "until later" has to be measured in world
+   * turns there or it means "forever".
+   */
+  get now(): number {
+    return this.ephemeralGod ? this.mgr.turn : this.god.cycle;
   }
 
   living(): Nemesis[] {
@@ -233,6 +251,9 @@ export class GodContext {
     // A knife in the back is a knife in the back.
     if (kind === 'betrayal') fa.tilt.edge = Math.max(fa.tilt.edge, 1.1);
     if (kind === 'hunt') fa.tilt.edge = Math.max(fa.tilt.edge, 0.4);
+    // Somebody who came here for this person does not let them walk off.
+    if (kind === 'hunt' || simOf(a).revengeTargets.includes(b.id)) fa.pursuit = Math.min(1, fa.pursuit + 0.45);
+    if (simOf(b).revengeTargets.includes(a.id)) fb.pursuit = Math.min(1, fb.pursuit + 0.3);
 
     const duel = resolveDuel(fa, fb, this.rng);
     const winner = duel.winnerId === a.id ? a : b;
@@ -258,19 +279,28 @@ export class GodContext {
     ws.fear = Math.max(0, ws.fear - 4);
     ls.fear = Math.min(100, ls.fear + 11);
 
-    makeRivals(winner, loser);
-    trimRivalries(winner);
-    trimRivalries(loser);
-    remember(winner, 'I_DEFEATED_RIVAL', this.mgr.turn, loser.id);
-    remember(loser, 'RIVAL_DEFEATED_ME', this.mgr.turn, winner.id);
-    if (upset) {
-      remember(winner, 'I_BEAT_A_STRONGER_FOE', this.mgr.turn, loser.id);
-      remember(loser, 'I_LOST_TO_A_WEAKER_FOE', this.mgr.turn, winner.id);
-      this.deed(winner, `beat ${fullName(loser)}, who was the stronger`, 3);
+    // Rabble do not enter anybody's memory. A named character's grudges and
+    // rivalries are only ever about other named characters — otherwise the
+    // lists fill with ids nobody can look up.
+    const both = isNamed(winner) && isNamed(loser);
+    if (both) {
+      makeRivals(winner, loser);
+      trimRivalries(winner);
+      trimRivalries(loser);
+      remember(winner, 'I_DEFEATED_RIVAL', this.mgr.turn, loser.id);
+      remember(loser, 'RIVAL_DEFEATED_ME', this.mgr.turn, winner.id);
+      if (upset) {
+        remember(winner, 'I_BEAT_A_STRONGER_FOE', this.mgr.turn, loser.id);
+        remember(loser, 'I_LOST_TO_A_WEAKER_FOE', this.mgr.turn, winner.id);
+        this.deed(winner, `beat ${fullName(loser)}, who was the stronger`, 3);
+      }
     }
 
-    winner.level = Math.min(30, winner.level + 1);
-    recomputePower(winner);
+    // Running somebody off is not a victory anyone grows from.
+    if (duel.ending === 'down') {
+      winner.level = Math.min(30, winner.level + 1);
+      recomputePower(winner);
+    }
 
     const aftermath = duel.ending === 'flight' ? this.handleFlight(winner, loser) : duel.ending === 'stalemate' ? 'stalemate' : this.handleDown(winner, loser, kind);
 
@@ -284,15 +314,40 @@ export class GodContext {
     return { duel, winner, loser, aftermath, upset, headline, detail };
   }
 
+  /**
+   * A flight has to leave the world different, or the same hunter finds the
+   * same runner every cycle forever. The runner goes to ground somewhere
+   * else, is unreachable for a while, and the one who ran them off is the one
+   * they will be thinking about while they are down there.
+   */
   private handleFlight(winner: Nemesis, loser: Nemesis): Aftermath {
     const ls = simOf(loser);
     ls.flights++;
-    ls.fear = Math.min(100, ls.fear + 8);
-    if (!ls.escapedFrom.includes(winner.id)) ls.escapedFrom.push(winner.id);
-    this.wantRevenge(loser, winner);
-    remember(loser, 'I_FLED_FROM', this.mgr.turn, winner.id);
+    ls.fear = Math.min(100, ls.fear + 12);
+    if (isNamed(winner) && isNamed(loser)) {
+      if (!ls.escapedFrom.includes(winner.id)) ls.escapedFrom.push(winner.id);
+      if (ls.escapedFrom.length > 3) ls.escapedFrom.shift();
+      // Running is humiliating enough to become a plan for the vengeful, but
+      // it does not overwrite a grudge somebody is already carrying.
+      if (getPersonality(loser.personality).revenge >= 1.0) this.wantRevenge(loser, winner);
+      remember(loser, 'I_FLED_FROM', this.mgr.turn, winner.id);
+    }
+    if (!this.skirmishMode && isNamed(loser)) {
+      ls.hiddenUntil = Math.max(ls.hiddenUntil, this.now + 2);
+      // Ground they hold, they keep — but they are not standing on it today.
+      loser.territory = this.fleeGround(loser, winner.territory);
+    }
     this.chronicle('enemy_escape', `${fullName(loser)} broke away from ${fullName(winner)}.`, [loser.id, winner.id]);
     return 'escaped';
+  }
+
+  /** Somewhere that is not `avoid`, preferring their own ground, then the quietest place. */
+  fleeGround(n: Nemesis, avoid: string): string {
+    const own = Object.keys(this.mgr.data.territories).filter((a) => this.mgr.data.territories[a] === n.id && a !== avoid);
+    if (own.length) return own[0];
+    const options = AREAS.filter((a) => a.id !== avoid && a.id !== 'fortress');
+    options.sort((a, b) => a.danger - b.danger);
+    return options[this.rng.int(0, Math.min(2, options.length - 1))]?.id ?? n.territory;
   }
 
   /**
@@ -304,23 +359,41 @@ export class GodContext {
     const ls = simOf(loser);
     const pw = getPersonality(winner.personality);
 
-    let kill = 0.3 * this.act.lethality;
-    if (ws.revengeTargets.includes(loser.id)) kill += 0.28;
-    if (winner.rivalries.includes(loser.id)) kill += 0.12;
-    if (kind === 'betrayal') kill += 0.25;
-    if (kind === 'war') kill += 0.12;
-    kill += Math.min(0.3, this.cond.weight(loser.id, 'bounty') * 0.22);
+    // Killing is a decision, and the decision is shaped by what the fight was
+    // FOR. A grudge answered is usually answered for good; a challenge for
+    // rank rarely needs a body; a bounty is a bounty.
+    let kill = 0.34 * this.act.lethality;
+    if (ws.revengeTargets.includes(loser.id)) kill += 0.32;
+    if (winner.rivalries.includes(loser.id)) kill += 0.1;
+    if (kind === 'betrayal') kill += 0.28;
+    if (kind === 'war') kill += 0.14;
+    if (kind === 'challenge') kill -= 0.12;
+    kill += Math.min(0.36, this.cond.weight(loser.id, 'bounty') * 0.26);
     kill -= Math.min(0.42, this.cond.weight(loser.id, 'ward') * 0.34);
     if (winner.personality === 'madman') kill += 0.16;
-    if (winner.personality === 'traitor' || winner.personality === 'opportunist') kill += 0.1;
-    if (winner.personality === 'loyalist' || winner.personality === 'coward') kill -= 0.16;
-    if (winner.personality === 'showoff') kill -= 0.14;
+    if (winner.personality === 'avenger' && ws.revengeTargets.includes(loser.id)) kill += 0.15;
+    if (winner.personality === 'traitor' || winner.personality === 'opportunist') kill += 0.08;
+    if (winner.personality === 'loyalist' || winner.personality === 'coward') kill -= 0.14;
+    if (winner.personality === 'showoff') kill -= 0.16;
     const fw = factionFor(this.god, winner);
     const fl = factionFor(this.god, loser);
     if (fw && fl && fw.id === fl.id) kill -= 0.3;
     if (this.skirmishMode) kill += 0.24;
     if (!loser.persistent && !winner.persistent) kill += 0.2;
-    kill = Math.max(0.03, Math.min(0.9, kill));
+    // The crisis is the one thing everybody agrees should die — and the one
+    // thing nobody quite manages to finish without a reason of their own. A
+    // grudge or a price makes it stick; a lucky challenge does not.
+    if (this.god.crisis && this.god.crisis.resolved === 'none' && this.god.crisis.bodyId === loser.id) {
+      kill += ws.revengeTargets.includes(loser.id) || this.cond.weight(loser.id, 'bounty') > 0 ? 0.2 : -0.1;
+    }
+    kill = Math.max(0.03, Math.min(0.92, kill));
+
+    const isCrisisWinner = !!this.god.crisis && this.god.crisis.resolved === 'none' && this.god.crisis.bodyId === winner.id;
+    // The one who won wants subjects, not corpses. A crisis that killed
+    // everyone it beat would empty the world before anyone could answer it;
+    // one that bends people to it grows a house the player can rot from
+    // inside. A grudge is still a grudge.
+    if (isCrisisWinner && !ws.revengeTargets.includes(loser.id)) kill -= 0.3;
 
     if (this.rng.chance(kill)) {
       let killer: Nemesis | null = winner;
@@ -347,6 +420,24 @@ export class GodContext {
     }
 
     // Alive. So what does the winner do with them?
+    if (isCrisisWinner && isNamed(loser) && loser.master !== winner.id && this.rng.chance(0.55)) {
+      // Bent to it. The house of the one who won grows by one, and the one
+      // who bent the knee is not loyal — only beaten.
+      setMaster(loser, winner);
+      const wf = factionFor(this.god, winner);
+      if (wf) {
+        const lf = factionFor(this.god, loser);
+        if (lf && lf.id !== wf.id) lf.memberIds = lf.memberIds.filter((id) => id !== loser.id);
+        if (!wf.memberIds.includes(loser.id)) wf.memberIds.push(loser.id);
+        ls.factionId = wf.id;
+      }
+      ls.loyalty = Math.min(ls.loyalty, 30);
+      ls.fear = Math.min(100, ls.fear + 18);
+      remember(loser, 'I_SWORE_TO', this.mgr.turn, winner.id);
+      remember(loser, 'I_WAS_HUMILIATED_BY', this.mgr.turn, winner.id);
+      this.deed(winner, `bent ${fullName(loser)} to them`, 3);
+      return 'recruited';
+    }
     const loserValuable = loser.stolen.length > 0 || rankIndex(loser.rank) >= 2;
     if (
       rankIndex(winner.rank) >= 3 &&
@@ -440,6 +531,11 @@ export class GodContext {
     // both at once is the kind of thing that makes a generated feed read as
     // generated. The escape gets its own shape.
     if (a === 'escaped') {
+      // The third time somebody slips the same hunter, that is the story.
+      const times = l.memory.filter((m) => m.type === 'I_FLED_FROM' && m.subject === w.id).length;
+      if (times >= 2) {
+        return `${L} SLIPPED ${W} AGAIN. THAT IS ${times === 2 ? 'TWICE' : times + ' TIMES'} NOW.`;
+      }
       const lines =
         kind === 'betrayal'
           ? [`${W} came at ${L} from behind, and ${L} did not stay to find out how it ended`]
@@ -495,6 +591,7 @@ export class GodContext {
    */
   wantRevenge(actor: Nemesis, target: Nemesis): void {
     if (actor.id === target.id) return;
+    if (!isNamed(target) || !isNamed(actor)) return;
     const s = simOf(actor);
     if (!s.revengeTargets.includes(target.id)) s.revengeTargets.push(target.id);
     if (s.revengeTargets.length > 4) s.revengeTargets.shift();
@@ -539,13 +636,13 @@ export class GodContext {
 
     this.mgr.killNemesis(victim, false, killer ? `${fullName(killer)} killed ${fullName(victim)}.` : `${fullName(victim)} died — ${cause}.`);
     this.deaths.push(victim.id);
-    shakeFaction(this.god, vs.factionId, -8 - rankIndex(victim.rank) * 4);
+    shakeFaction(this.god, vs.factionId, -4 - rankIndex(victim.rank) * 3);
 
     // The people who cared take it personally. This is where revenge chains
     // start, and they start whether or not anyone is watching.
     for (const aid of victim.allies) {
       const ally = this.mgr.byId(aid);
-      if (!ally || !ally.alive || !killer) continue;
+      if (!ally || !ally.alive || !killer || !isNamed(killer)) continue;
       const pa = getPersonality(ally.personality);
       if (ally.master === victim.id) remember(ally, 'MY_MASTER_FELL', this.mgr.turn, victim.id);
       if (pa.revenge > 1.2 || ally.master === victim.id || this.rng.chance(0.35)) {

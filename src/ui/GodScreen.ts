@@ -588,7 +588,9 @@ export class GodScreen {
       show(this.overlayEl, true);
       const r = run.god.lastDescentReport;
       const box = div('god-modal');
-      box.append(div('god-modal-kicker', 'RETURN'));
+      if (r.outcome === 'killed') box.classList.add('god-modal-gold');
+      if (r.outcome === 'player_died') box.classList.add('god-modal-danger');
+      box.append(div('god-modal-kicker', DESCENT_KICKER[r.outcome] ?? 'RETURN'));
       box.append(div('god-modal-title', r.targetName.toUpperCase()));
       for (const line of r.lines) box.append(div('god-modal-line', line));
       box.append(
@@ -611,6 +613,13 @@ export class GodScreen {
       box.append(div('god-modal-sub', def.promise));
       const targets = confirmTargets(run, def, this.stripState);
       if (targets) box.append(div('god-modal-targets', targets));
+      const reading = run.reading(def.id, this.stripState.selA, def.targeting === 'pair' ? this.stripState.selB : null, this.stripState.selArea);
+      if (reading) {
+        const rb = div('god-modal-reading read-' + reading.clarity);
+        rb.append(div('god-modal-reading-label', 'THE READING'));
+        for (const line of reading.lines.slice(0, 4)) rb.append(div('god-int-read-line', line));
+        box.append(rb);
+      }
       const row = div('god-modal-actions');
       row.append(
         button('CANCEL', () => {
@@ -747,6 +756,14 @@ function aftermathHeadline(intention: string): string {
   return 'THE WORLD MOVED';
 }
 
+const DESCENT_KICKER: Record<string, string> = {
+  killed: 'RETURN — YOU KILLED THEM YOURSELF',
+  spared: 'RETURN — YOU LEFT THEM ALIVE',
+  fled: 'RETURN — NO BODY',
+  player_died: 'RETURN — YOU DIED BELOW',
+  escaped: 'RETURN — YOU CAME BACK UP',
+};
+
 const KIND_LABEL: Record<string, string> = {
   rivalry: 'RIVALRY',
   ascendant: 'CLIMBING',
@@ -757,6 +774,7 @@ const KIND_LABEL: Record<string, string> = {
   underdog: 'UNDERDOG',
   revenge: 'REVENGE',
   betrayal_risk: 'DISLOYALTY',
+  succession: 'SUCCESSION',
   territory: 'GROUND',
   heresy: 'HERESY',
   crisis: 'CRISIS',

@@ -1383,6 +1383,92 @@ body.god-oracle-active #ui[data-mode='god'] {
   margin-top: 6px;
 }
 
+/* ---------- the reading ---------- */
+
+.god-int-read {
+  margin-top: 7px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.god-int-read-line {
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--ink);
+  opacity: 0.85;
+}
+
+.god-int-read.read-hazy .god-int-read-line,
+.god-modal-reading.read-hazy .god-int-read-line {
+  opacity: 0.6;
+  font-style: italic;
+}
+
+.god-int-read.read-blind .god-int-read-line,
+.god-modal-reading.read-blind .god-int-read-line {
+  color: var(--hot);
+}
+
+.god-int-read-who {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 5px;
+}
+
+.god-read-chip {
+  font-size: 8px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: var(--dim);
+}
+
+.god-read-chip.likely {
+  border-color: var(--gold);
+  color: var(--gold);
+}
+
+.god-read-chip.might {
+  border-color: rgba(255, 255, 255, 0.35);
+  color: var(--ink);
+}
+
+.god-read-chip.unlikely {
+  opacity: 0.55;
+}
+
+.god-modal-reading {
+  margin: 10px 0 4px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.god-modal-reading-label {
+  font-size: 8px;
+  letter-spacing: 0.26em;
+  color: var(--gold);
+  margin-bottom: 4px;
+}
+
+.god-ins-lean {
+  margin: 8px 0;
+}
+
+.god-ins-lean-line {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--gold);
+}
+
+.god-ins-lean-alt {
+  font-size: 10px;
+  color: var(--dim);
+  margin-top: 2px;
+}
+
 /* ---------- feed ---------- */
 
 .god-filter {
@@ -1739,6 +1825,15 @@ button.tiny {
 
 /* ---------- run end ---------- */
 
+.god-end-epithet {
+  font-size: 15px;
+  line-height: 1.5;
+  letter-spacing: 0.06em;
+  color: var(--gold);
+  margin: 0 0 12px;
+  font-style: italic;
+}
+
 .god-end-line {
   font-size: 12px;
   line-height: 1.9;
@@ -1871,6 +1966,15 @@ button.tiny {
 
 .god-modal-danger .god-modal-title {
   color: var(--hot);
+}
+
+.god-modal-gold {
+  border-color: var(--gold);
+  box-shadow: inset 3px 0 0 var(--gold);
+}
+
+.god-modal-gold .god-modal-title {
+  color: var(--gold);
 }
 
 .god-ins-relweb {

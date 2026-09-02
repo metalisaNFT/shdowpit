@@ -40,6 +40,8 @@ const PATTERNS = [
   ['protected_grew', 'someone grows powerful because the player kept protecting them'],
   ['crisis_from_sim', 'the final crisis is a character the simulation produced'],
   ['grudge_chain', 'a multi-step grudge forms (A wants B, B wants C)'],
+  ['coward_survives', 'somebody slips the same hunter three times'],
+  ['ground_changes_hands', 'a piece of ground is taken off its holder'],
 ];
 
 const totals = Object.fromEntries(PATTERNS.map(([k]) => [k, 0]));
@@ -76,6 +78,7 @@ async function main() {
     let st = await godStart(page);
     const startRoster = new Map((await god('roster')).list.map((n) => [n.id, n]));
     const invested = new Map(); // id -> count of player interventions aimed at them
+    const cumulativeTypes = {};
     let guard = 0;
 
     while (!st.ended && guard++ < 60) {
@@ -101,11 +104,23 @@ async function main() {
         }
       }
       st = await god('advance', '2');
+      // Sample the cumulative counts every cycle: the event log is trimmed, so
+      // a dungeon clearing that happened in act one is gone by the ending.
+      const tick = (await god('simregSnapshot')).eventTypeCounts ?? {};
+      for (const [t, n] of Object.entries(tick)) {
+        cumulativeTypes[t] = Math.max(cumulativeTypes[t] ?? 0, n);
+      }
     }
 
     /* ---- read what came of it ---- */
     const roster = (await god('roster')).list;
     const feed = (await god('feed', 'background')).list;
+    const snap = await god('simregSnapshot');
+    const eventTypes = snap.last50EventTypes ?? [];
+    for (const [t, n] of Object.entries(snap.eventTypeCounts ?? {})) {
+      cumulativeTypes[t] = Math.max(cumulativeTypes[t] ?? 0, n);
+    }
+    const seenCount = (types) => types.reduce((a, t) => a + (cumulativeTypes[t] ?? 0), 0);
     const outcome = st.outcome ?? {};
     endings[outcome.ending ?? 'unfinished'] = (endings[outcome.ending ?? 'unfinished'] ?? 0) + 1;
     totalCycles += outcome.cycles ?? 0;
@@ -135,6 +150,10 @@ async function main() {
       found.ally_turned += roster.filter((n) => n.memoryTypes.includes('I_BETRAYED_ALLY')).length;
     }
     found.leader_overthrown += feed.filter((b) => b.kind === 'faction').length;
+
+    found.coward_survives += feed.filter((b) => /THAT IS (3|4|5|6) TIMES NOW/.test(b.headline)).length;
+    found.ground_changes_hands += feed.filter((b) => b.kind === 'territory' && /TOOK/.test(b.headline) && b.actors.length >= 2).length;
+    void seenCount;
 
     const body = st.crisis?.body ? roster.find((n) => n.name === st.crisis.body) : null;
     if (body) {

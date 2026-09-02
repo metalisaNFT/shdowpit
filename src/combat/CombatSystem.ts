@@ -128,6 +128,27 @@ export class CombatSystem {
   private pierceMat = new THREE.MeshBasicMaterial({ color: SIGNAL.unblockable, toneMapped: false, fog: false });
   private lobMat = new THREE.MeshBasicMaterial({ color: SIGNAL.poison, toneMapped: false, fog: false });
   private needleMat = new THREE.MeshBasicMaterial({ color: SIGNAL.player, toneMapped: false, fog: false });
+
+  /**
+   * Projectile spawn ledger — one row per kind: how many have ever left a
+   * hand, and how fast the last one went.
+   *
+   * A projectile is only visible in `liveProjectiles` while it is in flight,
+   * and that can be less than a single frame: a needle thrown at a body the
+   * player is already standing next to is consumed by its own hit before the
+   * frame ends. Polling for a sighting is therefore a race the harness loses
+   * under software GL, which is what made "the Void Needle fires" and
+   * "charged fires" fail intermittently while the game was behaving. The
+   * ledger records the event, so a test can assert a shot was fired instead
+   * of assuming it will still be in the air when it looks.
+   */
+  readonly projectileLedger: Record<string, { spawns: number; lastSpeed: number }> = {};
+
+  private recordSpawn(kind: string, speed: number): void {
+    const row = (this.projectileLedger[kind] ??= { spawns: 0, lastSpeed: 0 });
+    row.spawns++;
+    row.lastSpeed = speed;
+  }
   private tmp = new THREE.Vector3();
   /**
    * Set by Game. Records every blow that lands on the player with enough
@@ -588,6 +609,7 @@ export class CombatSystem {
         hitUids: [],
         struckPlayer: false,
       });
+      this.recordSpawn('needle', speed);
     }
   }
 
@@ -1695,6 +1717,7 @@ export class CombatSystem {
       hitUids: [],
       struckPlayer: false,
     });
+    this.recordSpawn(kind, Math.round(Math.hypot((dx / flat) * speed, vy, (dz / flat) * speed) * 10) / 10);
     this.audio.play('bow', { volume: kind === 'charged' ? 0.7 : 0.45, pitch: kind === 'charged' ? 0.7 : 1, minGap: 0.05 });
   }
 
@@ -2008,7 +2031,15 @@ export class CombatSystem {
   }
 
   clearProjectiles(): void {
-    for (const a of this.projectiles) this.scene.remove(a.mesh);
+    for (const a of this.projectiles) {
+      this.scene.remove(a.mesh);
+      if (a.mesh instanceof THREE.Mesh && a.mesh.material instanceof THREE.Material) {
+        const mat = a.mesh.material;
+        if (mat !== this.arrowMat && mat !== this.spreadMat && mat !== this.pierceMat && mat !== this.lobMat && mat !== this.needleMat) {
+          mat.dispose();
+        }
+      }
+    }
     this.projectiles.length = 0;
     for (const h of this.hazards) {
       this.scene.remove(h.ring, h.fill);

@@ -55,6 +55,12 @@ export interface Fighter {
   /** 0..1 — wounds carried in from earlier cycles */
   woundedFrac: number;
   tilt: CombatTilt;
+  /**
+   * 0..1 — how hard they run somebody down. A hunter or an avenger does not
+   * let a broken opponent walk off; a showoff has already turned to the crowd.
+   * Fights started to answer somebody (revenge, hunt) raise it further.
+   */
+  pursuit: number;
 
   /* live duel state */
   busy: number;
@@ -93,6 +99,12 @@ export function makeFighter(n: Nemesis, age: AgeModifier, tilt: CombatTilt = neu
     )
   );
 
+  // The crisis is the thing the world could not hold. It does not run, and it
+  // hits like something that knows it.
+  if (sim.crisisBorn) {
+    tilt = { ...tilt, damage: tilt.damage * 1.15, resolve: tilt.resolve + 0.3 };
+  }
+
   let weapon = enemyWeapon(n.weapon);
   let damage =
     weapon.damage * (1 + n.level * BODY.damagePerLevel) * mods.damageMul * age.damage * (0.85 + pers.aggression * 0.3);
@@ -126,6 +138,7 @@ export function makeFighter(n: Nemesis, age: AgeModifier, tilt: CombatTilt = neu
     postureMax,
     woundedFrac,
     tilt,
+    pursuit: Math.max(0, Math.min(1, (pers.hunt - 1) * 0.35 + (pers.revenge - 1) * 0.25 + tilt.edge * 0.2)),
     busy: 0,
     lastAttackId: '',
     broken: false,
@@ -141,6 +154,9 @@ export function makeFighter(n: Nemesis, age: AgeModifier, tilt: CombatTilt = neu
 /** The health fraction at which this fighter starts thinking about leaving. */
 export function fleeThreshold(f: Fighter): number {
   if (f.mods.fleeThreshold === -1 || f.personality.fleeAt === -1) return -1;
-  const base = Math.max(f.mods.fleeThreshold, f.personality.fleeAt);
+  // The onscreen thresholds are tuned for running from the player, who is
+  // always the more dangerous thing in the room. Between two characters the
+  // same numbers made two fights in three end with somebody walking off.
+  const base = Math.max(f.mods.fleeThreshold, f.personality.fleeAt * 0.6);
   return Math.max(0, base - f.tilt.resolve);
 }

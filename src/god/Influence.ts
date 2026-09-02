@@ -12,15 +12,15 @@ import type { GodContext } from './Context';
 import type { Beat, GodState } from './GodTypes';
 
 export const INFLUENCE = {
-  start: 7,
-  max: 12,
+  start: 6,
+  max: 9,
   /** floor of what comes back each cycle */
-  regenBase: 3,
+  regenBase: 2,
   /** added per act index, so the late game can afford larger gestures */
-  regenPerAct: 0.5,
+  regenPerAct: 0.25,
   /** a cycle that produced something legendary pays you back for it */
-  perLegendaryBeat: 1,
-  perMajorBeat: 0.25,
+  perLegendaryBeat: 0.5,
+  perMajorBeat: 0.1,
   /** a death in the world is an opening */
   perDeath: 0.5,
 } as const;
@@ -28,7 +28,7 @@ export const INFLUENCE = {
 export const CHAOS = {
   max: 120,
   /** chaos bleeds off slowly, so a spike is survivable and a habit is not */
-  decayPerCycle: 1.1,
+  decayPerCycle: 1.4,
   /** the point at which characters can start working out that they are handled */
   heresyFrom: 45,
 } as const;

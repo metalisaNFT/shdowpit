@@ -50,6 +50,9 @@ async function main() {
     await page.waitForTimeout(2000);
   }
 
+  await page.evaluate(async () => {
+    await window.SHDOWPIT.__ensureComic();
+  });
   const slice = await page.evaluate(() => window.SHDOWPIT.__sim('comicSlice', 'potato'));
   check('comicSlice ok', !!slice && slice.ok === true, JSON.stringify(slice).slice(0, 160));
   check('four roles queued', Array.isArray(slice.roles) && slice.roles.length === 4, String(slice.roles));
@@ -73,6 +76,21 @@ async function main() {
     }
   }
   check('comic viewer visible', viewer);
+
+  // The viewer opens empty and grows a panel at a time as each one finishes
+  // stylizing; CONTINUE is only enabled once the sequence is finalized. Count
+  // panels then, not the instant the pane appears — otherwise this reads
+  // whatever happened to be rendered and reports "2".
+  let settled = false;
+  for (let i = 0; i < 80; i++) {
+    settled = await page.evaluate(() => {
+      const b = [...document.querySelectorAll('#comic-viewer button')].find((x) => /CONTINUE/i.test(x.textContent || ''));
+      return !!b && !b.disabled;
+    });
+    if (settled) break;
+    await page.waitForTimeout(250);
+  }
+  check('sequence finalized (CONTINUE enabled)', settled);
 
   const panelCount = await page.evaluate(() => document.querySelectorAll('.comic-panel').length);
   check('four panel nodes', panelCount === 4, String(panelCount));

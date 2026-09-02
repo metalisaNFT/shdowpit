@@ -284,6 +284,10 @@ export function buildAftermath(args: {
         (focus.size === 0 || b.actors.some((id) => focus.has(id)) || relatedDecisions.some((d) => b.actors.includes(d.actorId)))
     ) ??
     (noticed ? beatFromDecision(ctx, noticed, finishedCycle ?? god.cycle) : null) ??
+    // Nothing touched the player's focus this cycle. Somebody still decided
+    // something, and WHY has to have a door to open.
+    beats.find((b) => b.why) ??
+    (decisions.find((d) => d.chosen) ? beatFromDecision(ctx, decisions.find((d) => d.chosen)!, finishedCycle ?? god.cycle) : null) ??
     null;
 
   const next = god.situations[0];

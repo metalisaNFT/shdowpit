@@ -37,6 +37,8 @@ const RELATIONSHIP_WEIGHT: Partial<Record<MemoryType, number>> = {
   GOD_MARKED_ME: 20,
   GOD_EXPOSED_ME: 16,
   GOD_TURNED_MINE_AGAINST_ME: 22,
+  GOD_KILLED_MY_ALLY: 26,
+  GOD_CAME_FOR_ME: 18,
 };
 
 /**
@@ -212,6 +214,8 @@ export const MEMORY_TEXT: Record<MemoryType, string> = {
   GOD_MARKED_ME: 'You put a price on them',
   GOD_EXPOSED_ME: 'You showed the world where they were',
   GOD_TURNED_MINE_AGAINST_ME: 'You turned their own against them',
+  GOD_KILLED_MY_ALLY: 'You came down and killed someone they cared about',
+  GOD_CAME_FOR_ME: 'You came for them yourself',
   I_WAS_CAGED_BY: 'They were caged',
   I_SWORE_TO: 'They swore to someone',
 };

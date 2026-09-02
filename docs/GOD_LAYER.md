@@ -25,8 +25,18 @@ This document is the map of `src/god/`. Read it before changing anything in ther
                   RUN END ──► Book of Legends ──► unlocks ──► a new world
 ```
 
-A run is 25–32 cycles and takes a few minutes at ×20. Endings are roughly
-60/40 triumph to collapse under semi-random play.
+A run is 25–32 cycles and takes a few minutes at ×20. Under semi-random play
+endings split roughly 50/50 triumph to collapse (`tools/emergence.mjs`). A
+player who spends nothing loses most of the time — the crisis is born around
+cycle 10 and grows unless the world is arranged against it. That asymmetry is
+deliberate: the player is necessary.
+
+> **RECONSTRUCTION (2026-09-02).** `docs/RECONSTRUCTION.md` is the audit that
+> produced the current shape of this layer. The short version: the world used
+> to churn faster than a story could form (nine new names a run, returns every
+> three cycles, ranks and ground reassigned every beat, a crisis that named
+> itself at cycle 22 and resolved the same cycle). It now holds still. Read
+> §11 below before touching anything.
 
 ## 2. What lives where
 
@@ -37,10 +47,13 @@ A run is 25–32 cycles and takes a few minutes at ×20. Endings are roughly
 | `Duel.ts` | headless combat, stepped at 120ms, driven by the real `chooseAttack` table. Returns who was standing, blow-by-blow beats, and injuries. It deliberately does **not** decide the loser's fate. |
 | `Context.ts` | the one surface actions talk to. Owns `fight()` (which runs the duel and then decides kill / spare / humiliate / rob), `killOff()`, `wantRevenge()`, `deed()`, and both output channels (the feed and the existing chronicle). |
 | `Utility.ts` | the scoring components and the shared terms |
-| `Actions.ts` | eighteen things a character can decide to do, each enumerating its own targets and scoring them |
-| `Autonomy.ts` | the SIMULATE phase: initiative order, the fight ration, drift, returns from death, faction settlement |
+| `Actions.ts` | fifteen political verbs a character can decide on — fight, climb, answer, hunt, turn, swear, guard, recruit, steal, seize, dig in, move, hide, recover, build, brood, defy. `enumerate` is pure and shared with the forecast. |
+| `Autonomy.ts` | the SIMULATE phase: initiative order, the fight ration, drift, rare returns from death, wars from grievance, peace from exhaustion |
+| `Forecast.ts` | **the reading** — what everyone would do right now minus the mood, and who would answer an intervention if it were written. Feeds the board, the inspector and every intervention card. |
+| `Descent.ts` | what DESCEND did, written back as a world event before the missed cycles run; the strategic return card |
+| `Skirmish.ts` | attrition on contested ground, and the one deliberate rise from the rabble when the cast has thinned. No rabble duels, no rabble killing named characters. |
 | `Conditions.ts` | the only thing the player writes. Ten kinds, all with a decay. |
-| `Interventions.ts` | thirteen interventions. **Nothing may change `alive`, `rank`, `power`, who holds ground, or who fights whom — except the three priced exceptions `raise`, `gift`, and `calamity`.** |
+| `Interventions.ts` | twelve interventions. **Nothing in this file may change `alive`, `rank`, `power`, who holds ground, or who fights whom.** |
 | `Influence.ts` | the two resources and the five chaos tiers |
 | `Factions.ts` | houses: leader, members, ground, stability. They fracture, they re-form. |
 | `Arc.ts` | the four acts. The only authored thing in the layer, and it authors *pressure*, not events. |
@@ -87,6 +100,24 @@ drawers     full feed timeline · character inspect
 
 AI remains presentation-only: it words the NOW card and dossiers, never sim state.
 
+## 2c. The reading
+
+Every intervention card, the confirm modal, the inspector's LEANING TOWARD
+line and most of the OBSERVE board are built from `Forecast.ts`, which runs
+the same `enumerate` the simulation runs with `TermCtx.preview = true` (no
+noise, no RNG consumption) and phrases the result as `LIKELY / MIGHT /
+UNLIKELY`. For an intervention it lays the conditions the intervention would
+write (`InterventionDef.preview`) on a scratch `ConditionIndex` and asks
+again: "who would come for them if there were a price?" The reading is often
+right and sometimes wrong, because the mood is real and the world moves
+between the reading and the act — WHY explains the gap afterwards.
+
+Chaos degrades it. Past 55 the reading is HAZY (one responder, LIKELY demoted
+to MIGHT); past 85 it is BLIND. Past 40, god-sourced conditions also weigh
+less in the scorer (`ConditionIndex.trust`) — the world has started doubting
+the hand. That, plus heretics, is what chaos *means* now; it is no longer
+only the spread on the noise term.
+
 ## 3. The scoring engine
 
 Every living character considers everything it could plausibly do and scores
@@ -123,21 +154,11 @@ the `opportunity` term on `hunt` for characters whose personality already
 leans that way, against a `danger` term they may still find too high.
 
 The distance between *"I put a price on his head"* and *"he died"* is the game.
-`tools/godtest.mjs` asserts this mechanically: it snapshots the roster, fires every
-catalogue entry, and fails on forbidden hard changes.
+`tools/godtest.mjs` asserts this mechanically: it snapshots the roster, fires an
+intervention, and fails if any character's `alive` or `rank` changed.
 
-Three interventions are **priced exceptions** — they touch outcomes directly and
-cost heavily for it:
-
-- `RAISE` — restores a life (10 chaos).
-- `GIFT` — puts a weapon in someone's hand (+7 power via stolen gear).
-- `CALAMITY` — recruits a captain into the world (20 chaos).
-
-Everything else writes only conditions and nudges `SimState`.
-
-**THE THREADS** (`insight_lines` unlock) draws revenge hunt lines on the oracle
-map when `showThreads` is true. **THE HUNGRY AGE** (`world_hungry`) raises starting
-ambition and keeps ambition climbing faster each cycle in `Autonomy.driftState`.
+`RAISE` is the single exception — a life is touched directly — and it costs ten
+chaos for exactly that reason.
 
 ## 5. Chaos
 
@@ -206,49 +227,29 @@ screen or the rail, for players who would rather read. `SKIP TUTORIALS` in the
 pause menu switches off both games' teaching at once; `REPLAY TUTORIALS` and
 the primer's own button restart it.
 
-## 7. Unified simulation bridge
-
-THE LONG GAME and the pit share one engine. Visible god cycles and silent offscreen beats both call
-`Autonomy.simulateCycle()`; only presentation and persistence differ.
-
-**Authoritative map:** [`SIM_LAYER.md`](SIM_LAYER.md) — time axes, entry points, pit bridges,
-reconciliation, chronicle trim, verification harnesses.
-
-| Concern | God run | Offscreen (death, background, succession) |
-| --- | --- | --- |
-| Caller | `GodRun.advanceCycle()` | `resolveOffscreenBeat()` via `sim/OffscreenBeat.ts` |
-| Feed / NOW card | Yes | No (`ctx.silent`) |
-| RNG | Persisted `GodState.rngState` | `mgr.simRng` or ephemeral god |
-| Act pressure | `Arc.effectiveAct()` on `god.cycle` | Offscreen act profile on `worldTurn` / `worldAge` |
-
-**Offscreen act profile.** Pit-side beats call `offscreenActFor(mgr)` in `OffscreenBeat.ts` instead of
-a flat `PIT_ACT` constant — turn- and age-scaled `ActDef` pressure so late Ages feel sharper even
-when you are only in the pit. Details: `SIM_LAYER.md` §5.
-
-**Pit bridges (do not swap these):**
-
-- `src/sim/PitSimBridge.ts` — pit combat → `Nemesis.sim` (kills, escapes, scars).
-- `src/god/PitBridge.ts` — god conditions and Book legacies → live combat tilts.
-
-**Save trim.** `Beat.why` payloads are stripped from beats older than the most recent 80 by
-`trimWhy()` in `Explain.ts`, called from `serialiseGod()` before every persist — keeps long runs
-within localStorage quota (G-12).
-
-## 8. DESCEND
+## 7. DESCEND
 
 The third-person game was not deleted; it became an intervention. `DESCEND`
 costs 7 influence and 12 chaos, drops the player into the existing 3D run
-against one character, and advances two cycles while they are down there. The
-board is waiting when they come back and the world has moved. Nothing about the
-run below is special-cased — only where it returns to.
+against one character, and advances two cycles while they are down there.
 
-## 9. Verification
+What the player did below is a world event (`Descent.ts`), written through a
+`GodContext` **before** the missed cycles run, so those cycles are the world
+reacting to it. A kill in person is a legendary beat: the dead's house shakes,
+everyone bonded to them remembers `GOD_KILLED_MY_ALLY`, their rivals take
+heart, and the run's receipt (`GodState.descentKills`) changes the ending copy
+if it was the crisis. Dying below makes the killer a legend and drops the
+world's fear of the god. Sparing is remembered as `GOD_CAME_FOR_ME` — mercy
+from something enormous, which is not the same as being liked. The return
+card names the outcome and lists the loudest things that happened while you
+were gone.
+
+## 8. Verification
 
 ```bash
 npm run build && npx vite preview --port 4173 &
 
-npm run test:god          # the vertical slice + the teaching layer (~98 checks)
-npm run test:simreg       # deterministic worldTurn / mixed god+pit paths (see SIM_LAYER.md)
+npm run test:god          # the vertical slice + the teaching layer, 99 checks
 npm run test:emergence    # does the simulation actually write stories?
 ```
 
@@ -279,7 +280,51 @@ the ones that do happen worthless. `WHISPER` exists to buy the reason.
 
 If a pattern stops occurring, improve the simulation — not the presentation.
 
-## 10. Things that are easy to break
+## 8b. The world holds still — the rules that keep it that way
+
+These are the invariants the reconstruction added. Each one was a specific
+source of churn; put any of them back and the cast stops being recognisable.
+
+- **The hierarchy is sticky while `mgr.data.god` is set**
+  (`NemesisManager.stickyHierarchy`). `fillRanks` only keeps the seat unique
+  and hands an empty seat to a warlord holding the Fortress; it never fills
+  quotas. Rank moves by `climbAfterWin` (a seat changes hands on any win
+  against its holder), by succession inside a house (`heirOf`), or by a rise
+  from the rabble. The third-person game, with no god run, keeps the quota.
+- **Ground is owned.** `assignTerritories` in sticky mode only clears the
+  dead's holdings. Vacant ground is taken by SEIZE (cheap) and held ground is
+  taken by beating — or running off — its holder. A holder who flees has lost it.
+- **Nobody is named by rabble.** `Skirmish.ts` is attrition on contested
+  ground. New names enter through RECRUIT or `riseFromRabble` (only under
+  `CAST_FLOOR`, at most one a cycle, always a MAJOR beat).
+- **Returns are rare.** `RETURN_COOLDOWN` 7 turns after any return,
+  `RETURN_MIN_DEAD` 3, chance capped at 0.16 and scaled by survival, a
+  living killer and chaos. One or two a run.
+- **Flight leaves state.** `Context.handleFlight` hides the runner for two
+  cycles and moves them; `reachable()` is enforced by every targeting action;
+  a fight started to answer somebody raises `Fighter.pursuit`, and a pursued
+  runner can be run down (`Duel.ts`). The third slip from the same hunter gets
+  its own headline.
+- **Wars start from grievance** (`grievanceBetween`) and end when no living
+  grievance remains (`rollPeace`); never on the offscreen path, where houses
+  are rebuilt every beat.
+- **The crisis is a person**, never a war, born at `CRISIS_FROM` (10) or from
+  a runaway after `CRISIS_EARLIEST` (9), among the top three powers. On
+  birth it heals, gains four levels and a three-cycle ward while its house
+  closes ranks; it grows a level every other cycle; it prefers bending the
+  beaten to killing them (`handleDown`), so the world survives long enough to
+  answer it. A kill on it needs a reason — a grudge or a price.
+- **Influence is scarce**: start 6, cap 9, regen ≈2.5. One small move a
+  cycle, or two cycles saved for a large one.
+- **The clock is `GodContext.now`**: cycles on a god run, world turns on the
+  offscreen path (whose ephemeral god is pinned at cycle 1). Anything that
+  says "until later" measures against it.
+
+The material/quest/dungeon economy (gather, delve, plunder, guard_site,
+deliver, tribute, hunt_feral, house errands, treasuries) is gone from the god
+layer. `world/BiomeState.ts` survives only as pit-side flavour.
+
+## 9. Things that are easy to break
 
 - **`Nemesis.sim` is a namespace, like `Nemesis.ai`.** Nothing in `src/ai/`
   may write it and nothing presentational may read it as a fact.
@@ -291,7 +336,10 @@ If a pattern stops occurring, improve the simulation — not the presentation.
   snapshotted into the save. The emergence probe depends on it.
 - **`decisions` never go into the save** — `serialiseGod()` strips them.
 - **The god layer must not grow `Game.ts`.** It attaches through one controller
-  and one mode.
+  and one mode. Anything that writes consequences from outside the cycle
+  (a descent) goes through `GodRun.withContext`, not through Game.
+- **`enumerate` must stay pure.** The forecast calls it on scratch indexes;
+  an `enumerate` that writes state makes the reading lie.
 - **AI stays optional.** The whole layer, including `test:god`, runs with no
   provider connected. Generated copy is a presentation overlay: it may
   word a dossier, a major beat, a recap, or a legend, but it never writes
@@ -301,7 +349,7 @@ If a pattern stops occurring, improve the simulation — not the presentation.
   sentence. If a lesson's trigger cannot be measured, measure it — do not
   pattern-match the feed text.
 
-## 11. AI is voice, not authority
+## 10. AI is voice, not authority
 
 `AIContentService` is the only talker. THE LONG GAME uses the same queue,
 cache, validation, and fallbacks as the 3D game. `GodAI.ts` decides which

@@ -76,7 +76,9 @@ import { rankName } from '../nemesis/NemesisManager';
 import { accentColorFor } from '../nemesis/NemesisAppearance';
 import { signatureDef, signatureEventMatches } from '../data/signatures';
 import { CONDITION_LABEL } from '../god/Conditions';
-import { liberationRewardFor, type TerritoryPresentation } from '../world/TerritoryRules';
+import { biomeArrivalEcho, liberationRewardFor, type TerritoryPresentation } from '../world/TerritoryRules';
+import { AREAS } from '../data/areas';
+import { aggregateStock } from '../world/BiomeState';
 
 import { Player } from '../player/Player';
 import { Enemy } from '../enemy/Enemy';
@@ -140,7 +142,7 @@ import { GodSpectator } from '../ui/GodSpectator';
 import { populatedAreas } from '../ui/GodMap';
 import { activeConditionLabels, applyLegacyPresence, applyTiltToEnemy, legacyArrivalToast, legendOmenFor, legacyTiltFor, legendSpawnBias, mergeCombatTilts, nemesisTilt, resolveLegacyEcho } from '../god/PitBridge';
 import { encounterTuningFromKit } from '../core/Telemetry';
-import { removeConditions } from '../god/Conditions';
+import { applyDescentOutcome, buildDescentReport, type DescentFacts } from '../god/Descent';
 import { describeBlessedFailure, describeQuietDecline, spectacleCauseCaption } from '../god/Aftermath';
 
 import { AIContentService } from '../ai/AIContentService';
@@ -294,6 +296,7 @@ export class Game {
     };
     playerDied: boolean;
     extracted: boolean;
+    killerId?: string | null;
   } | null = null;
   /** cycle counter shown in the god screen's acceleration readout */
   private godBusy = false;
@@ -349,6 +352,8 @@ export class Game {
   private worldPulseText = '';
   /** Fullscreen offers waiting for intro / lull to finish (FIFO). */
   private pendingModals: { label: string; open: () => void }[] = [];
+  /** Death presentation queued until trophy/power modals finish. */
+  private pendingDeathEncounter: Enemy | null = null;
   /** Real-time seconds of idle with no intro, before a queued modal may open. */
   private modalCalm = 0;
   /** True between the Overlord's death and the succession report. */
@@ -1277,6 +1282,7 @@ export class Game {
     this.calmTime = 0;
     this.offerQuiet = 0;
     this.pendingModals = [];
+    this.pendingDeathEncounter = null;
     this.modalCalm = 0;
     this.succession = false;
     this.pendingSuccession = null;
@@ -1342,6 +1348,12 @@ export class Game {
           : areaName;
     if (!this.ui.intro.active && !this.encounter.busy) {
       this.ui.hud.showAreaBanner(areaName.toUpperCase(), sub);
+    }
+    const area = AREAS.find((a) => a.name === areaName);
+    const occ = area ? this.world.occupancy[area.id] : null;
+    if (occ) {
+      const echo = biomeArrivalEcho(occ.faunaPressure, occ.resourceLow);
+      if (echo) this.ui.hud.toast(echo, 'neutral', 3.2);
     }
   }
 
@@ -1769,7 +1781,25 @@ export class Game {
   private godIntervene(id: string, a: string | null, b: string | null, area: string | null) {
     const run = this.godRun;
     if (!run) return { ok: false, reason: 'No run.' };
-    const res = run.intervene(id, a, b, area);
+    let targetId = a;
+    if (id === 'descend' && targetId) {
+      const direct = this.mgr.byId(targetId);
+      if (!direct?.alive) {
+        const tower = run.god.scenarioFlags?.towerCommander;
+        const fallback =
+          this.mgr.living().find((n) => tower && n.territory === 'tower' && n.alive) ??
+          this.mgr.living().find((n) => n.territory === 'tower' && n.alive) ??
+          run.god.situations
+            .flatMap((s) => s.actors)
+            .map((aid) => this.mgr.byId(aid))
+            .find((n) => n?.alive) ??
+          this.mgr.living().find((n) => rankIndex(n.rank) >= 2) ??
+          this.mgr.living()[0] ??
+          null;
+        if (fallback) targetId = fallback.id;
+      }
+    }
+    const res = run.intervene(id, targetId, b, area);
     if (res.ok) {
       this.godIdleCycles = 0;
       this.onGodTeach('intervened');
@@ -2161,68 +2191,26 @@ export class Game {
     this.legacyOmenShown = false;
     const run = this.godRun;
     const cycles = Math.max(1, d.brief.cyclesWhileGone);
-    run.fastForward(cycles);
+    const facts: DescentFacts = {
+      nemesisId: d.nemesisId,
+      brief: d.brief,
+      snapshot: d.snapshot,
+      playerDied: d.playerDied,
+      extracted: d.extracted,
+      killerId: d.killerId ?? null,
+    };
+
+    // What you did below is a world event, written before the world moves so
+    // the cycles you missed are the world reacting to it.
+    const outcome = run.withContext((ctx) => applyDescentOutcome(ctx, facts));
+    const { beats } = run.fastForward(cycles);
     if (run.ended) {
       this.presentGodEnd(run.outcome!);
       return;
     }
 
-    const target = this.mgr.byId(d.nemesisId);
-    const lines: string[] = [];
-    let outcome: import('../god/GodTypes').DescentReport['outcome'] = 'spared';
-    if (d.playerDied) {
-      outcome = 'player_died';
-      lines.push('You died below. The mark of exposure still sits on them.');
-    } else if (d.extracted) {
-      outcome = 'escaped';
-      lines.push('You extracted. They remember you ran.');
-    } else if (target && !target.alive) {
-      outcome = 'killed';
-      lines.push(`${fullName(target)} is dead. The board loses a piece you touched in person.`);
-      if (run.god) removeConditions(run.god, d.nemesisId, 'exposure');
-    } else if (target && target.alive) {
-      if (simOf(target).injury > d.snapshot.injury + 15 || target.scars.length > d.snapshot.scars) {
-        outcome = 'spared';
-        lines.push(`${fullName(target)} still stands — scarred. Your conditions still apply.`);
-      } else {
-        outcome = 'fled';
-        lines.push(`${fullName(target)} still holds. The confrontation ended without a body.`);
-      }
-    } else {
-      outcome = 'fled';
-      lines.push('The target is gone from the roster.');
-    }
-
-    if (target) {
-      if (target.power !== d.snapshot.power) {
-        lines.push(`Power ${d.snapshot.power} → ${target.power}.`);
-      }
-      if (target.territory !== d.snapshot.territory) {
-        lines.push(`Ground shifted: ${target.territory.toUpperCase()}.`);
-      }
-      if (target.stolen.length !== d.snapshot.stolen) {
-        lines.push(
-          target.stolen.length < d.snapshot.stolen
-            ? 'Stolen steel left their hands.'
-            : 'They still carry what they took.'
-        );
-      }
-    }
-    const towerNow = this.mgr.data.territories.tower ?? null;
-    if (towerNow !== d.snapshot.holder) {
-      const holder = towerNow ? this.mgr.byId(towerNow) : null;
-      lines.push(holder ? `The Tower answers to ${fullName(holder)}.` : 'The Tower has no holder.');
-    }
-    lines.push(`${cycles} cycles turned while you were below. Autonomy did not wait.`);
-
     run.god.lastAftermath = null;
-    run.god.lastDescentReport = {
-      targetId: d.nemesisId,
-      targetName: target ? fullName(target) : 'UNKNOWN',
-      outcome,
-      cyclesElapsed: cycles,
-      lines,
-    };
+    run.god.lastDescentReport = run.withContext((ctx) => buildDescentReport(ctx, facts, outcome, beats, cycles));
     run.refreshSituations();
     run.persist();
 
@@ -3477,6 +3465,12 @@ export class Game {
     this.player.stats.essence += Math.round((e.named ? 30 + rankIndex(rank) * 25 : 4) * (1 + this.world.run.heat / 250));
     if (e.named) this.pendingModals = this.pendingModals.filter((m) => m.label !== 'THEIR FATE');
     if (e.named) {
+      // Intro sequences keep encounter.busy until their clock finishes even if
+      // the NPC dies mid-beat (harness smite, burst damage). Release before rewards.
+      if (this.encounter.busy) {
+        this.encounter.reset();
+        this.ui.intro.hide();
+      }
       this.comicHold = COMIC_HOLD_AFTER_NAMED;
       addHeat(this.world.run, HEAT.namedKill);
       this.world.run.extraction.unlocked = true;
@@ -3519,6 +3513,17 @@ export class Game {
       else this.offerBoons('THE PIT FEEDS YOU');
     }
     this.refreshPowerChips();
+    if (wasOverlord && e.named) this.maybeFlushPendingDeathEncounter();
+  }
+
+  /** Play the deferred death beat once reward modals are done. */
+  private maybeFlushPendingDeathEncounter(): void {
+    const e = this.pendingDeathEncounter;
+    if (!e) return;
+    if (this.pendingModals.length || this.mode === 'choice' || this.mode === 'power') return;
+    if (!this.canOpenModal()) return;
+    this.pendingDeathEncounter = null;
+    this.encounter.begin(e, this.mgr.turn, { outcome: 'nemesis_dead' });
   }
 
   private onNamedDefeated(e: Enemy, escaped: boolean): void {
@@ -3539,7 +3544,7 @@ export class Game {
       if (e.nemesis.scars.length) onPitScarApplied(e.nemesis, e.nemesis.scars.length);
       this.comic?.onNamedOutcome(e.nemesis.id, 'enemy_escaped');
     } else if (e.named) {
-      this.encounter.begin(e, this.mgr.turn, { outcome: 'nemesis_dead' });
+      this.pendingDeathEncounter = e;
       this.ai.bumpEvents(e.nemesis);
       this.aiDirty = true;
       this.comic?.onNamedOutcome(e.nemesis.id, 'enemy_dead');
@@ -3653,7 +3658,10 @@ export class Game {
       onContinue: () => {
         this.lastReport = null;
         this.ui.report.hide();
-        if (this.descent) this.descent.playerDied = true;
+        if (this.descent) {
+          this.descent.playerDied = true;
+          this.descent.killerId = killerNemesis?.id ?? null;
+        }
         this.afterRunEnds();
       },
     });
@@ -3795,6 +3803,8 @@ export class Game {
 
   private presentOffer(options: PowerDef[], subtitle: string, layer = 'RUN POWER'): void {
     this.requestModal('POWER', () => this.openPowerOffer(options, subtitle, layer));
+    this.scheduleRewardModalFlush();
+    window.setTimeout(() => this.flushPendingModalsNow(), 0);
   }
 
   private openPowerOffer(options: PowerDef[], subtitle: string, layer = 'RUN POWER'): void {
@@ -3820,7 +3830,17 @@ export class Game {
       }
       this.refreshPowerChips();
       this.audio.play('pickup', { volume: 0.8 });
-      this.resumeToPlaying();
+      this.ui.power.hide();
+      if (this.pendingModals.length) {
+        this.mode = 'playing';
+        this.loop.paused = false;
+        this.modalCalm = 0.6;
+        const job = this.pendingModals.shift()!;
+        job.open();
+      } else {
+        this.resumeToPlaying();
+      }
+      this.maybeFlushPendingDeathEncounter();
     }, {
       reactions: this.offerReactionText(),
       rerolls: this.world.run.rerolls + this.world.run.remnants,
@@ -4005,10 +4025,40 @@ export class Game {
   }
 
   private offerNemesisReward(n: Nemesis, executed: boolean): void {
+    this.encounter.reset();
+    this.ui.intro.hide();
+    this.player.combat.reset();
     const vendetta = this.world.run.vendetta?.complete && this.world.run.vendetta.targetId === n.id;
     const rng = new RNG(this.world.run.runSeed ^ seedFromString(n.id));
     const choices = nemesisRewardChoices(n, rng, { vendetta: !!vendetta, executed, farms: n.playerRewardFarms ?? 0 });
     this.requestModal('NEMESIS TROPHY', () => this.openNemesisReward(n, executed, choices));
+    this.scheduleRewardModalFlush();
+    window.setTimeout(() => this.flushPendingModalsNow(), 0);
+  }
+
+  /** Immediate modal open when calm — safety net for low-fps harness runs. */
+  private flushPendingModalsNow(): void {
+    if (!this.pendingModals.length || !this.canOpenModal()) return;
+    this.modalCalm = 0.6;
+    const job = this.pendingModals.shift()!;
+    if (this.mode === 'paused') this.ui.pause.close();
+    job.open();
+  }
+
+  /** Present trophy/power offers as soon as the arena is calm enough. */
+  private scheduleRewardModalFlush(): void {
+    const tick = () => {
+      if (!this.pendingModals.length) return;
+      if (!this.canOpenModal()) {
+        window.requestAnimationFrame(tick);
+        return;
+      }
+      this.modalCalm = 0.6;
+      const job = this.pendingModals.shift()!;
+      if (this.mode === 'paused') this.ui.pause.close();
+      job.open();
+    };
+    window.requestAnimationFrame(tick);
   }
 
   private openNemesisReward(
@@ -4027,10 +4077,22 @@ export class Game {
       choices.map((c) => ({ id: c.id, title: c.title, tag: c.kind.toUpperCase(), desc: c.desc })),
       (id) => {
         this.applyNemesisReward(n, choices.find((c) => c.id === id) ?? choices[0]);
-        this.resumeToPlaying();
+        this.ui.choice.hide();
+        this.mode = 'playing';
+        this.loop.paused = false;
+        this.input.setEnabled(false);
+        this.input.exitPointerLock();
         const runLootRoll = rankIndex(n.rank) >= 2 || this.rng.next() < 0.3;
         if (runLootRoll) this.offerRunLoot('TROPHY SHARD');
         if (rankIndex(n.rank) >= 2) this.offerPower(`${n.name.toUpperCase()} IS DEAD`);
+        if (this.pendingModals.length) {
+          this.modalCalm = 0.6;
+          const job = this.pendingModals.shift()!;
+          job.open();
+        } else if (this.mode === 'playing') {
+          this.resumeToPlaying();
+        }
+        this.maybeFlushPendingDeathEncounter();
       }
     );
   }
@@ -4356,7 +4418,7 @@ export class Game {
   }
 
   private canOpenModal(): boolean {
-    if (this.mode !== 'playing') return false;
+    if (this.mode !== 'playing' && this.mode !== 'paused') return false;
     if (this.comicOpen) return false;
     if (this.encounter.busy || this.ui.intro.active) return false;
     if (this.player.combat.action !== 'idle') return false;
@@ -4365,7 +4427,7 @@ export class Game {
 
   private flushPendingModal(rdt: number): void {
     const calm =
-      this.mode === 'playing' &&
+      (this.mode === 'playing' || this.mode === 'paused') &&
       !this.comicOpen &&
       !this.encounter.busy &&
       !this.ui.intro.active &&
@@ -4375,6 +4437,7 @@ export class Game {
     if (!calm || this.modalCalm < 0.55) return;
     const job = this.pendingModals.shift()!;
     this.modalCalm = 0;
+    if (this.mode === 'paused') this.ui.pause.close();
     job.open();
   }
 
@@ -4802,9 +4865,17 @@ export class Game {
       resetRun() {
         if (g.mode === 'title') return;
         g.ui.power.hide();
+        g.ui.choice.hide();
         g.ui.hierarchy.close();
         g.ui.pause.close();
         g.ui.report.hide();
+        g.ui.intro.hide();
+        g.encounter.reset();
+        g.pendingModals = [];
+        g.combat.clearProjectiles();
+        g.particles.clear();
+        g.vfx.clear();
+        g.damageNumbers.clear();
         g.world.endRun();
         g.player.stats.hp = g.player.stats.maxHp;
         g.startRun();
@@ -5452,7 +5523,7 @@ export class Game {
       if (!e.alive) continue;
       e.hp = 0;
       e.kill();
-      this.onEnemyKilled(e, false);
+      this.onEnemyKilled(e, false, true);
       n++;
     }
     return n;
@@ -5487,7 +5558,24 @@ export class Game {
    * Vertical slice: ensure a named nemesis is on stage, capture 4 comic panels
    * (intro / attack / impact / outcome), open the viewer when ready.
    */
+  /** Await lazy comic bundle load — used by harnesses before __comicSlice. */
+  async __ensureComic(): Promise<boolean> {
+    await this.ensureComicReady();
+    return !!this.comic;
+  }
+
   __comicSlice(qualityArg?: string): Record<string, unknown> {
+    if (!this.comic) {
+      void this.ensureComicReady().then(() => {
+        if (
+          this.comic &&
+          (qualityArg === 'potato' || qualityArg === 'fast' || qualityArg === 'balanced' || qualityArg === 'offline')
+        ) {
+          this.comic.setQuality(qualityArg);
+        }
+      });
+      return { ok: false, error: 'comic_loading' };
+    }
     if (qualityArg === 'potato' || qualityArg === 'fast' || qualityArg === 'balanced' || qualityArg === 'offline') {
       this.comic.setQuality(qualityArg);
     }
@@ -5512,6 +5600,7 @@ export class Game {
       }
     }
     if (!e) return { ok: false, error: 'no_named_on_stage' };
+    if (!this.comic) return { ok: false, error: 'comic_loading' };
     this.comicForce = true;
     this.comicAge = 0;
     // Pose them for a readable capture
@@ -5699,6 +5788,27 @@ export class Game {
       return true;
     }
     return false;
+  }
+
+  /**
+   * Projectiles that actually spawned, per kind, with the last one's speed.
+   * Survives a projectile that dies inside the frame it was born in.
+   */
+  __qaProjectileLedger(): Record<string, { spawns: number; lastSpeed: number }> {
+    const out: Record<string, { spawns: number; lastSpeed: number }> = {};
+    for (const [kind, row] of Object.entries(this.combat.projectileLedger)) {
+      out[kind] = { spawns: row.spawns, lastSpeed: Math.round(row.lastSpeed * 10) / 10 };
+    }
+    return out;
+  }
+
+  /** Needle throws that actually spawned, and the last one's speed. */
+  __qaNeedleStats(): { spawns: number; lastSpeed: number } {
+    const row = this.combat.projectileLedger.needle;
+    return {
+      spawns: row?.spawns ?? 0,
+      lastSpeed: Math.round((row?.lastSpeed ?? 0) * 10) / 10,
+    };
   }
 
   __qaRangedCharges(): number {
@@ -6592,8 +6702,38 @@ export class Game {
         break;
       }
       case 'reward': {
-        const e = this.world.enemies.find((x) => x.named);
-        if (e) this.offerNemesisReward(e.nemesis, true);
+        const onStage = this.world.enemies.find((x) => x.named);
+        const n =
+          onStage?.nemesis ??
+          this.mgr.living().find((x) => rankIndex(x.rank) >= 2) ??
+          this.mgr.living().find((x) => x.rank !== 'grunt') ??
+          null;
+        if (n) {
+          this.encounter.reset();
+          this.ui.intro.hide();
+          this.ui.choice.hide();
+          this.ui.power.hide();
+          this.pendingModals = [];
+          this.pendingDeathEncounter = null;
+          this.player.combat.reset();
+          this.mode = 'playing';
+          this.loop.paused = false;
+          if (rankIndex(n.rank) >= 2) {
+            const ctx = {
+              owned: this.player.stats.powers,
+              weaponId: this.player.stats.weaponId,
+              statAtCap: (id: RunStatId) => this.player.stats.statAtCap(id),
+              recentProc: this.world.run.lastProcNote || undefined,
+            };
+            const powers = rollPowerOffers(this.rng, ctx, 2);
+            const stats = rollUncappedStats(this.rng, ctx, 1);
+            const options: PowerDef[] = [...powers, ...stats.map((id) => this.boonCard(id))];
+            if (options.length) this.openPowerOffer(options, `${n.name.toUpperCase()} IS DEAD`);
+            else this.offerNemesisReward(n, true);
+          } else {
+            this.offerNemesisReward(n, true);
+          }
+        }
         break;
       }
       case 'comicSlice':
@@ -6718,6 +6858,21 @@ export class Game {
         if (!run) return { ok: false, reason: 'no run' };
         const res = this.godIntervene(arg ?? '', arg2 ?? null, arg3 ?? null, null);
         return { ok: res.ok, reason: res.reason ?? '', headline: res.effect?.headline ?? '', ...this.__god('state') };
+      }
+      case 'reading': {
+        if (!run) return { ok: false };
+        const r = run.reading(arg ?? '', arg2 ?? null, arg3 ?? null, null);
+        return r ? { ok: true, lines: r.lines, responders: r.responders, clarity: r.clarity } : { ok: false };
+      }
+      case 'forecast': {
+        if (!run) return { list: [] };
+        return {
+          list: this.mgr
+            .living()
+            .map((n) => run.forecastFor(n.id))
+            .filter((f): f is NonNullable<typeof f> => !!f)
+            .map((f) => ({ actor: f.actorName, action: f.top.actionId, target: f.top.targetName, margin: Math.round(f.margin * 10) / 10 })),
+        };
       }
       case 'interveneArea': {
         if (!run) return { ok: false, reason: 'no run' };
@@ -6909,15 +7064,28 @@ export class Game {
       if (seen.has(id)) duplicateEventIds++;
       else seen.add(id);
     }
+    const biomeHash = Object.entries(this.mgr.data.biomes ?? {})
+      .map(([id, b]) => `${id}:${Math.round(b.faunaPressure * 100)}:${Math.round(aggregateStock(b))}`)
+      .sort()
+      .join('|');
     return {
       worldTurn: this.mgr.turn,
       worldAge: this.mgr.age,
       rosterHash,
+      biomeHash,
       living: this.mgr.living().length,
       dead: this.mgr.dead().length,
       eventCount: log.length,
       duplicateEventIds,
       last50EventTypes: log.slice(-50).map((e) => e.type),
+      // Rare-but-real events (a dungeon clearing, a betrayal) fall out of a
+      // 50-event tail long before a run ends, which made them look like they
+      // never happened. Counting the whole live log is what a distribution
+      // test actually needs.
+      eventTypeCounts: log.reduce<Record<string, number>>((acc, e) => {
+        acc[e.type] = (acc[e.type] ?? 0) + 1;
+        return acc;
+      }, {}),
       archiveCount: (this.mgr.data.chronicleArchives ?? []).length,
     };
   }

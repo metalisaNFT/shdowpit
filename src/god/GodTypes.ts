@@ -102,12 +102,6 @@ export interface SimState {
   hiddenUntil: number;
   /** area they are moving toward, resolved next cycle */
   travelTo: string | null;
-  /** abstract dungeon site target for delve/guard beats */
-  dungeonTarget?: string | null;
-  /** carried materials (separate from stolen weapons) */
-  materials?: Record<string, number>;
-  /** soft carry cap for utility scoring */
-  carryWeight?: number;
 
   /** short rendered lines for the chronicle and the Book of Legends */
   deeds: Deed[];
@@ -143,9 +137,6 @@ export function emptySimState(): SimState {
     revengeTargets: [],
     hiddenUntil: 0,
     travelTo: null,
-    dungeonTarget: null,
-    materials: {},
-    carryWeight: 24,
     deeds: [],
     lastCycle: 0,
     lastActionId: '',
@@ -182,30 +173,11 @@ export interface Faction {
   strength: number;
   /** 0..100 — below 25 it fractures, at 0 it collapses */
   stability: number;
-  /** house material stores */
-  treasury?: Record<string, number>;
   /** 0..100 — how readily it starts things */
   aggression: number;
   warWith: string[];
   bornCycle: number;
   destroyedCycle: number | null;
-}
-
-export type NpcQuestKind = 'gather' | 'delve' | 'hunt_feral' | 'deliver' | 'guard_site' | 'reclaim_cache';
-
-export type NpcQuestStatus = 'active' | 'done' | 'failed';
-
-export interface NpcQuest {
-  id: string;
-  assignerId: string | null;
-  assigneeId: string;
-  kind: NpcQuestKind;
-  targetAreaId: string;
-  targetSiteId?: string;
-  materialId?: string;
-  deadlineTurn?: number;
-  status: NpcQuestStatus;
-  assignedTurn?: number;
 }
 
 /* ============================================================
@@ -374,16 +346,11 @@ export type SituationKind =
   | 'underdog'
   | 'revenge'
   | 'betrayal_risk'
+  | 'succession'
   | 'territory'
   | 'heresy'
   | 'crisis'
-  | 'condition'
-  | 'feral_surge'
-  | 'resource_scarce'
-  | 'abundant_growth'
-  | 'quest_urgent'
-  | 'house_need'
-  | 'dungeon_ready';
+  | 'condition';
 
 export interface Situation {
   id: string;
@@ -438,6 +405,12 @@ export interface RunOutcome {
   slayerName: string;
   /** how many A-wants-B-wants-C chains were still live at the end */
   revengeChains: number;
+  /**
+   * The one sentence you would use to tell somebody which run this was —
+   * "the one where the coward took the seat". Derived from what happened,
+   * never authored.
+   */
+  epithet: string;
   /** rendered summary lines for the end-of-run screen */
   highlights: string[];
   /** "crisis was X because you did Y" chain shown before the next run */
@@ -593,6 +566,8 @@ export interface GodState {
   interventionsUsed: Record<string, number>;
   influenceSpent: number;
   descents: number;
+  /** characters the player killed in person — the run's receipt for DESCEND */
+  descentKills: string[];
   /**
    * The one intervention that puts you in the world yourself. Set by DESCEND,
    * consumed by the Game, which drops into the third-person run against this

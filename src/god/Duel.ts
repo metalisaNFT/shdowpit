@@ -60,11 +60,13 @@ interface Side {
   escape: number;
   /** free window at the start, bought by a condition */
   edge: number;
+  /** health they walked in with; nobody runs from a fight that has not touched them yet */
+  startHp: number;
 }
 
 export function resolveDuel(a: Fighter, b: Fighter, rng: RNG): DuelResult {
-  const A: Side = { f: a, escape: 0, edge: a.tilt.edge };
-  const B: Side = { f: b, escape: 0, edge: b.tilt.edge };
+  const A: Side = { f: a, escape: 0, edge: a.tilt.edge, startHp: a.hp };
+  const B: Side = { f: b, escape: 0, edge: b.tilt.edge, startHp: b.hp };
   const beats: DuelBeat[] = [];
   let dist = START_DISTANCE;
   let t = 0;
@@ -114,19 +116,30 @@ export function resolveDuel(a: Fighter, b: Fighter, rng: RNG): DuelResult {
 
       /* ---- leaving ---- */
       const thresh = fleeThreshold(f);
-      if (!f.fleeing && thresh >= 0 && f.hp / f.maxHp < thresh) {
+      if (!f.fleeing && thresh >= 0 && f.hp / f.maxHp < thresh && f.hp < me.startHp * 0.82) {
         f.fleeing = true;
         beats.push({ t, text: `${f.name} broke and ran`, actorId: f.id, kind: 'flee' });
       }
       if (f.fleeing) {
-        // Speed is the whole question. A heavy running from a duelist is not
-        // running anywhere.
-        me.escape += (f.speed - o.speed * 0.92) * STEP + 0.12;
-        dist += Math.max(0.4, f.speed * STEP * 0.7);
+        // Speed is most of the question. A heavy running from a duelist is
+        // not running anywhere — and nobody outruns somebody who came here
+        // specifically for them.
+        const chase = o.speed * (0.92 + o.pursuit * 0.4);
+        me.escape += (f.speed - chase) * STEP + 0.12 - o.pursuit * 0.05;
+        dist += Math.max(0.4, f.speed * STEP * 0.7) - o.pursuit * 0.3;
         f.busy = STEP;
         if (me.escape > 3.2 || dist > 22) {
           ending = 'flight';
           escapedId = f.id;
+          endT = t;
+          t = MAX_TIME;
+          break;
+        }
+        if (me.escape < -1.4 || dist < 1.2) {
+          // Run down. What happens to them now is the winner's decision.
+          beats.push({ t, text: `${o.name} ran ${f.name} down`, actorId: o.id, kind: 'crush' });
+          f.hp = 0;
+          ending = 'down';
           endT = t;
           t = MAX_TIME;
           break;

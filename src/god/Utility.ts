@@ -81,6 +81,14 @@ export interface TermCtx {
   /** act pressure, roughly 0.8..1.8 */
   pressure: number;
   rng: RNG;
+  /** the clock that advances on this path — see GodContext.now */
+  now: number;
+  /**
+   * Forecast mode: no noise, no RNG consumption. The forecast engine scores
+   * the same options the simulation will, minus the mood — which is exactly
+   * the part the player is not allowed to know.
+   */
+  preview?: boolean;
 }
 
 /** What A is to B, as a number that can go either way. */
@@ -143,7 +151,8 @@ export function ambitionTerm(ctx: TermCtx, n: Nemesis): number {
 
 /** Chaos makes the world less predictable, which is the whole price of using it. */
 export function noiseTerm(ctx: TermCtx): number {
-  const spread = 2.2 + Math.min(9, ctx.god.chaos * 0.09);
+  if (ctx.preview) return 0;
+  const spread = 1.8 + Math.min(6, ctx.god.chaos * 0.06);
   return ctx.rng.bell() * spread;
 }
 
@@ -176,16 +185,18 @@ export function crisisGlory(ctx: TermCtx, actor: Nemesis, target: Nemesis): numb
   if (actor.id === target.id) return 0;
   const s = simOf(actor);
   const p = getPersonality(actor.personality);
-  let glory = 5;
-  glory += (s.ambition / 100) * 9 * p.ambition;
-  glory += (s.confidence / 100) * 6;
+  let glory = 2;
+  glory += (s.ambition / 100) * 6 * p.ambition;
+  glory += (s.confidence / 100) * 4;
   glory += (s.reputation / 100) * 4;
-  glory += s.revengeTargets.includes(target.id) ? 8 : 0;
-  glory += rankIndex(actor.rank) * 1.5;
+  glory += s.revengeTargets.includes(target.id) ? 6 : 0;
+  glory += rankIndex(actor.rank) * 1.2;
   // The longer it is left, the more obvious it becomes that somebody has to.
-  glory += Math.min(9, (ctx.god.cycle - crisis.bornCycle) * 0.8);
+  glory += Math.min(7, (ctx.god.cycle - crisis.bornCycle) * 0.6);
   // A frightened, broken character is not the answer and knows it.
   glory -= (s.fear / 100) * 7 + (s.injury / 100) * 7;
+  // A war's leader is a target for the other side, not for the whole world.
+  if (crisis.kind === 'civil_war' && !atWar(ctx.god, actor, target)) glory *= 0.4;
   return Math.max(0, glory);
 }
 
@@ -195,12 +206,11 @@ export function crisisGlory(ctx: TermCtx, actor: Nemesis, target: Nemesis): numb
  */
 export function reachable(ctx: TermCtx, actor: Nemesis, target: Nemesis): string | null {
   if (!target.alive) return 'dead';
+  if (actor.id === target.id) return 'self';
   const ts = simOf(target);
-  if (ts.hiddenUntil > ctx.god.cycle && ctx.cond.weight(target.id, 'exposure') <= 0) return 'hidden';
-  if (actor.territory !== target.territory && ctx.cond.weight(target.id, 'exposure') <= 0) {
-    // Not impossible, just harder — the caller pays for it in `base`.
-    return null;
-  }
+  if (ts.hiddenUntil > ctx.now && ctx.cond.weight(target.id, 'exposure') <= 0) return 'hidden';
+  // Different ground is not impossible, just harder — the caller pays for it
+  // in `base` through the travel penalty.
   return null;
 }
 

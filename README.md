@@ -57,6 +57,7 @@ npm test               # headless playtest (tools/playtest.mjs)
 npm run test:god       # THE LONG GAME vertical slice (~98 checks)
 npm run test:simreg    # unified worldTurn / god+pit regression (seed 424242)
 npm run test:emergence # do stories actually emerge? (accelerated runs)
+node tools/observe.mjs 32 quiet   # read a whole run as a designer (quiet | greedy)
 npm run test:depth     # save migrate / Heat / Remnants / sim hooks
 npm run test:story     # story graph, recap, Web
 npm run test:combat    # combat QA tests 1–5
@@ -132,7 +133,9 @@ from afar while captions land on the NOW card.
 1. **OBSERVE.** One load-bearing situation at a time — a grudge about to act, a house
    coming apart, someone climbing too fast. The full board and feed live in drawers.
 2. **INTERFERE.** Spend Influence. Thirteen interventions write *conditions*, not
-   outcomes (`BLESS`, `CURSE`, `WHISPER`, `PRICE THEIR HEAD`, `DESCEND`, …). The clock
+   outcomes (`BLESS`, `CURSE`, `WHISPER`, `PRICE THEIR HEAD`, `DESCEND`, …). Every card
+   carries **the reading** — who would likely answer it, from the same scorer the world
+   uses, minus the mood — so you can form a plan and be wrong about it. The clock
    waits until you advance after a spend.
 3. **SIMULATE.** Characters score every option from personality, relationships,
    memory, needs, danger, opportunity, ambition, and chaos-widened noise — then act.
@@ -140,7 +143,9 @@ from afar while captions land on the NOW card.
 4. **CONSEQUENCES.** One aftermath link at a time on the NOW card; the feed drawer
    holds the full timeline. Major beats pause the clock until dismissed.
 5. **ESCALATE.** Four acts toward a crisis you cannot touch directly — only arrange
-   for someone who can.
+   for someone who can. It is named around cycle 10, among the strongest in the world,
+   and it grows unless the world is arranged against it. A god who spends nothing
+   usually loses.
 6. **RUN END.** Up to three characters enter the **Book of Legends** and leave
    something in the next world. Unlocks add verbs and starting worlds, not bigger numbers.
 
@@ -214,8 +219,11 @@ and promotions emerge from the same scoring the oracle uses.
 God cycles and pit offscreen beats share `worldTurn` (one cycle ≡ one beat). Silent beats skip the
 feed; chronicle and `Nemesis.sim` still update. See [`docs/SIM_LAYER.md`](docs/SIM_LAYER.md).
 
-Returns from death stay rare: two cycles buried minimum, personality- and grudge-weighted, at most
-one per beat.
+Returns from death are rare — one or two a run: three turns buried minimum, a seven-turn
+cooldown after any return, personality- and grudge-weighted. While a long game is running the
+hierarchy is **sticky**: rank moves only by winning a seat, succession inside a house, or a rise
+from the rabble, and ground is owned until somebody takes it. See `docs/GOD_LAYER.md` §8b and
+`docs/RECONSTRUCTION.md`.
 
 ### Ages
 
@@ -427,7 +435,7 @@ Nothing outside `src/ai/` names a vendor.
 
 Named enemies can offer a **Vendetta** — one optional personal objective with a previewed reward. **Heat** is the readable pursuit meter; thresholds telegraph hunters and lockdowns, never spawning on top of you. **Remnants** are a run-only drop (not Essence): heal (vulnerable), reroll offers, pay extraction, or block a fake death. Territories impose **one law** from the current holder; liberation is temporary and the law follows the new holder after simulation. After a named victory you pick **one** reward derived from their real traits. Mercy, tribute, humiliation and betrayal are available when a named foe is broken and the fight is safe enough. Weapons are sidegrades with unlockable **techniques**. Power **families** and up to three **reactions** change verbs, not just numbers.
 
-AI remains optional and presentation-only. Saves are version **9** (adds optional `biomes` and `npcQuests`); older worlds migrate with defaults.; older worlds migrate with defaults.
+AI remains optional and presentation-only. Saves are version **9** (adds optional `biomes`; the `npcQuests` ledger is legacy and no longer read); older worlds migrate with defaults.
 
 ### Tower Commander vertical slice (human playtest)
 

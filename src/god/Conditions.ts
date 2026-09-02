@@ -81,9 +81,17 @@ export function removeConditions(god: GodState, targetId: string, kind?: Conditi
 export class ConditionIndex {
   private byTarget = new Map<string, Condition[]>();
   private all: Condition[] = [];
+  /**
+   * How much the world still believes the god's marks. Chaos is the world
+   * noticing it is being handled, and a noticed hand is a doubted one: past
+   * the heresy line every god-sourced condition weighs less. This is the one
+   * place chaos makes the player's tools blunter instead of merely louder.
+   */
+  readonly trust: number;
 
   constructor(god: GodState) {
     this.all = god.conditions;
+    this.trust = godTrust(god.chaos);
     for (const c of god.conditions) {
       let list = this.byTarget.get(c.targetId);
       if (!list) {
@@ -109,8 +117,12 @@ export class ConditionIndex {
   /** Summed magnitude of one kind sitting on a target. 0 when there is none. */
   weight(targetId: string, kind: ConditionKind): number {
     let w = 0;
-    for (const c of this.on(targetId)) if (c.kind === kind && c.targetId === targetId) w += c.magnitude;
+    for (const c of this.on(targetId)) if (c.kind === kind && c.targetId === targetId) w += this.mag(c);
     return w;
+  }
+
+  private mag(c: Condition): number {
+    return c.source === 'god' ? c.magnitude * this.trust : c.magnitude;
   }
 
   /** A rumour or provocation specifically about these two. */
@@ -118,14 +130,14 @@ export class ConditionIndex {
     let w = 0;
     for (const c of this.on(a)) {
       if (c.kind !== kind) continue;
-      if ((c.targetId === a && c.otherId === b) || (c.targetId === b && c.otherId === a)) w += c.magnitude;
+      if ((c.targetId === a && c.otherId === b) || (c.targetId === b && c.otherId === a)) w += this.mag(c);
     }
     return w;
   }
 
   worldWeight(kind: ConditionKind): number {
     let w = 0;
-    for (const c of this.all) if (c.targetKind === 'world' && c.kind === kind) w += c.magnitude;
+    for (const c of this.all) if (c.targetKind === 'world' && c.kind === kind) w += this.mag(c);
     return w;
   }
 
@@ -158,6 +170,12 @@ export class ConditionIndex {
     if (exposure) t.edge -= Math.min(1.2, exposure * 0.6);
     return t;
   }
+}
+
+/** 1 below the heresy line, falling to about half at the chaos ceiling. */
+export function godTrust(chaos: number): number {
+  if (chaos < 40) return 1;
+  return Math.max(0.45, 1 - (chaos - 40) / 110);
 }
 
 export const CONDITION_LABEL: Record<ConditionKind, string> = {

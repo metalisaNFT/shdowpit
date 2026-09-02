@@ -289,7 +289,19 @@ export class NemesisManager {
    * warlords and captains, promoting from below and recruiting if the world
    * has run out of bodies.
    */
+  /**
+   * While a long game is in progress the hierarchy is STICKY: rank moves only
+   * when a fight, a succession or a rise out of the rabble moves it. The quota
+   * below (exactly one Overlord, two warlords, N captains…) is how the
+   * third-person game keeps its cast shaped, and it was quietly undoing every
+   * promotion the simulation produced within the same cycle.
+   */
+  get stickyHierarchy(): boolean {
+    return !!this.data.god;
+  }
+
   fillRanks(): WorldEvent[] {
+    if (this.stickyHierarchy) return this.settleSeat();
     const events: WorldEvent[] = [];
     const targets = this.targetCounts();
     const chain: Rank[] = ['overlord', 'warlord', 'captain', 'elite'];
@@ -341,6 +353,32 @@ export class NemesisManager {
 
     this.trimRoster(events);
     this.assignTerritories();
+    return events;
+  }
+
+  /**
+   * Sticky-mode hierarchy maintenance: at most one Overlord, and an empty seat
+   * is taken by whoever has held the Fortress as a warlord. Nothing else moves.
+   */
+  private settleSeat(): WorldEvent[] {
+    const events: WorldEvent[] = [];
+    const ovs = this.ofRank('overlord');
+    while (ovs.length > 1) {
+      ovs.sort((a, b) => a.power - b.power || a.returns - b.returns);
+      const victim = ovs.shift()!;
+      const ev = this.demote(victim, 'there is only one seat');
+      ev.important = true;
+      events.push(ev);
+    }
+    if (ovs.length === 0) {
+      const holder = this.territoryHolder('fortress');
+      if (holder && holder.alive && holder.rank === 'warlord') {
+        const ev = this.promote(holder, 'overlord');
+        ev.important = true;
+        ev.text = `${fullName(holder)} TOOK THE SEAT. Nobody stopped them.`;
+        events.push(ev);
+      }
+    }
     return events;
   }
 
@@ -404,6 +442,15 @@ export class NemesisManager {
 
   /** Give every area a holder; the Overlord always sits in the Fortress alone. */
   assignTerritories(): void {
+    if (this.stickyHierarchy) {
+      // Ground is owned. The dead let go of it (killNemesis), and the living
+      // take it (SEIZE). Nothing reassigns it behind the player's back.
+      for (const a of AREAS) {
+        const holder = this.byId(this.data.territories[a.id]);
+        if (holder && !holder.alive) this.data.territories[a.id] = null;
+      }
+      return;
+    }
     const ov = this.overlord();
     if (ov) {
       ov.territory = 'fortress';
@@ -550,7 +597,13 @@ export class NemesisManager {
         continue;
       }
       const age = this.turn - (n.diedOnTurn ?? 0);
-      const memorable = n.revengeChance > 0.3 || n.killsAgainstPlayer > 0 || n.returns > 0 || n.stolen.length > 0;
+      const s = simOf(n);
+      const memorable =
+        n.revengeChance > 0.3 ||
+        n.killsAgainstPlayer > 0 ||
+        n.returns > 0 ||
+        n.stolen.length > 0 ||
+        (this.stickyHierarchy && (s.deeds.length > 0 || s.kills.length > 0 || rankIndex(n.rank) >= 2));
       if (age <= 10 || memorable) keep.push(n);
       else purgeReferences(this.data.nemeses, n.id);
     }

@@ -98,6 +98,24 @@ export class GodInspectDrawer {
     head.append(names);
     this.drawer.body.append(head);
 
+    // What they are leaning toward. The scorer's own reading, minus the mood.
+    // Words, never a percentage: LIKELY / MIGHT / UNLIKELY is as precise as a
+    // god is allowed to be about somebody else's next decision.
+    if (n.alive) {
+      const fc = run.forecastFor(n.id);
+      if (fc) {
+        const sec = div('god-ins-lean');
+        sec.append(div('god-ins-fact', 'LEANING TOWARD'));
+        const conf = fc.margin >= 2.5 ? 'LIKELY' : fc.margin >= -2.5 ? 'MIGHT' : 'UNSURE';
+        sec.append(div('god-ins-lean-line', `${fc.top.actionName}${fc.top.targetName ? ' — ' + fc.top.targetName : ''} · ${conf}`));
+        if (fc.second && conf !== 'LIKELY') {
+          sec.append(div('god-ins-lean-alt', `or ${fc.second.actionName}${fc.second.targetName ? ' — ' + fc.second.targetName : ''}`));
+        }
+        if (s.hiddenUntil > run.god.cycle) sec.append(div('god-ins-lean-alt', 'Gone to ground. Cannot be reached unless revealed.'));
+        this.drawer.body.append(sec);
+      }
+    }
+
     this.drawer.body.append(buildRelWeb(run, n));
 
     const dossier = hooks.dossierFor?.(n);

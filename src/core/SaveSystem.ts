@@ -19,7 +19,7 @@ import { defaultGodClockSettings, type GodClockSettings } from '../god/Clock';
 import { trimForQuota } from '../sim/ChronicleArchive';
 import { ensureBiomes } from '../world/BiomeState';
 import type { BiomeMap } from '../world/BiomeState';
-import type { GodState, LegendRecord, NpcQuest } from '../god/GodTypes';
+import type { GodState, LegendRecord } from '../god/GodTypes';
 
 export const SAVE_VERSION = 9;
 const KEY = 'shdowpit.world.v1';
@@ -178,7 +178,8 @@ export interface SaveData {
   /** per-area biome ecology, resources, dungeon sites (save version 9) */
   biomes?: BiomeMap;
   /** NPC-only quest ledger */
-  npcQuests?: NpcQuest[];
+  /** legacy (save v9): the NPC errand ledger. No longer read; kept so old saves load. */
+  npcQuests?: unknown[];
   nextQuestId?: number;
 
   /* ---- THE LONG GAME (god layer, save version 7) ---- */

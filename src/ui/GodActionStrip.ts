@@ -135,6 +135,26 @@ export class GodActionStrip {
       );
       card.append(div('god-int-desc', def.desc));
       if (why) card.append(div('god-int-block', why));
+      else if (affordable) {
+        // THE READING. Who would answer this, from the same scorer the world
+        // uses — minus the mood, which is the part the player is never told.
+        const reading = run.reading(def.id, state.selA, def.targeting === 'pair' ? state.selB : null, state.selArea);
+        if (reading) {
+          const box = div('god-int-read');
+          box.classList.add('read-' + reading.clarity);
+          for (const line of reading.lines.slice(0, 3)) box.append(div('god-int-read-line', line));
+          if (reading.responders.length) {
+            const row = div('god-int-read-who');
+            for (const r of reading.responders.slice(0, 3)) {
+              const chip = div('god-read-chip ' + r.label.toLowerCase(), `${r.name.split(' ')[0]} · ${r.label}`);
+              chip.title = `${r.name} — ${r.action}${r.targetName ? ' ' + r.targetName : ''}`;
+              row.append(chip);
+            }
+            box.append(row);
+          }
+          card.append(box);
+        }
+      }
       card.addEventListener('click', () => {
         if (!usable) return;
         if (NEEDS_CONFIRM.has(def.id)) this.onConfirm?.(def);

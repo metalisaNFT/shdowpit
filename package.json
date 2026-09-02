@@ -49,7 +49,8 @@
     "ai:start": "node local-ai-engine/install.mjs --start",
     "ai:stop": "node local-ai-engine/install.mjs --stop",
     "ai:restart": "node local-ai-engine/install.mjs --restart",
-    "ai:remove": "node local-ai-engine/install.mjs --remove"
+    "ai:remove": "node local-ai-engine/install.mjs --remove",
+    "observe": "node tools/observe.mjs"
   },
   "dependencies": {
     "three": "^0.169.0"

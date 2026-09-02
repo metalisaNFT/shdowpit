@@ -214,6 +214,13 @@ export class NemesisEncounterDirector {
 
     const seq = this.active;
     if (!seq) return;
+    if (!seq.enemy.alive && seq.kind !== 'NEMESIS_DEFEATED' && seq.kind !== 'PLAYER_DEFEATED') {
+      seq.enemy.introHold = false;
+      this.deps?.hideCard();
+      this.deps?.clearSlowMo();
+      this.active = null;
+      return;
+    }
     seq.t += dt;
     while (seq.cursor < seq.beats.length && seq.t >= seq.beats[seq.cursor].t) {
       this.fire(seq, seq.beats[seq.cursor].action);

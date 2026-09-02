@@ -42,6 +42,26 @@ page.on('pageerror', (e) => pageErrors.push(e.message));
 const ev = (fn, ...a) => page.evaluate(fn, ...a);
 const sleep = (ms) => page.waitForTimeout(ms);
 const anim = () => ev(() => window.SHDOWPIT.__animState());
+/**
+ * Wait for one enemy's animator to catch up with its combat state.
+ *
+ * Driving `e.combat.stagger()` from the harness flips the combat state
+ * synchronously, but the clip is only chosen on the enemy's next animate()
+ * frame — up to ~250ms away under software GL. A fixed sleep loses that race
+ * and reads LOCOMOTION. Poll the animator instead.
+ */
+const awaitEnemyAnim = async (uid, pred, limitMs = 2500) => {
+  const t0 = Date.now();
+  let row;
+  while (Date.now() - t0 < limitMs) {
+    const s = await ev(() => window.SHDOWPIT.__animState());
+    row = s.enemies.find((e) => e.uid === uid);
+    if (row && pred(row)) return row;
+    await sleep(50);
+  }
+  return row;
+};
+
 const dump = async (tag) => {
   const d = await ev(() => {
     const g = window.SHDOWPIT;
@@ -223,14 +243,6 @@ await dismissBoons();
 
 console.log('\n== B. STATE MACHINE ==');
 
-await dump('preB1');
-// B1 heavy attack
-await waitIdle();
-await page.mouse.click(640, 360, { button: 'right' });
-await sleep(150);
-a = await anim();
-check('B1 heavy -> HEAVY_ATTACK/Atk2H_Slam', a.player.state === 'HEAVY_ATTACK' && a.player.clip === 'Atk2H_Slam', `${a.player.state}/${a.player.clip}`);
-
 /**
  * Poll for an animation state rather than sleeping a fixed amount. One
  * software-GL frame is ~110ms, so "press, wait 120ms, sample" could read the
@@ -247,18 +259,36 @@ const awaitPlayerState = async (pred, limitMs = 1200) => {
   return last;
 };
 
-// B2 dodge (direction-relative clip) — only once the heavy has fully resolved
+await dump('preB1');
+// B1 heavy attack
 await waitIdle();
-await page.keyboard.down('KeyA');
-await page.keyboard.press('Space');
-a = await awaitPlayerState((p) => p.state === 'DODGE');
-await page.keyboard.up('KeyA');
+await page.mouse.click(640, 360, { button: 'right' });
+a = await awaitPlayerState((p) => p.state === 'HEAVY_ATTACK' || p.clip === 'Atk2H_Slam', 1500);
+check('B1 heavy -> HEAVY_ATTACK/Atk2H_Slam', a.player.state === 'HEAVY_ATTACK' && a.player.clip === 'Atk2H_Slam', `${a.player.state}/${a.player.clip}`);
+
+// B2 dodge (direction-relative clip) — only once the heavy has fully resolved
+// One press can be swallowed — a dodge charge still recharging, or the input
+// landing on a frame the controller was not reading. Retry once before
+// concluding the state machine is wrong.
+for (let attempt = 0; attempt < 2; attempt++) {
+  await waitIdle();
+  await page.keyboard.down('KeyA');
+  await page.keyboard.press('Space');
+  a = await awaitPlayerState((p) => p.state === 'DODGE', 1800);
+  await page.keyboard.up('KeyA');
+  if (a.player.state === 'DODGE') break;
+  await sleep(600);
+}
 check('B2 dodge -> DODGE/Dodge*', a.player.state === 'DODGE' && a.player.clip.startsWith('Dodge'), `${a.player.state}/${a.player.clip}`);
 
 // B3 parry
-await waitIdle();
-await page.keyboard.press('KeyQ');
-a = await awaitPlayerState((p) => p.state === 'PARRY');
+for (let attempt = 0; attempt < 2; attempt++) {
+  await waitIdle();
+  await page.keyboard.press('KeyQ');
+  a = await awaitPlayerState((p) => p.state === 'PARRY', 1800);
+  if (a.player.state === 'PARRY') break;
+  await sleep(600);
+}
 check('B3 parry -> PARRY/Parry', a.player.state === 'PARRY' && a.player.clip === 'Parry', `${a.player.state}/${a.player.clip}`);
 await waitIdle();
 
@@ -276,11 +306,12 @@ let r = await ev(() => {
   e.combat.stagger(0.8);
   return e.uid;
 });
-await sleep(150);
-a = await anim();
-let row = a.enemies.find((e) => e.uid === r);
-row = row && row.combatState === 'stagger' ? row : undefined;
-check('B4 enemy stagger -> STAGGER/Hit*', !!row && row.state === 'STAGGER' && row.clip.startsWith('Hit'), row ? `${row.state}/${row.clip}` : 'none');
+let row = await awaitEnemyAnim(r, (e) => e.combatState === 'stagger' && e.state === 'STAGGER');
+check(
+  'B4 enemy stagger -> STAGGER/Hit*',
+  !!row && row.combatState === 'stagger' && row.state === 'STAGGER' && row.clip.startsWith('Hit'),
+  row ? `${row.combatState}/${row.state}/${row.clip}` : 'none'
+);
 await sleep(900);
 
 r = await ev(() => {
@@ -293,10 +324,12 @@ r = await ev(() => {
   e.combat.breakPosture();
   return e.uid;
 });
-await sleep(200);
-a = await anim();
-row = a.enemies.find((e) => e.uid === r && e.combatState === 'broken');
-check('B5 posture break -> BROKEN pose', !!row && row.state === 'BROKEN', row ? `${row.state}/${row.clip}` : 'none');
+row = await awaitEnemyAnim(r, (e) => e.combatState === 'broken' && e.state === 'BROKEN');
+check(
+  'B5 posture break -> BROKEN pose',
+  !!row && row.combatState === 'broken' && row.state === 'BROKEN',
+  row ? `${row.combatState}/${row.state}/${row.clip}` : 'none'
+);
 const wideOpen = await ev(() => {
   const g = window.SHDOWPIT;
   const e = g.world.enemies.find((e) => e.combat.state === 'broken');
@@ -305,9 +338,12 @@ const wideOpen = await ev(() => {
 check('B5 broken enemy is executable', wideOpen === true);
 await sleep(600);
 
+// A broken enemy deliberately ignores knockdown (see EnemyCombat.knockdown,
+// asserted by combattest's "broken enemies ignore block and knockdown"), and
+// B5 just broke the nearest one for 3.2s. Knock down a different body.
 r = await ev(() => {
   const g = window.SHDOWPIT;
-  const list = g.world.enemies.filter((e) => e.alive);
+  const list = g.world.enemies.filter((e) => e.alive && e.combat.state !== 'broken');
   const px = g.player.position;
   list.sort((x, y) => x.position.distanceToSquared(px) - y.position.distanceToSquared(px));
   const e = list[0];
@@ -315,28 +351,40 @@ r = await ev(() => {
   e.combat.knockdown(1.4);
   return e.uid;
 });
-await sleep(200);
-a = await anim();
-row = a.enemies.find((e) => e.uid === r && e.combatState === 'knockdown');
-check('B6 knockdown -> KNOCKDOWN/Knockdown', !!row && row.state === 'KNOCKDOWN' && row.clip === 'Knockdown', row ? `${row.state}/${row.clip}` : 'none');
+check('B6 a non-broken body was available to knock down', r !== null, String(r));
+row = await awaitEnemyAnim(r, (e) => e.combatState === 'knockdown' && e.state === 'KNOCKDOWN');
+check(
+  'B6 knockdown -> KNOCKDOWN/Knockdown',
+  !!row && row.combatState === 'knockdown' && row.state === 'KNOCKDOWN' && row.clip === 'Knockdown',
+  row ? `${row.combatState}/${row.state}/${row.clip}` : 'none'
+);
 await sleep(1600);
 
-const tauntRes = await ev(() => {
-  const g = window.SHDOWPIT;
-  const list = g.world.enemies.filter((e) => e.alive && !e.combat.busy);
-  const px = g.player.position;
-  list.sort((x, y) => x.position.distanceToSquared(px) - y.position.distanceToSquared(px));
-  const e = list[0];
-  if (!e) return null;
-  e.hesitateTimer = 3;
-  e.combat.cooldown = 3;
-  return { ok: e.taunt(), uid: e.uid };
-});
+// B5 and B6 deliberately leave two bodies busy (broken for 3.2s, knocked down
+// for 1.4s). On a thin roster that can be everyone, and this check then fails
+// for want of a volunteer rather than for anything about the taunt clip.
+const pickTauntable = () =>
+  ev(() => {
+    const g = window.SHDOWPIT;
+    const list = g.world.enemies.filter((e) => e.alive && !e.combat.busy);
+    const px = g.player.position;
+    list.sort((x, y) => x.position.distanceToSquared(px) - y.position.distanceToSquared(px));
+    const e = list[0];
+    if (!e) return null;
+    e.hesitateTimer = 3;
+    e.combat.cooldown = 3;
+    return { ok: e.taunt(), uid: e.uid };
+  });
+let tauntRes = await pickTauntable();
+if (!tauntRes) {
+  await ev(() => window.SHDOWPIT.__qaSpawnOne('fighter', 6));
+  await sleep(700);
+  tauntRes = await pickTauntable();
+}
+check('B7 a free body was available to taunt', tauntRes !== null);
 const taunted = tauntRes?.ok ?? null;
-await sleep(200);
-a = await anim();
-row = a.enemies.find((e) => e.uid === tauntRes?.uid && e.state === 'TAUNT');
-check('B7 taunt one-shot plays', taunted === true && !!row, `taunt=${taunted}`);
+row = tauntRes ? await awaitEnemyAnim(tauntRes.uid, (e) => e.state === 'TAUNT', 1500) : undefined;
+check('B7 taunt one-shot plays', taunted === true && row?.state === 'TAUNT', `taunt=${taunted} state=${row?.state ?? 'none'}`);
 await sleep(500);
 
 // B8 enemy death clip
@@ -372,7 +420,13 @@ async function measureActiveStart(scale) {
 }
 
 for (const scale of [1, 0.5, 0.25]) {
-  const m = await measureActiveStart(scale);
+  // A swallowed click means no window to measure, which is a missed sample,
+  // not a desynced anchor. Take one more swing before calling it a failure.
+  let m = await measureActiveStart(scale);
+  if (m.t0 === null) {
+    await waitIdle();
+    m = await measureActiveStart(scale);
+  }
   if (m.t0 === null) {
     check(`C @${scale}x active window observed`, false);
     continue;

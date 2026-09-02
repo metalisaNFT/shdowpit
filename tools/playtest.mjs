@@ -371,11 +371,19 @@ async function main() {
      ============================================================ */
   await dismissOverlays();
   await key('Tab', 80);
-  await page.waitForTimeout(700);
+  await page.waitForFunction(
+    () => {
+      const h = document.querySelector('#hierarchy-screen');
+      return h && !h.classList.contains('hidden');
+    },
+    null,
+    { timeout: 8000 }
+  );
+  await page.waitForTimeout(400);
   await shot('07-hierarchy.png');
   const clickTab = async (label) => {
-    const tabs = await page.$$('#hierarchy-screen .tab');
-    const labels = await page.$$eval('#hierarchy-screen .tab', (e) => e.map((x) => x.textContent.trim()));
+    const tabs = await page.$$('#hierarchy-screen .meta-tab');
+    const labels = await page.$$eval('#hierarchy-screen .meta-tab', (e) => e.map((x) => x.textContent.trim()));
     const i = labels.indexOf(label);
     if (i < 0) throw new Error(`no such tab: ${label} (have ${labels.join(', ')})`);
     await tabs[i].click();
@@ -396,7 +404,7 @@ async function main() {
     check('nemesis detail panel renders', detail.length > 60, detail.slice(0, 60).replace(/\s+/g, ' '));
     await shot('08-detail.png');
   }
-  const tabLabels = await page.$$eval('#hierarchy-screen .tab', (e) => e.map((x) => x.textContent.trim()));
+  const tabLabels = await page.$$eval('#hierarchy-screen .meta-tab', (e) => e.map((x) => x.textContent.trim()));
   check('book of enemies tab exists', tabLabels.includes('BOOK'), tabLabels.join(' | '));
 
   /* --- the book of enemies --- */

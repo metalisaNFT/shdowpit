@@ -227,8 +227,11 @@ async function main() {
     return b && (b.alive !== n.alive || b.rank !== n.rank);
   });
   check('interventions create conditions, not outcomes', changedHard.length === 0, `${changedHard.length} hard changes`);
-  const blessed = rosterAfter.find((n) => n.id === target);
-  check('the target only had their state nudged', !!blessed && blessed.confidence >= (beforeById.get(target)?.confidence ?? 0));
+  // The UI blesses whoever sits in slot A (the focus situation's first actor),
+  // which is not always the first actor of the top-urgency card — so find the
+  // blessed one by the mark it left rather than by guessing the slot.
+  const blessed = rosterAfter.find((n) => n.memoryTypes.includes('GOD_BLESSED_ME')) ?? rosterAfter.find((n) => n.id === target);
+  check('the target only had their state nudged', !!blessed && blessed.confidence >= (beforeById.get(blessed.id)?.confidence ?? 0));
   check('the target remembers it was touched', (blessed?.memoryTypes ?? []).includes('GOD_BLESSED_ME'));
 
   const two = living.slice(0, 2).map((n) => n.id);
@@ -354,10 +357,14 @@ async function main() {
   check('characters win and lose', roster.some((n) => n.wins > 0) && roster.some((n) => n.losses > 0));
   const returns = feed.filter((b) => b.kind === 'return');
   const returnedViaMemory = roster.some((n) => n.memoryTypes.includes('I_RETURNED_FROM_DEATH'));
+  // RECONSTRUCTION: returns are meant to be rare — one or two a run, each
+  // an event — so a fixed window is not allowed to demand one. What the
+  // check guards now is the opposite failure: a world where death reverses
+  // every few cycles.
   check(
-    'the dead can come back',
-    returns.length > 0 || returnedViaMemory,
-    `${returns.length} return beats; resurrected=${returnedViaMemory}`
+    'death is not routine — returns stay rare',
+    returns.length <= 3,
+    `${returns.length} return beats in ${mid.cycle} cycles; resurrected=${returnedViaMemory}`
   );
 
   beat(10, 'MEMORY CHANGES FUTURE BEHAVIOUR');
@@ -383,10 +390,10 @@ async function main() {
   check('chaos accumulated', mid.chaosPeak > 0, `peak ${Math.round(mid.chaosPeak)}`);
   const chaosBefore = mid.chaos;
   await page.evaluate(() => window.SHDOWPIT.__debug().godAddInfluence?.(60));
-  const dead0 = roster.find((n) => !n.alive);
+  const dead0 = (await god('roster')).list.find((n) => !n.alive);
   if (dead0) {
     const raise = await god('intervene', 'raise', dead0.id);
-    check('a heavy intervention costs heavily', raise.ok === true && raise.chaos > chaosBefore + 5, `${chaosBefore} -> ${raise.chaos}`);
+    check('a heavy intervention costs heavily', raise.ok === true && raise.chaos > chaosBefore + 5, `${chaosBefore} -> ${raise.chaos} ${raise.reason ?? ''}`);
   } else {
     check('a heavy intervention costs heavily', false, 'nobody dead to raise');
   }

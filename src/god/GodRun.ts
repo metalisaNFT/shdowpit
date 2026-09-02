@@ -31,9 +31,9 @@ import { applyLegacies, harvestLegends, recordLegends } from './Legends';
 import { simulateCycle } from './Autonomy';
 import { reconcileWorld } from '../sim/Reconcile';
 import { trimEventLog } from '../sim/ChronicleArchive';
-import { tickBiomes } from '../world/BiomeState';
 import { seedSimFromPitHistory } from '../sim/OffscreenBeat';
 import { buildSituations } from './Situations';
+import { forecastIntervention, forecastActor, type ActorForecast, type Reading } from './Forecast';
 import { summariseCycle } from './Feed';
 import { evaluateUnlocks, startingConditions, type StartingConditions } from './Unlocks';
 import { buildAftermath, intentionFromLastMove, type CycleSpend } from './Aftermath';
@@ -99,6 +99,7 @@ export function emptyGodState(seed: number, run: number, bonus = 0): GodState {
     interventionsUsed: {},
     influenceSpent: 0,
     descents: 0,
+    descentKills: [],
     pendingDescent: null,
     focusSituationId: null,
     openingDone: false,
@@ -125,6 +126,7 @@ export function migrateGodState(raw: GodState): GodState {
   if (g.lastAftermath === undefined) g.lastAftermath = null;
   if (g.lastDescentReport === undefined) g.lastDescentReport = null;
   if (!g.legacyEchoes) g.legacyEchoes = [];
+  if (!g.descentKills) g.descentKills = [];
   if (!g.conversations) g.conversations = [];
   if (g.nextConversationId === undefined) g.nextConversationId = 1;
   if (g.chaosTierAt === undefined) syncChaosTierAt(g);
@@ -312,6 +314,18 @@ export class GodRun {
     return new GodContext(this.mgr, this.god, this.rng, this.mgr.mods, effectiveAct(this.god));
   }
 
+  /**
+   * Run `fn` against a live context and flush its beats to the feed. This is
+   * how anything outside the cycle — a descent's outcome — writes consequences
+   * through the same channel the simulation does.
+   */
+  withContext<T>(fn: (ctx: GodContext) => T): T {
+    const ctx = this.context();
+    const out = fn(ctx);
+    this.flush(ctx);
+    return out;
+  }
+
   private flush(ctx: GodContext): void {
     if (ctx.beats.length) this.hooks.onBeats?.(ctx.beats);
     this.god.rngState = this.rng.state;
@@ -358,24 +372,11 @@ export class GodRun {
 
     this.setPhase('simulate');
     const result = simulateCycle(ctx);
-    tickBiomes(this.mgr, this.mgr.turn);
     this.god.decisions = result.decisions;
     this.lastBlessedLosers = result.blessedLosers;
     crisisTick(ctx);
 
     this.setPhase('consequences');
-    for (const d of result.decisions) {
-      if (!d.rationed) continue;
-      ctx.emit(
-        'sim',
-        'notable',
-        `${d.actorName} rationed — fight budget spent`,
-        [
-          `Wanted ${d.rationed.actionName} on ${d.rationed.targetName}, did ${d.chosen?.actionName ?? 'something else'} instead.`,
-        ],
-        [d.actorId]
-      );
-    }
     const legendary = ctx.beats.filter((b) => b.priority === 'legendary').length;
     const major = ctx.beats.filter((b) => b.priority === 'major').length;
     this.god.history.push(summarise(this.god, ctx, result.deaths.length));
@@ -527,6 +528,37 @@ export class GodRun {
     return res;
   }
 
+  /**
+   * The reading: what the scorer says would happen if this intervention were
+   * written now. Pure — nothing is spent, nothing is changed.
+   */
+  reading(id: string, aId: string | null, bId: string | null, areaId: string | null): Reading | null {
+    const def = INTERVENTION_MAP.get(id);
+    if (!def) return null;
+    const a = this.mgr.byId(aId);
+    const b = this.mgr.byId(bId);
+    if (def.targeting === 'nemesis' && !a) return null;
+    if (def.targeting === 'pair' && (!a || !b)) return null;
+    if (def.targeting === 'dead' && !a) return null;
+    try {
+      return forecastIntervention(this.context(), def, a, b, areaId);
+    } catch (err) {
+      console.error('[god] reading failed', err);
+      return null;
+    }
+  }
+
+  /** What one character would most likely do next, for the inspector. */
+  forecastFor(id: string): ActorForecast | null {
+    const n = this.mgr.byId(id);
+    if (!n || !n.alive) return null;
+    try {
+      return forecastActor(this.context(), n);
+    } catch {
+      return null;
+    }
+  }
+
   /** Advance with no spend — autonomy is the move. Ignored if you already spent. */
   noteQuietAdvance(): void {
     if (this.pendingSpends.length) return;
@@ -572,15 +604,22 @@ export class GodRun {
      the crisis and the end
      ============================================================ */
 
+  /**
+   * The crisis is born in the middle of the run, not at the end of it. A
+   * threat that appears at cycle 22 and resolves at cycle 23 is a screen, not
+   * a problem; one that appears at cycle 10 and grows for a dozen cycles is
+   * the thing the whole second half is arranged against.
+   */
   private maybeBirthCrisis(ctx: GodContext): void {
     if (this.god.crisis) return;
     const living = ctx.living();
     if (living.length < 3) return;
     const byPower = living.slice().sort((a, b) => b.power - a.power);
-    const runaway = byPower[1] ? byPower[0].power > byPower[1].power * 2.1 : false;
-    const due = this.god.cycle >= getAct('crisis').from;
-    const boiling = this.god.chaos >= 85;
-    if (!due && !runaway && !boiling) return;
+    const runaway = byPower[1] ? byPower[0].power > byPower[1].power * 1.9 : false;
+    const due = this.god.cycle >= CRISIS_FROM;
+    const early = this.god.cycle >= CRISIS_EARLIEST && runaway;
+    const boiling = this.god.chaos >= 85 && this.god.cycle >= CRISIS_EARLIEST;
+    if (!due && !early && !boiling) return;
     birthCrisis(ctx);
   }
 
@@ -633,6 +672,7 @@ export class GodRun {
       crisisKind: crisis?.kind ?? null,
       slayerName: slayer ? fullName(slayer) : '',
       revengeChains: countRevengeChains(ctx),
+      epithet: this.epithet(ctx, ending, slayer),
       highlights: this.highlights(ctx, ending, slayer),
       recapChain: this.recapChain(ctx, ending, slayer),
       legendsMade: [],
@@ -687,14 +727,51 @@ export class GodRun {
     this.persist();
   }
 
+  /**
+   * Which run this was, in one line. Picked from the loudest true thing that
+   * happened, in a fixed order of loudness, so two runs that ended the same
+   * way still get remembered differently.
+   */
+  private epithet(ctx: GodContext, ending: RunOutcome['ending'], slayer: Nemesis | null): string {
+    const god = this.god;
+    const crisis = god.crisis;
+    const body = ctx.mgr.byId(crisis?.bodyId);
+    const feed = god.feed;
+    const count = (kind: string) => feed.filter((b) => b.kind === kind).length;
+    const champ = ctx.mgr.byId(god.championId);
+    const p = (n: Nemesis | null) => (n ? getPersonality(n.personality).name.toLowerCase() : '');
+
+    if (ending === 'abandoned') return 'The one you walked away from.';
+    if (body && god.descentKills.includes(body.id)) return `The one where you went down and killed ${fullName(body)} yourself.`;
+    if (ending === 'triumph' && slayer && champ && slayer.id === champ.id) return `The one where ${fullName(slayer)} — the ${p(slayer)} you kept touching — was enough.`;
+    if (ending === 'triumph' && slayer && rankIndex(slayer.rank) <= 1) return `The one where a nobody, ${fullName(slayer)}, ended ${crisisLabel(ctx, crisis!)}.`;
+    if (ending === 'triumph' && slayer && slayer.personality === 'traitor') return `The one where the traitor did the world a favour.`;
+    if (ending === 'triumph' && slayer && slayer.personality === 'coward') return `The one where the coward, of all people, was enough.`;
+    if (ending === 'collapse' && body && champ && body.id === champ.id) return `The one where you built ${fullName(body)} and could not stop them.`;
+    if (ending === 'collapse' && body && body.returns > 0) return `The one where ${fullName(body)} came back from the dead and kept the world.`;
+    if (ending === 'collapse' && crisis?.kind === 'heresy') return 'The one where somebody looked up and said your name.';
+    if (ending === 'collapse' && crisis?.kind === 'beast') return 'The one where something that was never born ate the world.';
+    if (count('betrayal') >= 6) return 'The one where nobody kept their word.';
+    if (count('return') >= 3) return 'The one where the dead kept coming back.';
+    if (god.chaosPeak >= 70) return 'The one where you pushed too hard and the world noticed.';
+    if (god.descents >= 2) return 'The one where you kept going down there yourself.';
+    if (ending === 'triumph' && slayer) return `The one where ${fullName(slayer)} ended ${crisisLabel(ctx, crisis!)}.`;
+    if (ending === 'collapse' && body) return `The one where ${fullName(body)} — a ${p(body)} — won.`;
+    if (ending === 'stalemate') return 'The one where nothing ever grew large enough to matter.';
+    return ending === 'triumph' ? 'The one that held.' : 'The one that did not hold.';
+  }
+
   private highlights(ctx: GodContext, ending: RunOutcome['ending'], slayer: Nemesis | null): string[] {
     const out: string[] = [];
     const crisis = this.god.crisis;
     if (ending === 'triumph' && crisis) {
+      const byHand = !!crisis.bodyId && this.god.descentKills.includes(crisis.bodyId);
       out.push(
-        slayer
-          ? `${fullName(slayer)} ended ${crisisLabel(ctx, crisis)}. You never touched either of them.`
-          : `${crisis.title} was answered — nobody is quite sure by whom.`
+        byHand
+          ? `You went down and ended ${crisisLabel(ctx, crisis)} yourself. The world saw whose hand it was.`
+          : slayer
+            ? `${fullName(slayer)} ended ${crisisLabel(ctx, crisis)}. You never touched either of them.`
+            : `${crisis.title} was answered — nobody is quite sure by whom.`
       );
     } else if (ending === 'collapse') {
       out.push(crisis ? `${crisisLabel(ctx, crisis)} was never answered. The world is theirs.` : 'The world emptied out.');
@@ -760,7 +837,9 @@ export class GodRun {
       );
     }
 
-    if (ending === 'triumph' && slayer) {
+    if (ending === 'triumph' && crisis.bodyId && this.god.descentKills.includes(crisis.bodyId)) {
+      chain.push('AND YOU WENT DOWN AND ENDED IT YOURSELF — the least subtle thing a god can do.');
+    } else if (ending === 'triumph' && slayer) {
       chain.push(
         `AND ${fullName(slayer).toUpperCase()} ENDED IT — you never touched either of them directly.`
       );
@@ -904,6 +983,10 @@ function seedExtraHouse(god: GodState, leader: Nemesis, rng: RNG): void {
 function clamp(v: number): number {
   return v < 0 ? 0 : v > 100 ? 100 : v;
 }
+
+/** The cycle a crisis is named whatever the world looks like, and the earliest it can be. */
+export const CRISIS_FROM = 10;
+export const CRISIS_EARLIEST = 9;
 
 /** Used by the board and the debug panel. */
 export function areaLabel(id: string): string {

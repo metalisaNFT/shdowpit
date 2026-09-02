@@ -7,6 +7,12 @@
  * table of dramatic events. The only lever the run structure pulls is how much
  * pressure everyone is under, and the only lever the player pulls is what
  * conditions exist to be scored against.
+ *
+ * RECONSTRUCTION: the cycle is deliberately quieter than it was. Two to four
+ * fights among a dozen people, returns from death measured in runs rather
+ * than cycles, wars declared over a grievance and ended when the grievance is
+ * gone. A world in which everything happens every cycle is a world in which
+ * nothing does.
  */
 
 import type { RNG } from '../core/RNG';
@@ -16,22 +22,22 @@ import { AREA_NAMES } from '../data/names';
 import { fullName, rankIndex, type Nemesis } from '../nemesis/Nemesis';
 import { recomputePower } from '../nemesis/NemesisGenerator';
 import { applyScar } from '../nemesis/NemesisMemory';
-import { ACTIONS, type ActionDef, type ActionOption, type ActionTarget } from './Actions';
+import { ACTIONS, FIGHT_ACTIONS, type ActionDef, type ActionOption, type ActionTarget } from './Actions';
 import { addCondition, expireConditions } from './Conditions';
 import type { GodContext } from './Context';
-import { declareWar, livingFactions, reconcileFactions, reformHouses, settleFactions } from './Factions';
+import { declareWar, factionOf, livingFactions, makePeace, reconcileFactions, reformHouses, settleFactions } from './Factions';
 import { simOf, type Decision, type ScoreBreakdown } from './GodTypes';
 import { simulateSkirmishes } from './Skirmish';
-import { assignQuests, expireQuests } from './NpcQuests';
 import { sumParts, type TermCtx } from './Utility';
-
-/** Actions that consume the cycle's appetite for violence. */
-const FIGHT_ACTIONS = new Set(['attack', 'challenge', 'revenge', 'hunt', 'betray', 'seize', 'pursue_item', 'steal']);
 
 /** Actions that can retarget a held grudge when scored against a nemesis. */
 const GRUDGE_TARGET_ACTIONS = new Set(['revenge', 'attack', 'hunt', 'challenge', 'betray']);
 
 const OVERLORD_RETURN_IMMUNITY_TURNS = 3;
+/** Cycles that must pass after any return before the ground opens again. */
+const RETURN_COOLDOWN = 7;
+/** Cycles somebody has to stay dead before anyone starts wondering. */
+const RETURN_MIN_DEAD = 3;
 
 const MAX_CONSIDERED = 7;
 
@@ -93,6 +99,36 @@ export interface CycleResult {
   blessedLosers: string[];
 }
 
+/** Everything one character could do right now, scored. Shared with the forecast. */
+export function enumerateOptions(
+  ctx: GodContext,
+  actor: Nemesis,
+  term: TermCtx
+): Array<{ def: ActionDef; option: ActionOption; total: number }> {
+  const options: Array<{ def: ActionDef; option: ActionOption; total: number }> = [];
+  for (const def of ACTIONS) {
+    let list: ActionOption[];
+    try {
+      list = def.enumerate(ctx, actor, term);
+    } catch (err) {
+      console.error('[god] enumerate failed for ' + def.id, err);
+      continue;
+    }
+    for (const option of list) {
+      if (option.veto) continue;
+      options.push({ def, option, total: sumParts(option.parts) });
+    }
+  }
+  options.sort((a, b) => b.total - a.total);
+  return options;
+}
+
+export function fightBudgetFor(actorCount: number, tempo: number, chaos: number): number {
+  let budget = Math.max(2, Math.round(actorCount * 0.3 * tempo));
+  if (chaos > 40) budget += 1;
+  return budget;
+}
+
 export function simulateCycle(ctx: GodContext): CycleResult {
   const god = ctx.god;
   const rng = ctx.rng;
@@ -107,13 +143,11 @@ export function simulateCycle(ctx: GodContext): CycleResult {
   }
   ctx.refreshConditions();
 
-  expireQuests(ctx);
-  assignQuests(ctx);
-
   const term: TermCtx = {
     god,
     cond: ctx.cond,
     turn: ctx.mgr.turn,
+    now: ctx.now,
     pressure: ctx.act.pressure,
     rng,
   };
@@ -121,32 +155,14 @@ export function simulateCycle(ctx: GodContext): CycleResult {
   /* ---- 2. everyone decides ---- */
   const actors = orderOfPlay(ctx, rng);
   const decisions: Decision[] = [];
-  let fightBudget = Math.max(4, Math.round(actors.length * 0.62 * ctx.act.tempo));
-  if (ctx.act.tempo >= 1.0 && ctx.god.chaos > 30) fightBudget += 1;
+  const fightBudget = fightBudgetFor(actors.length, ctx.act.tempo, god.chaos);
   let fights = 0;
-  let skirmishes = 0;
 
   for (const actor of actors) {
     if (!actor.alive) continue;
     const s = simOf(actor);
-    const options: Array<{ def: ActionDef; option: ActionOption; total: number }> = [];
-
-    for (const def of ACTIONS) {
-      let list: ActionOption[];
-      try {
-        list = def.enumerate(ctx, actor, term);
-      } catch (err) {
-        console.error('[god] enumerate failed for ' + def.id, err);
-        continue;
-      }
-      for (const option of list) {
-        if (option.veto) continue;
-        options.push({ def, option, total: sumParts(option.parts) });
-      }
-    }
-
+    const options = enumerateOptions(ctx, actor, term);
     if (!options.length) continue;
-    options.sort((a, b) => b.total - a.total);
 
     // Fights are rationed so a cycle stays readable. When the ration is spent
     // the actor does not stand still — they do the next thing they wanted.
@@ -167,8 +183,6 @@ export function simulateCycle(ctx: GodContext): CycleResult {
 
     const chosen = toBreakdown(picked.def, picked.option, picked.total);
     // The god's own marks on the target, captured for the taken option only.
-    // This is what lets the feed say "you had put a price on his head" instead
-    // of "opportunity +4.5".
     if (picked.option.target.id) {
       const marks = ctx.cond
         .on(picked.option.target.id)
@@ -186,8 +200,6 @@ export function simulateCycle(ctx: GodContext): CycleResult {
     if (rationed) decision.rationed = rationed;
     decisions.push(decision);
 
-    // Goals are what a character keeps wanting, so they persist across cycles
-    // and get louder — that is what makes a long grudge behave like a story.
     const before = s.goal;
     s.lastActionId = picked.def.id;
     s.lastCycle = god.cycle;
@@ -205,7 +217,7 @@ export function simulateCycle(ctx: GodContext): CycleResult {
   }
 
   /* ---- 2b. the war on the ground ---- */
-  skirmishes = simulateSkirmishes(ctx);
+  const skirmishes = simulateSkirmishes(ctx);
 
   /* ---- 3. the dead get their chance ---- */
   rollReturns(ctx);
@@ -225,6 +237,7 @@ export function simulateCycle(ctx: GodContext): CycleResult {
     ctx.chronicle('alliance', reformed, [], true, 'gold');
   }
   rollFactionWar(ctx);
+  rollPeace(ctx);
   seedUnrest(ctx);
 
   god.rngState = rng.state;
@@ -253,7 +266,7 @@ function orderOfPlay(ctx: GodContext, rng: RNG): Nemesis[] {
     .map((x) => x.n);
 }
 
-function toBreakdown(def: ActionDef, option: ActionOption, total: number): ScoreBreakdown {
+export function toBreakdown(def: ActionDef, option: ActionOption, total: number): ScoreBreakdown {
   const out: ScoreBreakdown = {
     actionId: def.id,
     actionName: def.name,
@@ -278,14 +291,14 @@ function driftState(ctx: GodContext, n: Nemesis): void {
   const hungry = (ctx.mgr.data.godUnlocks ?? []).includes('world_hungry');
   s.fear = Math.max(0, s.fear - 3);
   s.injury = Math.max(0, s.injury - 4);
-  s.confidence = clamp01to100(s.confidence + (s.wins - s.losses) * 0.4 * (hungry ? 1.25 : 1) - (hungry ? 0.8 : 0.5));
+  s.confidence = clamp01to100(s.confidence + (s.wins - s.losses) * 0.3 * (hungry ? 1.25 : 1) - (hungry ? 0.8 : 0.5));
   s.ambition = clamp01to100(
     s.ambition + (p.ambition - 1) * 2.2 * (hungry ? 1.35 : 1) + (rankIndex(n.rank) >= 3 ? -1 : 0.6) * (hungry ? 1.4 : 1)
   );
   // A treacherous nature erodes its own bonds. This is the slow fuse under
   // every alliance in the world, and it is why "swear to each other" is not a
   // permanent state.
-  s.loyalty = clamp01to100(s.loyalty + (p.betray > 1.2 ? -3.4 : 0.8) - (s.reputation < 0 ? 1 : 0));
+  s.loyalty = clamp01to100(s.loyalty + (p.betray > 1.2 ? -2.2 : 0.8) - (s.reputation < 0 ? 1 : 0));
   s.reputation = Math.max(-100, s.reputation - (hungry ? 0.8 : 0.5));
   if (s.goalAge > (hungry ? 10 : 14) && s.goal !== 'revenge') {
     s.goal = 'survive';
@@ -297,26 +310,45 @@ function clamp01to100(v: number): number {
   return v < 0 ? 0 : v > 100 ? 100 : v;
 }
 
+/** The turn somebody last came back, anywhere in the roster. */
+function lastReturnTurn(ctx: GodContext): number {
+  let last = -Infinity;
+  for (const n of ctx.mgr.roster) {
+    for (const m of n.memory) if (m.type === 'I_RETURNED_FROM_DEATH' && m.turn > last) last = m.turn;
+  }
+  return last;
+}
+
 /**
- * Returns are rare and always cost something. Chaos buys more of them, which
- * is one of the ways an over-managed world becomes an unmanageable one.
+ * Returns are rare and always cost something. A death that reverses every
+ * couple of cycles is not a death; the design wants one or two a run, each of
+ * them an event the whole world reacts to. Chaos buys more of them, which is
+ * one of the ways an over-managed world becomes an unmanageable one.
  */
 function rollReturns(ctx: GodContext): void {
   const rng = ctx.rng;
-  const base = ctx.mgr.mods.resurrection * (1 + ctx.god.chaos * 0.012);
+  if (ctx.mgr.turn - lastReturnTurn(ctx) < RETURN_COOLDOWN) return;
+  const chaosMul = 1 + ctx.god.chaos * 0.02;
+  const base = 0.025 * ctx.mgr.mods.resurrection * chaosMul;
   for (const n of ctx.mgr.dead()) {
+    if (n.persistent === false) continue;
     if (n.rank === 'overlord' && n.diedOnTurn != null) {
       if (ctx.mgr.turn - n.diedOnTurn < OVERLORD_RETURN_IMMUNITY_TURNS) continue;
       if (ctx.mgr.suppressOverlordReturnsUntilTurn > ctx.mgr.turn) continue;
     }
-    const since = ctx.god.cycle - (simOf(n).lastCycle || 0);
-    if (since < 2) continue;
+    const since = n.diedOnTurn == null ? RETURN_MIN_DEAD : ctx.mgr.turn - n.diedOnTurn;
+    if (since < RETURN_MIN_DEAD) continue;
     const s = simOf(n);
     const p = getPersonality(n.personality);
-    let chance = base * 0.13 + n.revengeChance * 0.16 + (s.revengeTargets.length ? 0.05 : 0);
-    chance *= p.survival;
-    if (n.returns >= 1) chance *= 0.4;
-    if (!rng.chance(Math.min(0.24, chance))) continue;
+    const killer = ctx.mgr.byId(s.killedById);
+    // What brings somebody back is a reason: a nature that does not stay down,
+    // and someone alive to come back for.
+    let chance = base;
+    chance += (p.survival - 1) * 0.04;
+    if (killer && killer.alive) chance += 0.03;
+    if (n.revengeChance > 0.3) chance += 0.02;
+    if (n.returns >= 1) chance *= 0.35;
+    if (!rng.chance(Math.max(0, Math.min(0.16, chance)))) continue;
 
     const label = ctx.scar(n, 'death');
     const pool = traitsOfKind(rng.chance(0.35) ? 'mutation' : 'strength').filter((t) => !n.strengths.includes(t.id));
@@ -324,7 +356,7 @@ function rollReturns(ctx: GodContext): void {
     ctx.mgr.resurrect(n, label);
     s.fear = Math.max(0, s.fear - 20);
     s.confidence = Math.min(100, s.confidence + 15);
-    const killer = ctx.mgr.byId(s.killedById);
+    s.injury = 30;
     if (killer && killer.alive && !s.revengeTargets.includes(killer.id)) {
       s.revengeTargets.push(killer.id);
       s.goal = 'revenge';
@@ -347,8 +379,38 @@ function rollReturns(ctx: GodContext): void {
   }
 }
 
-/** Two houses that keep bumping into each other eventually stop pretending. */
+/**
+ * Wars start over something. A leader who wants the other leader dead, a
+ * member killed by the other house, ground taken. Two houses that merely
+ * exist next to each other do not go to war because a die came up.
+ */
+export function grievanceBetween(ctx: GodContext, a: { leaderId: string | null; memberIds: string[] }, b: { leaderId: string | null; memberIds: string[] }): number {
+  const la = ctx.mgr.byId(a.leaderId);
+  const lb = ctx.mgr.byId(b.leaderId);
+  if (!la || !lb) return 0;
+  let g = 0;
+  const sa = simOf(la);
+  if (sa.revengeTargets.includes(lb.id)) g += 1;
+  if (la.rivalries.includes(lb.id)) g += 0.35;
+  const bMembers = new Set(b.memberIds);
+  for (const id of a.memberIds) {
+    const m = ctx.mgr.byId(id);
+    if (!m || !m.alive) continue;
+    const ms = simOf(m);
+    if (ms.revengeTargets.some((t) => bMembers.has(t))) g += 0.3;
+    for (const mem of m.memory) {
+      if (mem.subject && bMembers.has(mem.subject) && (mem.type === 'I_LOST_TERRITORY_TO' || mem.type === 'MY_MASTER_FELL' || mem.type === 'I_WAS_BETRAYED')) {
+        g += Math.max(0, 0.4 - (ctx.mgr.turn - mem.turn) * 0.05);
+      }
+    }
+  }
+  return g;
+}
+
 function rollFactionWar(ctx: GodContext): void {
+  // On the offscreen path the houses are rebuilt every beat, so a war would
+  // be declared and forgotten inside the same turn. Wars belong to god runs.
+  if (ctx.ephemeralGod) return;
   const live = livingFactions(ctx.god);
   if (live.length < 2) return;
   for (const a of live) {
@@ -357,26 +419,57 @@ function rollFactionWar(ctx: GodContext): void {
       const la = ctx.mgr.byId(a.leaderId);
       const lb = ctx.mgr.byId(b.leaderId);
       if (!la || !lb) continue;
-      let p = 0.03;
-      if (la.rivalries.includes(lb.id)) p += 0.3;
-      p += ((a.aggression + b.aggression) / 200) * 0.16;
-      p += Math.max(0, 60 - Math.min(a.stability, b.stability)) * 0.002;
+      const grievance = grievanceBetween(ctx, a, b) + grievanceBetween(ctx, b, a);
+      if (grievance <= 0) continue;
+      let p = 0.01 + grievance * 0.18;
+      p += ((a.aggression + b.aggression) / 200) * 0.06;
       p *= ctx.act.pressure;
-      if (!ctx.rng.chance(p)) continue;
+      if (!ctx.rng.chance(Math.min(0.6, p))) continue;
       if (!declareWar(a, b)) continue;
       ctx.emit(
         'faction',
-        'major',
+        'legendary',
         `${a.name} AND ${b.name} ARE AT WAR.`,
         [
           `${fullName(la)} and ${fullName(lb)} have stopped being careful with each other.`,
-          'Everyone sworn to either of them just got a reason to swing.',
+          'Everyone sworn to either of them just got a reason to swing, and the ground between them will bleed.',
         ],
         [la.id, lb.id],
         'bad'
       );
-      ctx.chronicle('betrayal', `${a.name} and ${b.name} went to war.`, [la.id, lb.id], true, 'bad');
+      ctx.chronicle('territory', `${a.name} and ${b.name} went to war.`, [la.id, lb.id], true, 'bad');
       return;
+    }
+  }
+}
+
+/** Wars end when nobody left alive has a reason to keep fighting them. */
+function rollPeace(ctx: GodContext): void {
+  if (ctx.ephemeralGod) return;
+  for (const a of livingFactions(ctx.god)) {
+    for (const bid of a.warWith.slice()) {
+      const b = factionOf(ctx.god, bid);
+      if (!b || a.id >= b.id) continue;
+      // The war that is the crisis does not end at a table.
+      const crisis = ctx.god.crisis;
+      if (crisis && crisis.resolved === 'none' && crisis.kind === 'civil_war' && (crisis.factionId === a.id || crisis.factionId === b.id)) continue;
+      const grievance = grievanceBetween(ctx, a, b) + grievanceBetween(ctx, b, a);
+      if (grievance > 0.3) continue;
+      const exhausted = Math.min(a.stability, b.stability) < 45;
+      const p = exhausted ? 0.35 : 0.18;
+      if (!ctx.rng.chance(p)) continue;
+      makePeace(a, b);
+      const la = ctx.mgr.byId(a.leaderId);
+      const lb = ctx.mgr.byId(b.leaderId);
+      ctx.emit(
+        'faction',
+        'major',
+        `${a.name} AND ${b.name} STOPPED FIGHTING.`,
+        ['Nobody left alive on either side had a reason to keep it going.', exhausted ? 'Both houses are worn thin.' : 'It will hold until somebody gives them a new reason.'],
+        [la?.id, lb?.id].filter((x): x is string => !!x),
+        'good'
+      );
+      ctx.chronicle('alliance', `${a.name} and ${b.name} made peace.`, [], true, 'good');
     }
   }
 }

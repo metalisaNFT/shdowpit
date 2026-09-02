@@ -6,7 +6,6 @@
 import { mixSeed, RNG } from '../core/RNG';
 import { AREAS, BIOME_PROFILES, type BiomeProfile, type DungeonSiteDef } from '../data/areas';
 import type { NemesisManager } from '../nemesis/NemesisManager';
-import { livingFactions } from '../god/Factions';
 import type { GodContext } from '../god/Context';
 import type { SaveData } from '../core/SaveSystem';
 
@@ -196,38 +195,6 @@ export function reconcileBiomes(mgr: NemesisManager, ctx?: GodContext): void {
     biome.unrest = clamp01(biome.unrest - 0.02 + (ctx?.cond.weight(area.id, 'unrest') ?? 0) * 0.05);
   }
 
-  // Resource feuds: bordering houses on depleted biomes.
-  if (ctx) {
-    for (const f of livingFactions(ctx.god)) {
-      for (const areaId of f.territories) {
-        const biome = data.biomes![areaId];
-        if (!biome || aggregateStock(biome) > 8) continue;
-        for (const other of livingFactions(ctx.god)) {
-          if (other.id === f.id || f.warWith.includes(other.id)) continue;
-          const shared = other.territories.some((t) => CONNECTION_NEIGHBORS[areaId]?.includes(t));
-          if (!shared) continue;
-          if (ctx.rng.chance(0.06)) {
-            f.stability = Math.max(0, f.stability - 4);
-            other.stability = Math.max(0, other.stability - 3);
-          }
-        }
-      }
-    }
-
-    // Fractured houses spill treasury into local biome stock.
-    for (const f of ctx.god.factions) {
-      if (!f.destroyedCycle || f.destroyedCycle !== ctx.god.cycle) continue;
-      const treasury = f.treasury ?? {};
-      for (const areaId of f.territories) {
-        const biome = data.biomes![areaId];
-        if (!biome) continue;
-        for (const [mat, qty] of Object.entries(treasury)) {
-          biome.resourceStock[mat] = (biome.resourceStock[mat] ?? 0) + Math.floor(qty * 0.4);
-        }
-      }
-    }
-  }
-
   // Sync repopulating sites that missed a tick edge.
   for (const area of AREAS) {
     const biome = data.biomes![area.id];
@@ -303,14 +270,6 @@ export function takeMaterial(
   return taken;
 }
 
-const CONNECTION_NEIGHBORS: Record<string, string[]> = {
-  pit: ['ruins', 'forest', 'caves', 'tower'],
-  ruins: ['pit', 'forest', 'fortress'],
-  forest: ['pit', 'ruins'],
-  caves: ['pit', 'tower'],
-  tower: ['pit', 'caves', 'fortress'],
-  fortress: ['ruins', 'tower'],
-};
 
 function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;

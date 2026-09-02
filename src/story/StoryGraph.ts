@@ -310,6 +310,51 @@ export function buildStoryGraph(data: SaveData, opts?: { revealUnknown?: boolean
         eventText: ev.text,
       });
     }
+    if (ev.type === 'quest_complete' && ev.actors[0]) {
+      push({
+        id: `quest-${ev.id ?? ev.turn}`,
+        from: ev.actors[0],
+        to: PLAYER_ID,
+        kind: 'territory_war',
+        directed: true,
+        importance: 22,
+        spectral: !livingIds.has(ev.actors[0]),
+        label: 'QUEST DONE',
+        why: ev.text,
+        eventId: ev.id,
+        eventText: ev.text,
+      });
+    }
+    if (ev.type === 'biome_gather' && ev.actors[0]) {
+      push({
+        id: `gather-${ev.id ?? ev.turn}`,
+        from: ev.actors[0],
+        to: PLAYER_ID,
+        kind: 'territory_war',
+        directed: true,
+        importance: 16,
+        spectral: !livingIds.has(ev.actors[0]),
+        label: 'GATHERED',
+        why: ev.text,
+        eventId: ev.id,
+        eventText: ev.text,
+      });
+    }
+    if (ev.type === 'feral_incident' && ev.actors[0]) {
+      push({
+        id: `feral-${ev.id ?? ev.turn}`,
+        from: ev.actors[0],
+        to: PLAYER_ID,
+        kind: 'territory_war',
+        directed: true,
+        importance: 18,
+        spectral: !livingIds.has(ev.actors[0]),
+        label: 'FERAL INCIDENT',
+        why: ev.text,
+        eventId: ev.id,
+        eventText: ev.text,
+      });
+    }
     if (ev.type === 'weapon_theft' && ev.actors[0] && ev.actors[1]) {
       const thief = roster.get(ev.actors[0]);
       const victim = roster.get(ev.actors[1]);

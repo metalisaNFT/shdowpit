@@ -61,15 +61,24 @@ async function main() {
   await page.waitForTimeout(800);
   await page.screenshot({ path: path.join(SHOTS, '01-tower-slice.png') });
 
-  const hud = await page.evaluate(() => {
-    const purpose = document.querySelector('.hud-purpose');
-    const tut = document.querySelector('.hud-tutorial');
-    return {
-      purpose: purpose && !purpose.classList.contains('hidden') ? purpose.textContent : '',
-      tutorial: tut && !tut.classList.contains('hidden') ? tut.textContent : '',
-      remnants: document.body.innerText.includes('REMNANTS') || document.body.innerText.includes('NOW'),
-    };
-  });
+  // The purpose line and the tutorial prompt are both written by the HUD on a
+  // later frame than the one the slice lands on, so a single read right after
+  // an 800ms sleep catches an empty bottom bar every few runs. Poll for it.
+  const readHud = () =>
+    page.evaluate(() => {
+      const purpose = document.querySelector('.hud-purpose');
+      const tut = document.querySelector('.hud-tutorial');
+      return {
+        purpose: purpose && !purpose.classList.contains('hidden') ? purpose.textContent : '',
+        tutorial: tut && !tut.classList.contains('hidden') ? tut.textContent : '',
+        remnants: document.body.innerText.includes('REMNANTS') || document.body.innerText.includes('NOW'),
+      };
+    });
+  let hud = await readHud();
+  for (let i = 0; i < 20 && !(hud.purpose || hud.remnants || hud.tutorial); i++) {
+    await page.waitForTimeout(200);
+    hud = await readHud();
+  }
   check('purpose or remnants visible', !!(hud.purpose || hud.remnants || hud.tutorial), (hud.purpose || hud.tutorial || '').slice(0, 80));
 
   const archetypes = await page.evaluate(() => window.SHDOWPIT.__qaSpawnArchetypes());
@@ -108,7 +117,25 @@ async function main() {
   await page.keyboard.press('Escape');
 
   const st = await page.evaluate(() => window.SHDOWPIT.__state());
-  check('multi staging id present or solo', st.multiRule === null || st.multiRule === 'loyalist_guard', String(st.multiRule));
+  // Which rule wins depends on the personalities of whoever is on stage, and
+  // pickMultiRule can legitimately return any of the eight. Whitelisting one
+  // id made this a lottery on the roster ("coward_alarm" is just as correct as
+  // "loyalist_guard"); assert the id is a real staging rule instead.
+  const MULTI_RULE_IDS = [
+    'rival_duel',
+    'loyalist_guard',
+    'betrayer_flip',
+    'opportunist_winner',
+    'coward_alarm',
+    'avenger_rage',
+    'challenge_master',
+    'temp_cooperate',
+  ];
+  check(
+    'multi staging id present or solo',
+    st.multiRule === null || MULTI_RULE_IDS.includes(st.multiRule),
+    String(st.multiRule)
+  );
 
   check('no page errors', errors.length === 0, errors.slice(0, 4).join(' | '));
   const failed = checks.filter((c) => !c.ok);

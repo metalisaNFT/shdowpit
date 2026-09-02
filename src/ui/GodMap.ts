@@ -26,8 +26,6 @@ import {
 import type { GodRun } from '../god/GodRun';
 import type { Nemesis } from '../nemesis/Nemesis';
 import { simOf, type Condition } from '../god/GodTypes';
-import { aggregateStock, biomeSentence, getBiome } from '../world/BiomeState';
-import { houseNeedAreas } from '../god/NpcQuests';
 import { startingConditions } from '../god/Unlocks';
 
 const CONDITION_SHORT: Partial<Record<Condition['kind'], string>> = {
@@ -249,7 +247,6 @@ export class GodMap {
     }
 
     const urgent = new Set(topUrgentAreas(run));
-    const needAreas = new Set(houseNeedAreas(run));
     const occ = snapshotOccupancy(run.mgr, null);
     for (const a of AREAS) {
       const chip = this.chips.get(a.id);
@@ -267,15 +264,11 @@ export class GodMap {
       chip.root.classList.toggle('has-holder', !!holder);
       const marks = godMarksForArea(run, a.id);
       chip.marks.textContent = marks.length ? marks.join(' · ') : '';
-      const biomeState = getBiome(run.mgr.data, a.id);
-      const meters: string[] = [];
-      if (biomeState.faunaPressure > 0.5) meters.push('F' + Math.round(biomeState.faunaPressure * 9));
-      if (aggregateStock(biomeState) < 10) meters.push('S↓');
-      else if (aggregateStock(biomeState) > 24) meters.push('S↑');
-      if (biomeState.activeSites.some((s) => s.status === 'open' || s.status === 'repopulating')) meters.push('D');
-      chip.biome.textContent = meters.join(' ');
-      chip.biome.title = biomeSentence(a.id, biomeState);
-      chip.root.classList.toggle('house-need', needAreas.has(a.id));
+      // The chip's third line now reads the war on the ground, not the biome.
+      const contested = !!house && house.warWith.length > 0;
+      const unrest = run.god.conditions.some((c) => c.kind === 'unrest' && c.targetId === a.id);
+      chip.biome.textContent = contested ? 'AT WAR' : unrest ? 'UNREST' : '';
+      chip.biome.title = contested ? `${house!.name} is at war` : unrest ? 'This ground is not being held well' : '';
       chip.root.classList.toggle('marked', marks.length > 0);
       chip.root.classList.toggle('selected', this.focusAreaId === a.id);
       chip.root.classList.toggle('occupied', pop > 0);

@@ -1,182 +1,103 @@
 /**
- * The war never stops.
+ * The war on the ground.
  *
- * Most cycles are rabble killing rabble. Sometimes a nobody kills somebody,
- * and the world has to learn their name.
+ * RECONSTRUCTION: this used to run ten to fifteen rabble duels per cycle
+ * through the full fight pipeline, printed them all as NOTABLE, let rabble
+ * kill named characters and inherit their names, and counted every rabble
+ * fight as a named character's "win". It was the single largest source of
+ * churn in the game — nine new names a run, 90-win characters — and none of
+ * it was anything a player could plan around.
+ *
+ * Now it is weather. Ground held by a house at war, or sitting on unrest, is
+ * expensive to stand on: whoever holds it bleeds a little each cycle, and the
+ * house that owns it frays. Nobody is named by it. New names enter the world
+ * through RECRUIT (a captain pulling someone up) or, when the cast has thinned
+ * badly, one deliberate rise from the rabble that the feed actually reports.
  */
 
-import { mixSeed } from '../core/RNG';
-import { AREAS, biomeProfile, getArea } from '../data/areas';
-import { generateGrunt } from '../nemesis/NemesisGenerator';
-import { displayName, fullName, isNamed, rankIndex, type Nemesis } from '../nemesis/Nemesis';
-import { getBiome } from '../world/BiomeState';
-import { livingFactions } from './Factions';
+import { AREAS } from '../data/areas';
+import { AREA_NAMES } from '../data/names';
+import { getPersonality } from '../data/personalities';
+import { fullName } from '../nemesis/Nemesis';
+import { CAST_FLOOR } from './Actions';
 import type { GodContext } from './Context';
-import { fightSpectacle } from './Context';
+import { factionFor, livingFactions, shakeFaction } from './Factions';
 import { simOf } from './GodTypes';
 
 function areaPressure(ctx: GodContext, areaId: string): number {
-  let p = 1;
+  let p = 0;
   for (const f of livingFactions(ctx.god)) {
     if (!f.territories.includes(areaId)) continue;
-    if (f.warWith.length) p += 0.55;
-    p += (100 - f.stability) / 220;
+    if (f.warWith.length) p += 0.6;
+    p += Math.max(0, 40 - f.stability) / 120;
   }
-  if (ctx.cond.on(areaId).some((c) => c.kind === 'unrest')) p += 0.35;
-  p *= ctx.act.tempo;
-  return p;
+  p += ctx.cond.weight(areaId, 'unrest') * 0.5;
+  return p * ctx.act.tempo;
 }
 
-function makeGrunt(ctx: GodContext, areaId: string, salt: number): Nemesis {
-  const area = getArea(areaId);
-    const seed = mixSeed(mixSeed(mixSeed(ctx.mgr.data.worldSeed, ctx.god.cycle), areaId.charCodeAt(0)), salt) >>> 0;
-  const level = Math.max(1, area.danger + ctx.rng.int(0, 2));
-  return generateGrunt(seed, level, ctx.mgr.mods, areaId);
-}
-
-function namedInArea(ctx: GodContext, areaId: string): Nemesis[] {
-  const holderId = ctx.mgr.data.territories[areaId];
-  return ctx.mgr.namedLiving().filter((n) => n.territory === areaId || n.id === holderId);
-}
-
-/** Background and foreground fights that keep the map at war. */
+/** Attrition on contested ground. Returns how many areas were under pressure. */
 export function simulateSkirmishes(ctx: GodContext): number {
-  let fights = 0;
-  let salt = 0;
-
+  let contested = 0;
   for (const area of AREAS) {
     const pressure = areaPressure(ctx, area.id);
-    const biome = getBiome(ctx.mgr.data, area.id);
-    const profile = biomeProfile(area.id);
-    const feralBias = (area.id === 'forest' || area.id === 'caves') ? biome.faunaPressure * 0.22 : biome.faunaPressure * 0.08;
+    if (pressure < 0.3) continue;
+    contested++;
     const holder = ctx.mgr.territoryHolder(area.id);
-    if (holder?.personality === 'hunter') biome.faunaPressure = Math.max(0, biome.faunaPressure - 0.02);
-    const count = Math.max(2, Math.round((area.population / 2.8) * pressure));
-    const locals = namedInArea(ctx, area.id);
-
-    for (let i = 0; i < count; i++) {
-      const roll = ctx.rng.next();
-      if (profile.feralFauna.length && roll < feralBias) {
-        feralVsRabble(ctx, area.id, salt++);
-        fights++;
-      } else if (roll < 0.74 + feralBias || !locals.length) {
-        rabbleVsRabble(ctx, area.id, salt++);
-        fights++;
-      } else if (roll < 0.93) {
-        rabbleVsNamed(ctx, area.id, ctx.rng.pick(locals), salt++);
-        fights++;
-      }
-    }
-  }
-
-  return fights;
-}
-
-function feralVsRabble(ctx: GodContext, areaId: string, salt: number): void {
-  const profile = biomeProfile(areaId);
-  const beast = makeGrunt(ctx, areaId, salt + 5000);
-  beast.name = ctx.rng.pick(profile.feralFauna).toUpperCase();
-  const rabble = makeGrunt(ctx, areaId, salt + 5001);
-  ctx.skirmishMode = true;
-  const res = ctx.fight(beast, rabble, 'war');
-  ctx.skirmishMode = false;
-  const biome = getBiome(ctx.mgr.data, areaId);
-  biome.faunaPressure = Math.min(1, biome.faunaPressure + 0.03);
-  ctx.chronicle('feral_incident', `Feral beasts spilled into ${getArea(areaId).name}.`, [], false, 'bad');
-  ctx.emit(
-    'skirmish',
-    'background',
-    `FERALS IN ${getArea(areaId).name.toUpperCase()}. ${res.headline}`,
-    res.detail,
-    [],
-    'bad'
-  );
-}
-
-function rabbleVsRabble(ctx: GodContext, areaId: string, salt: number): void {
-  const a = makeGrunt(ctx, areaId, salt * 2 + 1);
-  const b = makeGrunt(ctx, areaId, salt * 2 + 2);
-  ctx.skirmishMode = true;
-  const res = ctx.fight(a, b, 'war');
-  ctx.skirmishMode = false;
-
-  const priority = res.aftermath === 'killed' ? 'notable' : 'background';
-  const beat = ctx.emit(
-    'skirmish',
-    priority,
-    res.headline,
-    res.detail,
-    [],
-    res.aftermath === 'killed' ? 'bad' : 'neutral'
-  );
-
-  if (res.aftermath === 'killed' && ctx.rng.chance(0.38)) {
-    beat.spectacle = fightSpectacle(res.winner, res.loser, 'war', res.duel);
-  }
-}
-
-function rabbleVsNamed(ctx: GodContext, areaId: string, named: Nemesis, salt: number): void {
-  const rabble = makeGrunt(ctx, areaId, salt + 900);
-  rabble.level = Math.max(rabble.level, Math.round(named.level * ctx.rng.range(0.72, 1.05)));
-
-  ctx.skirmishMode = true;
-  const res = ctx.fight(rabble, named, 'war');
-  ctx.skirmishMode = false;
-
-  if (res.aftermath === 'killed' && res.loser === named) {
-    const killerId = simOf(named).killedById;
-    const elevated = killerId ? ctx.mgr.byId(killerId) : null;
-    if (elevated && isNamed(elevated)) {
-      const promoText = `${displayName(elevated)} killed ${fullName(named)} and took their place.`;
-      const already = ctx.mgr.recentEvents(1).some((e) => e.type === 'promotion' && e.actors.includes(elevated.id));
-      if (!already) {
-        ctx.chronicle('promotion', promoText, [elevated.id, named.id], rankIndex(named.rank) >= 2, 'gold');
-      }
-      const beat = ctx.emitFight(
+    if (!holder || !holder.alive) continue;
+    const s = simOf(holder);
+    const wound = Math.round(pressure * ctx.rng.range(3, 9));
+    s.injury = Math.min(100, s.injury + wound);
+    s.fear = Math.min(100, s.fear + Math.round(pressure * 2));
+    shakeFaction(ctx.god, s.factionId, -Math.round(pressure * 2));
+    if (wound >= 6 && !ctx.silent) {
+      ctx.emit(
         'skirmish',
-        rankIndex(named.rank) >= 3 ? 'legendary' : 'major',
-        res,
-        elevated,
-        named,
-        'war',
-        [elevated.id, named.id],
-        'bad',
-        `${displayName(elevated).toUpperCase()} KILLED ${fullName(named).toUpperCase()} AND TOOK THEIR PLACE.`,
-        [`The rabble had no name. Now it is ${fullName(elevated).toUpperCase()}.`]
+        'background',
+        `${AREA_NAMES[area.id] ?? area.name} IS BLEEDING ${fullName(holder)}.`,
+        [`Holding contested ground costs. Wounds +${wound}.`],
+        [holder.id]
       );
-      beat.spectacle = fightSpectacle(elevated, named, 'war', res.duel);
-      return;
     }
-    ctx.chronicle(
-      'death',
-      `${fullName(named)} fell to rabble. No name rose to take their place.`,
-      [named.id],
-      rankIndex(named.rank) >= 2,
-      'bad'
-    );
-    ctx.emit(
-      'skirmish',
-      rankIndex(named.rank) >= 3 ? 'major' : 'notable',
-      `${fullName(named).toUpperCase()} FELL TO THE RABBLE.`,
-      ['Nobody worth naming survived the scrum.'],
-      [named.id],
-      'bad'
-    );
-    return;
   }
+  riseFromRabble(ctx);
+  return contested;
+}
 
-  const w = displayName(res.winner);
-  const l = displayName(res.loser);
-  const beat = ctx.emit(
-    'skirmish',
-    res.aftermath === 'killed' && res.loser === named ? 'major' : 'background',
-    res.aftermath === 'killed' ? `${w.toUpperCase()} KILLED ${l.toUpperCase()}.` : res.headline,
-    res.detail,
-    res.loser === named || res.winner === named ? [named.id] : [],
-    res.aftermath === 'killed' ? 'bad' : 'neutral'
+/**
+ * When the world has emptied out, somebody nobody had heard of steps into the
+ * gap. At most one per cycle, only while the cast is thin, and always with a
+ * beat the player can read — a name that arrives unannounced is a name that
+ * never becomes anyone.
+ */
+function riseFromRabble(ctx: GodContext): void {
+  const named = ctx.mgr.namedLiving();
+  if (named.length >= CAST_FLOOR) return;
+  if (!ctx.rng.chance(0.35)) return;
+  const open = AREAS.filter((a) => a.id !== 'fortress' && !ctx.mgr.territoryHolder(a.id));
+  const area = open.length ? ctx.rng.pick(open) : ctx.rng.pick(AREAS.filter((a) => a.id !== 'fortress'));
+  const n = ctx.mgr.recruit('elite', false);
+  n.territory = area.id;
+  const s = simOf(n);
+  s.ambition = 65 + ctx.rng.int(0, 25);
+  s.confidence = 55 + ctx.rng.int(0, 20);
+  const strongest = named.slice().sort((a, b) => b.power - a.power)[0];
+  const f = strongest ? factionFor(ctx.god, strongest) : null;
+  if (f && ctx.rng.chance(0.5)) {
+    s.factionId = f.id;
+    f.memberIds.push(n.id);
+  }
+  if (!ctx.mgr.territoryHolder(area.id)) ctx.mgr.data.territories[area.id] = n.id;
+  ctx.deed(n, `came up out of the rabble in ${AREA_NAMES[area.id] ?? area.name}`, 2);
+  ctx.emit(
+    'rise',
+    'major',
+    `${fullName(n)} CAME UP OUT OF THE RABBLE.`,
+    [
+      `${getPersonality(n.personality).name}. ${AREA_NAMES[area.id] ?? area.name} was empty enough for someone to fill it.`,
+      f && s.factionId ? `They have fallen in with ${f.name}.` : 'They answer to nobody yet.',
+    ],
+    [n.id],
+    'gold'
   );
-
-  if (ctx.rng.chance(res.aftermath === 'killed' ? 0.55 : 0.18)) {
-    beat.spectacle = fightSpectacle(res.winner, res.loser, 'war', res.duel);
-  }
+  ctx.chronicle('recruitment', `${fullName(n)} rose out of the rabble in ${area.name}.`, [n.id], true, 'gold');
 }

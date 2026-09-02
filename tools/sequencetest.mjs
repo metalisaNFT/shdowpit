@@ -170,21 +170,27 @@ async function main() {
   // The throw is an off-hand overlay with its own short cooldown, and the
   // needle only leaves the hand ~0.1s in. Retry the press a few times and
   // poll for the projectile rather than assuming one frame catches both.
+  //
+  // Poll the spawn ledger, not `liveProjectiles`. A needle thrown at a body
+  // the player is already next to is consumed by its own hit inside the same
+  // frame, so a sighting poll is a race this beat loses whenever the melee
+  // target from beat 3 is still adjacent — which is most of the time.
   let fired = false;
-  let needles = [];
   let seen = false;
+  let needleAfter = { spawns: 0, lastSpeed: 0 };
+  const needleBefore = await ev(() => window.SHDOWPIT.__qaNeedleStats());
   for (let attempt = 0; attempt < 4 && !seen; attempt++) {
     await state();
     await ev(() => window.SHDOWPIT.__qaIdle());
     fired = (await ev(() => window.SHDOWPIT.__qaFireNeedle())) || fired;
     for (let i = 0; i < 24; i++) {
-      needles = await ev(() => window.SHDOWPIT.__qaProjectiles());
-      if (needles.some((p) => p.kind === 'needle')) { seen = true; break; }
+      needleAfter = await ev(() => window.SHDOWPIT.__qaNeedleStats());
+      if (needleAfter.spawns > needleBefore.spawns) { seen = true; break; }
       await page.waitForTimeout(50);
     }
   }
-  check('the Void Needle fires', fired === true && seen, `fired=${fired} kinds=${needles.map((p) => p.kind).join(',') || 'none'}`);
-  const nSpeed = Math.max(0, ...needles.filter((p) => p.kind === 'needle').map((p) => p.speed));
+  check('the Void Needle fires', fired === true && seen, `fired=${fired} spawns=${needleBefore.spawns}->${needleAfter.spawns}`);
+  const nSpeed = seen ? needleAfter.lastSpeed : 0;
   check('needle travels at a readable speed', nSpeed > 0 && nSpeed < 40, `${nSpeed} m/s`);
 
   /* ============================================================ */

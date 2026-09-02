@@ -107,6 +107,8 @@ export type MemoryType =
   | 'GOD_MARKED_ME'
   | 'GOD_EXPOSED_ME'
   | 'GOD_TURNED_MINE_AGAINST_ME'
+  | 'GOD_KILLED_MY_ALLY'
+  | 'GOD_CAME_FOR_ME'
   | 'I_WAS_CAGED_BY'
   | 'I_SWORE_TO';
 

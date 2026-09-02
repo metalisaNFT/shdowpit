@@ -208,6 +208,7 @@ export class RunEndScreen {
     this.h1.textContent = HEADLINE[outcome.ending] ?? 'IT ENDED';
     this.h2.textContent = this.voice || ENDING_SUB[outcome.ending] || '';
 
+    if (outcome.epithet) this.bodyEl.append(div('god-end-epithet', outcome.epithet));
     for (const line of outcome.highlights) this.bodyEl.append(div('god-end-line', line));
 
     const recap = outcome.recapChain ?? [];

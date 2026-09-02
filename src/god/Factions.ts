@@ -59,7 +59,6 @@ export function seedFactions(god: GodState, mgr: NemesisManager, rng: RNG): Fact
       territories: [],
       strength: leader.power,
       stability: 70 + rng.int(0, 20),
-      treasury: {},
       aggression: 35 + rng.int(0, 40),
       warWith: [],
       bornCycle: god.cycle,
@@ -97,6 +96,24 @@ export function seedFactions(god: GodState, mgr: NemesisManager, rng: RNG): Fact
 
   reconcileFactions(god, mgr);
   return god.factions;
+}
+
+function heirScore(n: Nemesis, fallenId: string | null): number {
+  const s = simOf(n);
+  let score = rankIndex(n.rank) * 60 + n.power * 0.4;
+  if (fallenId && n.master === fallenId) score += 45;
+  score += s.loyalty * 0.3 + s.ambition * 0.2 + s.reputation * 0.5;
+  return score;
+}
+
+/** Who would take the house if its leader fell today. */
+export function heirOf(god: GodState, mgr: NemesisManager, f: Faction): Nemesis | null {
+  void god;
+  const pool = f.memberIds
+    .map((id) => mgr.byId(id))
+    .filter((n): n is Nemesis => !!n && n.alive && n.id !== f.leaderId && rankIndex(n.rank) >= 1);
+  pool.sort((a, b) => heirScore(b, f.leaderId) - heirScore(a, f.leaderId));
+  return pool[0] ?? null;
 }
 
 export function factionOf(god: GodState, id: string | null | undefined): Faction | null {
@@ -139,16 +156,21 @@ export function reconcileFactions(god: GodState, mgr: NemesisManager): string[] 
     }
     f.territories = [];
 
-    // A leaderless house promotes its strongest, or comes apart.
+    // A leaderless house passes to an heir, or comes apart. The heir is not
+    // simply the strongest: rank counts, and so does having been sworn to
+    // the one who fell. A traitor inheriting a house is a story; a nobody
+    // inheriting it because their number was biggest is a spreadsheet.
     const leader = mgr.byId(f.leaderId);
     if (!leader || !leader.alive) {
+      const fallenId = f.leaderId;
       const heir = f.memberIds
         .map((id) => mgr.byId(id))
         .filter((n): n is Nemesis => !!n && n.alive)
-        .sort((a, b) => b.power - a.power)[0];
-      if (heir) {
+        .sort((a, b) => heirScore(b, fallenId) - heirScore(a, fallenId))[0];
+      if (heir && rankIndex(heir.rank) >= 1) {
         f.leaderId = heir.id;
-        f.stability -= 22;
+        f.stability -= 15;
+        if (rankIndex(heir.rank) < 2) mgr.promote(heir, 'captain');
         notes.push(`${fullName(heir)} took ${f.name}.`);
       } else {
         f.leaderId = null;
@@ -188,13 +210,6 @@ export function shakeFaction(god: GodState, id: string | null | undefined, amoun
   f.stability = Math.max(0, Math.min(100, f.stability + amount));
 }
 
-export function treasuryTotal(f: Faction): number {
-  const t = f.treasury ?? {};
-  let sum = 0;
-  for (const v of Object.values(t)) sum += v;
-  return sum;
-}
-
 export function declareWar(a: Faction, b: Faction): boolean {
   if (a.id === b.id || a.warWith.includes(b.id)) return false;
   a.warWith.push(b.id);
@@ -215,8 +230,15 @@ export function settleFactions(god: GodState, mgr: NemesisManager): void {
     const leader = mgr.byId(f.leaderId);
     if (!leader || !leader.alive) continue;
     const calm = f.warWith.length === 0;
-    f.stability = Math.min(100, f.stability + (calm ? 3.2 : 0.8) + f.territories.length * 0.6);
+    f.stability = Math.min(100, f.stability + (calm ? 2.4 : 0.4) + f.territories.length * 0.5);
   }
+}
+
+export function makePeace(a: Faction, b: Faction): void {
+  a.warWith = a.warWith.filter((x) => x !== b.id);
+  b.warWith = b.warWith.filter((x) => x !== a.id);
+  a.aggression = Math.max(0, a.aggression - 10);
+  b.aggression = Math.max(0, b.aggression - 10);
 }
 
 /**
@@ -242,7 +264,6 @@ export function reformHouses(god: GodState, mgr: NemesisManager, rng: RNG, cycle
     territories: [],
     strength: leader.power,
     stability: 55 + rng.int(0, 20),
-    treasury: {},
     aggression: 40 + rng.int(0, 30),
     warWith: [],
     bornCycle: cycle,

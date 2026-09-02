@@ -20,7 +20,7 @@ import { traitsOfKind } from '../data/traits';
 import { fullName, rankIndex, type Nemesis, type StolenItem } from '../nemesis/Nemesis';
 import { recomputePower } from '../nemesis/NemesisGenerator';
 import { remember } from '../nemesis/NemesisMemory';
-import { addCondition } from './Conditions';
+import { addCondition, type ConditionSpec } from './Conditions';
 import type { GodContext } from './Context';
 import { addChaos, emitChaosEscalation } from './Influence';
 import { simOf, type Beat, type BeatPriority, type GodState } from './GodTypes';
@@ -42,6 +42,13 @@ export interface InterventionDef {
   /** returns a reason it cannot be used, or null */
   check(ctx: GodContext, a: Nemesis | null, b: Nemesis | null, areaId: string | null): string | null;
   apply(ctx: GodContext, a: Nemesis | null, b: Nemesis | null, areaId: string | null): InterventionEffect;
+  /**
+   * The conditions `apply` would write, as a pure description, so the
+   * forecast can lay them on a scratch index and ask the scorer who would
+   * answer. Interventions that touch a life directly (raise, calamity,
+   * descend) have no preview — their reading is fixed text.
+   */
+  preview?(ctx: GodContext, a: Nemesis | null, b: Nemesis | null, areaId: string | null): ConditionSpec[];
 }
 
 export interface InterventionEffect {
@@ -82,6 +89,7 @@ export const INTERVENTIONS: InterventionDef[] = [
     chaos: 3,
     targeting: 'nemesis',
     check: (_c, a) => (a && a.alive ? null : 'They are not alive to bless.'),
+    preview: (_c, a) => (a ? [{ kind: 'blessing', targetKind: 'nemesis', targetId: a.id, magnitude: 1, duration: 3, note: '' }] : []),
     apply(ctx, a) {
       const n = a!;
       addCondition(ctx.god, {
@@ -118,6 +126,7 @@ export const INTERVENTIONS: InterventionDef[] = [
     chaos: 4,
     targeting: 'nemesis',
     check: (_c, a) => (a && a.alive ? null : 'They are already beyond cursing.'),
+    preview: (_c, a) => (a ? [{ kind: 'curse', targetKind: 'nemesis', targetId: a.id, magnitude: 1, duration: 3, note: '' }] : []),
     apply(ctx, a) {
       const n = a!;
       addCondition(ctx.god, {
@@ -154,6 +163,7 @@ export const INTERVENTIONS: InterventionDef[] = [
     chaos: 3,
     targeting: 'nemesis',
     check: (_c, a) => (a && a.alive ? (a.stolen.length >= 3 ? 'They are already carrying too much.' : null) : 'They cannot hold anything.'),
+    preview: (_c, a) => (a ? [{ kind: 'opportunity', targetKind: 'nemesis', targetId: a.id, magnitude: 0.5, duration: 4, note: '', source: 'world' }] : []),
     apply(ctx, a) {
       const n = a!;
       const item = makeGift(ctx.rng, n);
@@ -202,6 +212,7 @@ export const INTERVENTIONS: InterventionDef[] = [
       if (!a.alive || !b.alive) return 'One of them is past caring.';
       return null;
     },
+    preview: (_c, a, b) => (a && b ? [{ kind: 'rumour', targetKind: 'nemesis', targetId: a.id, otherId: b.id, magnitude: 0.9, duration: 4, note: '' }] : []),
     apply(ctx, a, b) {
       const x = a!;
       const y = b!;
@@ -241,6 +252,7 @@ export const INTERVENTIONS: InterventionDef[] = [
     chaos: 2,
     targeting: 'nemesis',
     check: (_c, a) => (a && a.alive ? null : 'There is no price on the dead.'),
+    preview: (_c, a) => (a ? [{ kind: 'bounty', targetKind: 'nemesis', targetId: a.id, magnitude: 1, duration: 4, note: '' }] : []),
     apply(ctx, a) {
       const n = a!;
       addCondition(ctx.god, {
@@ -280,6 +292,7 @@ export const INTERVENTIONS: InterventionDef[] = [
     chaos: 1,
     targeting: 'nemesis',
     check: (_c, a) => (a && a.alive ? null : 'There is nothing to find.'),
+    preview: (_c, a) => (a ? [{ kind: 'exposure', targetKind: 'nemesis', targetId: a.id, magnitude: 1, duration: 3, note: '' }] : []),
     apply(ctx, a) {
       const n = a!;
       addCondition(ctx.god, {
@@ -321,6 +334,15 @@ export const INTERVENTIONS: InterventionDef[] = [
       if (!a.alive || !b.alive) return 'One of them is dead.';
       return null;
     },
+    preview: (_c, a, b) =>
+      a && b
+        ? [
+            { kind: 'rumour', targetKind: 'nemesis', targetId: a.id, otherId: b.id, magnitude: 1.1, duration: 3, note: '' },
+            { kind: 'rumour', targetKind: 'nemesis', targetId: b.id, otherId: a.id, magnitude: 1.1, duration: 3, note: '' },
+            { kind: 'opportunity', targetKind: 'nemesis', targetId: a.id, magnitude: 0.8, duration: 2, note: '' },
+            { kind: 'opportunity', targetKind: 'nemesis', targetId: b.id, magnitude: 0.8, duration: 2, note: '' },
+          ]
+        : [],
     apply(ctx, a, b) {
       const x = a!;
       const y = b!;
@@ -372,6 +394,7 @@ export const INTERVENTIONS: InterventionDef[] = [
     chaos: 3,
     targeting: 'nemesis',
     check: (_c, a) => (a && a.alive ? null : 'Mending is for the living.'),
+    preview: (_c, a) => (a ? [{ kind: 'ward', targetKind: 'nemesis', targetId: a.id, magnitude: 1, duration: 2, note: '' }] : []),
     apply(ctx, a) {
       const n = a!;
       const s = simOf(n);
@@ -526,6 +549,13 @@ export const INTERVENTIONS: InterventionDef[] = [
       if (rankIndex(a.rank) >= 4) return 'They are already at the top.';
       return null;
     },
+    preview: (_c, a) =>
+      a
+        ? [
+            { kind: 'opportunity', targetKind: 'nemesis', targetId: a.id, magnitude: 1.4, duration: 4, note: '' },
+            { kind: 'blessing', targetKind: 'nemesis', targetId: a.id, magnitude: 0.5, duration: 4, note: '' },
+          ]
+        : [],
     apply(ctx, a) {
       const n = a!;
       addCondition(ctx.god, {

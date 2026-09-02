@@ -123,6 +123,7 @@ function sampleOutcome(): RunOutcome {
     crisis: 'No crisis',
     crisisKind: null,
     slayerName: '',
+    epithet: '',
     revengeChains: 1,
     highlights: ['The world turned without a single hand on the scale.'],
     recapChain: ['THE CRISIS NEVER FORMED.', 'AND THE RUNWAY RAN OUT.'],

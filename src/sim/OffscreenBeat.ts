@@ -88,9 +88,26 @@ export function resolveOffscreenBeat(mgr: NemesisManager, opts: OffscreenOptions
   const act = resolveAct(mgr, opts, god);
   const ctx = new GodContext(mgr, god, rng, mgr.mods, act);
   ctx.silent = opts.silent;
+  ctx.ephemeralGod = ephemeral;
 
   const result = simulateCycle(ctx);
-  tickBiomes(mgr, mgr.turn);
+  const biomeNotes = tickBiomes(mgr, mgr.turn);
+  for (const note of biomeNotes) {
+    if (note.kind === 'dungeon_reopened') {
+      mgr.log(
+        makeEvent(
+          mgr.turn,
+          mgr.age,
+          'dungeon_reopened',
+          `${note.detail ?? 'A sealed site'} stirs again.`,
+          [],
+          false,
+          'neutral',
+          { payload: { areaId: note.areaId } }
+        )
+      );
+    }
+  }
   const events = mgr.recentEvents(1);
   mgr.advanceTurn();
   reconcileWorld(mgr);

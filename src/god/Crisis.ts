@@ -21,6 +21,9 @@ import { chaosMods } from './Influence';
 import { simOf, type Crisis, type CrisisKind } from './GodTypes';
 import { RUN_DEADLINE } from './Arc';
 
+/** Cycles a crisis is given before it consumes the world. */
+export const CRISIS_FUSE = 14;
+
 export interface CrisisCandidate {
   kind: CrisisKind;
   score: number;
@@ -90,19 +93,22 @@ export function assessCrisis(ctx: GodContext): CrisisCandidate | null {
   }
 
   /* ---- two houses that cannot both exist ---- */
+  // A war is a situation, not a crisis: it has no body, and a war's leader
+  // named as the crisis died the cycle after every time it was tried. The
+  // crisis is always a PERSON — the one the war made, once it has made them.
   const live = livingFactions(ctx.god);
   const warring = live.filter((f) => f.warWith.length > 0);
-  if (warring.length >= 2) {
+  if (warring.length >= 2 && top) {
     const a = warring.sort((x, y) => y.strength - x.strength)[0];
-    const b = factionOf(ctx.god, a.warWith[0]);
-    if (b) {
+    const leader = ctx.mgr.byId(a.leaderId);
+    if (leader && leader.id === top.id) {
       candidates.push({
-        kind: 'civil_war',
-        score: (a.strength + b.strength) * 0.55 + (100 - Math.min(a.stability, b.stability)) * 5,
-        body: ctx.mgr.byId(a.leaderId),
+        kind: 'warlord',
+        score: top.power * 1.2 + (100 - a.stability) * 2,
+        body: top,
         factionId: a.id,
-        title: 'THE WAR NOBODY CAN END',
-        description: `${a.name} and ${b.name} have gone past the point where either can stop. Everyone else is standing in the middle of it.`,
+        title: 'THE ONE THE WAR MADE',
+        description: `${fullName(top)} has a war behind them and nothing in front of them. ${a.name} will follow them anywhere.`,
       });
     }
   }
@@ -120,12 +126,17 @@ export function assessCrisis(ctx: GodContext): CrisisCandidate | null {
     });
   }
 
-  if (!candidates.length) return null;
+  // A crisis has to be able to survive being named. Anything whose body is
+  // not among the strongest few in the world would be dead the cycle after,
+  // and a threat that dies of its own accord is a screen, not a problem.
+  const floor = (byPower[2]?.power ?? byPower[1]?.power ?? 0) * 0.95;
+  const viable = candidates.filter((c) => !c.body || c.body.power >= floor);
+  if (!viable.length) return null;
   // A small jitter, so two runs with near-identical worlds do not always name
   // the same kind of catastrophe.
-  for (const c of candidates) c.score *= 0.88 + ctx.rng.next() * 0.24;
-  candidates.sort((a, b) => b.score - a.score);
-  return candidates[0];
+  for (const c of viable) c.score *= 0.88 + ctx.rng.next() * 0.24;
+  viable.sort((a, b) => b.score - a.score);
+  return viable[0];
 }
 
 export function birthCrisis(ctx: GodContext): Crisis | null {
@@ -138,9 +149,9 @@ export function birthCrisis(ctx: GodContext): Crisis | null {
     bodyId: body ? body.id : null,
     factionId: c.factionId,
     power: body ? body.power : Math.round(c.score * 0.4),
-    growth: 12 + Math.round(ctx.god.chaos * 0.15),
+    growth: 10 + Math.round(ctx.god.chaos * 0.12),
     bornCycle: ctx.god.cycle,
-    deadline: RUN_DEADLINE,
+    deadline: Math.min(RUN_DEADLINE, ctx.god.cycle + CRISIS_FUSE),
     resolved: 'none',
     description: c.description,
     slainById: null,
@@ -161,9 +172,36 @@ export function birthCrisis(ctx: GodContext): Crisis | null {
     const s = simOf(body);
     s.crisisBorn = true;
     s.ambition = 100;
-    s.fear = Math.max(0, s.fear - 40);
+    s.fear = 0;
     s.confidence = 100;
+    // Something has grown past the world it grew in. The naming is not a
+    // label; it is the moment they stop bleeding and start growing.
+    s.injury = 0;
+    s.hiddenUntil = 0;
+    body.level = Math.min(30, body.level + 4);
+    recomputePower(body);
+    crisis.power = Math.max(crisis.power, body.power);
     ctx.deed(body, 'became the thing the world could not hold', 6);
+    // The world closes around it for a few cycles. Whoever is going to
+    // answer it needs a plan, not a lucky swing on the morning it was named.
+    addCondition(ctx.god, {
+      kind: 'ward',
+      targetKind: 'nemesis',
+      targetId: body.id,
+      magnitude: 0.8,
+      duration: 3,
+      note: 'everything around them has closed ranks',
+      source: 'world',
+    });
+    const house = factionOf(ctx.god, s.factionId);
+    if (house) {
+      house.stability = Math.min(100, house.stability + 20);
+      for (const id of house.memberIds) {
+        const m = ctx.mgr.byId(id);
+        if (m && m.alive && m.id !== body.id) simOf(m).loyalty = Math.min(100, simOf(m).loyalty + 15);
+      }
+    }
+    ctx.refreshConditions();
   }
 
   ctx.emit(
@@ -213,14 +251,52 @@ export function crisisTick(ctx: GodContext): void {
   /* ---- has it been put down? ---- */
   if (isWar) {
     const f = factionOf(ctx.god, crisis.factionId);
-    // A war outlives the person it was named after; keep it pointed at
-    // whoever is currently running it.
-    if (f && f.leaderId && f.leaderId !== crisis.bodyId) crisis.bodyId = f.leaderId;
-    if (!f || f.destroyedCycle || f.warWith.length === 0) {
+    // The war is answered when the house driving it is broken: its leader
+    // killed, or the house itself gone. Peace is not on the table — see
+    // rollPeace — because a war that is the crisis is a war somebody wants.
+    if (body && !body.alive) {
       crisis.resolved = 'defeated';
-        crisis.slainById = null;
-      ctx.emit('crisis', 'legendary', 'THE WAR ENDED.', ['One side stopped existing, or stopped caring. Either way it is over.'], [], 'good');
+      crisis.slainById = simOf(body).killedById;
+      const slayer = ctx.mgr.byId(crisis.slainById);
+      if (slayer) {
+        ctx.deed(slayer, `broke ${fullName(body)}'s war`, 8);
+        simOf(slayer).reputation = Math.min(200, simOf(slayer).reputation + 60);
+      }
+      ctx.emit(
+        'crisis',
+        'legendary',
+        slayer ? `${fullName(slayer)} KILLED ${fullName(body)}, AND THE WAR WENT OUT OF THE WORLD.` : `${fullName(body)} IS DEAD. THE WAR DIED WITH THEM.`,
+        [crisis.description, slayer ? `${fullName(slayer)} was not chosen for this. They were the one standing there.` : 'Nobody is quite sure who did it.'],
+        slayer ? [slayer.id, body.id] : [body.id],
+        'good'
+      );
+      ctx.chronicle('overlord_slain', slayer ? `${fullName(slayer)} killed ${fullName(body)}.` : `${fullName(body)} fell.`, [body.id], true, 'gold');
       return;
+    }
+    if (!f || f.destroyedCycle || f.warWith.length === 0) {
+      if (body && body.alive) {
+        // The war is over and the one who started it is still standing.
+        // That is not an answer; that is the next problem with a new name.
+        crisis.kind = 'warlord';
+        crisis.title = 'THE ONE WHO WON';
+        crisis.factionId = simOf(body).factionId;
+        crisis.description = `${fullName(body)} won the war, and nothing left standing can be expected to change that.`;
+        ctx.emit('crisis', 'legendary', `THE WAR IS OVER. ${fullName(body)} WON IT.`, [crisis.description, 'The crisis did not end. It changed its name.'], [body.id], 'bad');
+        return;
+      }
+      crisis.resolved = 'defeated';
+      crisis.slainById = null;
+      ctx.emit('crisis', 'legendary', 'THE WAR ENDED.', ['The house that was driving it stopped existing.'], [], 'good');
+      return;
+    }
+    // Somebody else now runs the house — the war has a new face.
+    if (f.leaderId && f.leaderId !== crisis.bodyId) {
+      crisis.bodyId = f.leaderId;
+      const nb = ctx.mgr.byId(f.leaderId);
+      if (nb) {
+        simOf(nb).crisisBorn = true;
+        ctx.emit('crisis', 'major', `${fullName(nb)} NOW CARRIES THE WAR.`, [`${f.name} has a new head, and the same appetite.`], [nb.id], 'bad');
+      }
     }
   } else if (body && !body.alive) {
     crisis.resolved = 'defeated';
@@ -254,7 +330,11 @@ export function crisisTick(ctx: GodContext): void {
   const growth = crisis.growth * mods.crisisGrowth;
   crisis.power += growth;
   if (body && body.alive) {
-    body.level = Math.min(30, body.level + 1);
+    // It grows — but not faster than the world can be arranged against it.
+    if ((ctx.god.cycle - crisis.bornCycle) % 2 === 0) body.level = Math.min(30, body.level + 1);
+    const bs = simOf(body);
+    bs.injury = Math.max(0, bs.injury - 6);
+    bs.fear = Math.max(0, bs.fear - 8);
     if (ctx.rng.chance(0.4) && body.strengths.length < 5) {
       const pool = traitsOfKind(crisis.kind === 'beast' ? 'mutation' : 'strength').filter((t) => !body.strengths.includes(t.id));
       if (pool.length) body.strengths.push(ctx.rng.pick(pool).id);
@@ -265,10 +345,6 @@ export function crisisTick(ctx: GodContext): void {
     // a strong character.
     const f = factionOf(ctx.god, simOf(body).factionId);
     if (f) f.aggression = Math.min(100, f.aggression + 4);
-  } else if (isWar) {
-    for (const f of livingFactions(ctx.god)) {
-      if (f.warWith.length) f.stability = Math.max(0, f.stability - 5);
-    }
   }
 
   if (ctx.god.cycle % 3 === 0) {
